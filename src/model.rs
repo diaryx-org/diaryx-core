@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use chrono::{Date, DateTime, FixedOffset, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 
 /// A flexible DateTime that can be either naive (no timezone) or timezone-aware
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ impl Serialize for FlexibleDateTime {
     }
   }
 }
-
+/*
 struct Person {
   birth_date: NaiveDate,
   first_name: String,
@@ -67,7 +67,7 @@ struct Person {
   last_name: String,
   //birth_place: GeoLocation
 }
-
+*/
 /// For those who use journaling to track their health, Diaryx has optional support for a wide array of health metrics: mood, activity, sleep, vitals, and nutrition.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthProperties {
