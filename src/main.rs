@@ -1,7 +1,5 @@
-use diaryx_core::cli::DiaryxCli;
+mod cli;
 
 fn main() {
-    let diaryxcli = DiaryxCli::from_args();
-    diaryxcli.print_config();
-    diaryxcli.run_command();
+    cli::run_cli();
 }
