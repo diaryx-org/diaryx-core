@@ -134,7 +134,7 @@ impl<FS: FileSystem> Workspace<FS> {
 
     /// Check if a file is an index file (has contents property)
     pub fn is_index_file(&self, path: &Path) -> bool {
-        if !path.extension().is_some_and(|ext| ext == "md") {
+        if path.extension().is_none_or(|ext| ext != "md") {
             return false;
         }
 
