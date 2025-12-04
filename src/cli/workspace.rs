@@ -40,13 +40,14 @@ pub fn handle_workspace_command(
         WorkspaceCommands::Add {
             parent_or_child,
             child,
+            yes,
             dry_run,
         } => {
             if let Some(ref cfg) = config {
-                let (parent, child) =
+                let (parent, child_pattern) =
                     resolve_parent_child(ws, &current_dir, &parent_or_child, child);
-                if let (Some(p), Some(c)) = (parent, child) {
-                    handle_add(app, cfg, &p, &c, dry_run);
+                if let (Some(p), Some(c)) = (parent, child_pattern) {
+                    handle_add(app, cfg, &p, &c, yes, dry_run);
                 }
             } else {
                 eprintln!("✗ No config found. Run 'diaryx init' first");
@@ -434,14 +435,17 @@ fn handle_path(
 }
 
 /// Handle the 'workspace add' command
-/// Adds an existing file as a child of a parent index
+/// Adds existing file(s) as children of a parent index
 fn handle_add(
     app: &DiaryxApp<RealFileSystem>,
     config: &Config,
     parent: &str,
-    child: &str,
+    child_pattern: &str,
+    yes: bool,
     dry_run: bool,
 ) {
+    use crate::cli::util::{prompt_confirm, ConfirmResult};
+
     // Resolve parent path (should be a single file)
     let parent_paths = resolve_paths(parent, config, app);
     if parent_paths.is_empty() {
@@ -457,39 +461,88 @@ fn handle_add(
     }
     let parent_path = &parent_paths[0];
 
-    // Resolve child path (should be a single file)
-    let child_paths = resolve_paths(child, config, app);
+    // Resolve child paths (can be multiple)
+    let child_paths = resolve_paths(child_pattern, config, app);
     if child_paths.is_empty() {
-        eprintln!("✗ No files matched child: {}", child);
+        eprintln!("✗ No files matched child pattern: {}", child_pattern);
         return;
     }
-    if child_paths.len() > 1 {
-        eprintln!("✗ Child must be a single file, but matched multiple:");
-        for p in &child_paths {
-            eprintln!("  {}", p.display());
+
+    // Filter out the parent from children (auto-skip)
+    let parent_canonical = parent_path.canonicalize().ok();
+    let child_paths: Vec<_> = child_paths
+        .into_iter()
+        .filter(|p| {
+            let dominated = parent_canonical
+                .as_ref()
+                .map(|pc| p.canonicalize().ok().as_ref() == Some(pc))
+                .unwrap_or(false);
+            if dominated {
+                println!("⚠ Skipping parent file: {}", p.display());
+            }
+            !dominated
+        })
+        .collect();
+
+    if child_paths.is_empty() {
+        eprintln!("✗ No child files to add (all matched files were skipped)");
+        return;
+    }
+
+    let multiple = child_paths.len() > 1;
+    let mut confirm_all = yes;
+
+    for child_path in &child_paths {
+        // Calculate relative paths
+        let relative_child = calculate_relative_path(parent_path, child_path);
+        let relative_parent = calculate_relative_path(child_path, parent_path);
+
+        if dry_run {
+            println!(
+                "Would add '{}' to contents of '{}'",
+                relative_child,
+                parent_path.display()
+            );
+            println!(
+                "Would set part_of to '{}' in '{}'",
+                relative_parent,
+                child_path.display()
+            );
+            continue;
         }
-        return;
+
+        // Confirm if multiple files and not auto-confirming
+        if multiple && !confirm_all {
+            println!("Add '{}' to '{}'?", child_path.display(), parent_path.display());
+            match prompt_confirm("Proceed?") {
+                ConfirmResult::Yes => {}
+                ConfirmResult::No => {
+                    println!("Skipped");
+                    continue;
+                }
+                ConfirmResult::All => {
+                    confirm_all = true;
+                }
+                ConfirmResult::Quit => {
+                    println!("Aborted");
+                    return;
+                }
+            }
+        }
+
+        // Add single child
+        add_single_child(app, parent_path, child_path, &relative_child, &relative_parent);
     }
-    let child_path = &child_paths[0];
+}
 
-    // Calculate relative path from parent to child
-    let relative_child = calculate_relative_path(parent_path, child_path);
-    let relative_parent = calculate_relative_path(child_path, parent_path);
-
-    if dry_run {
-        println!(
-            "Would add '{}' to contents of '{}'",
-            relative_child,
-            parent_path.display()
-        );
-        println!(
-            "Would set part_of to '{}' in '{}'",
-            relative_parent,
-            child_path.display()
-        );
-        return;
-    }
-
+/// Add a single child to a parent index
+fn add_single_child(
+    app: &DiaryxApp<RealFileSystem>,
+    parent_path: &Path,
+    child_path: &Path,
+    relative_child: &str,
+    relative_parent: &str,
+) {
     let parent_str = parent_path.to_string_lossy();
     let child_str = child_path.to_string_lossy();
 
@@ -497,13 +550,14 @@ fn handle_add(
     match app.get_frontmatter_property(&parent_str, "contents") {
         Ok(Some(Value::Sequence(mut items))) => {
             // Check if already present
-            let child_value = Value::String(relative_child.clone());
+            let child_value = Value::String(relative_child.to_string());
             if items.contains(&child_value) {
                 println!(
                     "⚠ '{}' is already in contents of '{}'",
                     relative_child,
                     parent_path.display()
                 );
+                return;
             } else {
                 items.push(child_value);
                 if let Err(e) =
@@ -525,7 +579,7 @@ fn handle_add(
         }
         Ok(None) => {
             // Create contents with just this child
-            let items = vec![Value::String(relative_child.clone())];
+            let items = vec![Value::String(relative_child.to_string())];
             if let Err(e) =
                 app.set_frontmatter_property(&parent_str, "contents", Value::Sequence(items))
             {
@@ -548,7 +602,7 @@ fn handle_add(
     if let Err(e) = app.set_frontmatter_property(
         &child_str,
         "part_of",
-        Value::String(relative_parent.clone()),
+        Value::String(relative_parent.to_string()),
     ) {
         eprintln!("✗ Error updating child part_of: {}", e);
         return;

@@ -231,25 +231,40 @@ pub fn rename_file_with_refs(
 
 /// Calculate the relative path from one file to another
 pub fn calculate_relative_path(from: &Path, to: &Path) -> String {
+    // Try to canonicalize both paths for accurate comparison
+    let from_canonical = from.canonicalize().ok();
+    let to_canonical = to.canonicalize().ok();
+
     // If they're in the same directory, just use the filename
-    if from.parent() == to.parent() {
+    let same_dir = match (&from_canonical, &to_canonical) {
+        (Some(fc), Some(tc)) => fc.parent() == tc.parent(),
+        _ => from.parent() == to.parent(),
+    };
+
+    if same_dir {
         return to
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| to.to_string_lossy().to_string());
     }
 
-    // Try to use pathdiff for proper relative path calculation
-    if let Some(from_dir) = from.parent() {
-        // Try with canonical paths first
-        if let (Ok(from_dir_canon), Ok(to_canon)) = (from_dir.canonicalize(), to.canonicalize()) {
-            if let Some(rel) = pathdiff::diff_paths(&to_canon, &from_dir_canon) {
+    // Use canonical paths for pathdiff calculation
+    if let (Some(from_canon), Some(to_canon)) = (&from_canonical, &to_canonical) {
+        if let Some(from_dir) = from_canon.parent() {
+            if let Some(rel) = pathdiff::diff_paths(to_canon, from_dir) {
                 return rel.to_string_lossy().to_string();
             }
         }
-        // Fall back to non-canonical
+    }
+
+    // Fall back to non-canonical paths
+    if let Some(from_dir) = from.parent() {
         if let Some(rel) = pathdiff::diff_paths(to, from_dir) {
-            return rel.to_string_lossy().to_string();
+            let rel_str = rel.to_string_lossy().to_string();
+            // Ensure we don't return an absolute path
+            if !rel.is_absolute() {
+                return rel_str;
+            }
         }
     }
 

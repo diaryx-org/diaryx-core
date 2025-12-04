@@ -377,12 +377,17 @@ pub enum WorkspaceCommands {
     /// Add an existing file as a child of a parent index
     /// Updates both the parent's `contents` and the child's `part_of`
     /// If only one argument is provided, uses the local index as parent
+    /// Supports globs and multiple files (will skip the parent automatically)
     Add {
-        /// Parent index file, or child file if only one argument (supports fuzzy matching)
+        /// Parent index file, or child file if only one argument (supports fuzzy matching, globs)
         parent_or_child: String,
 
-        /// Child file to add (optional if parent_or_child is the child)
+        /// Child file(s) to add (optional if parent_or_child is the child, supports globs)
         child: Option<String>,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
 
         /// Show what would be done without making changes
         #[arg(long)]
