@@ -26,26 +26,8 @@ pub enum Commands {
     /// Manipulate frontmatter properties
     #[command(alias = "p")]
     Property {
-        /// Path to the entry file (supports dates like "today", "yesterday", "last friday", or glob patterns like "*.md")
-        path: String,
-
-        /// Property key (if omitted, lists all properties)
-        key: Option<String>,
-
         #[command(subcommand)]
-        operation: Option<PropertyOperation>,
-
-        /// Operate on the property as a list
-        #[arg(short, long)]
-        list: bool,
-
-        /// Skip confirmation prompts for multi-file operations
-        #[arg(short = 'y', long, global = true)]
-        yes: bool,
-
-        /// Show what would be done without making changes
-        #[arg(long, global = true)]
-        dry_run: bool,
+        operation: PropertyCommands,
     },
 
     /// Initialize diaryx configuration and workspace
@@ -118,61 +100,208 @@ pub enum Commands {
 }
 
 #[derive(Subcommand, Clone)]
-pub enum PropertyOperation {
-    /// Get the property value (default if no operation specified)
-    Get,
+pub enum PropertyCommands {
+    /// Get a property value
+    #[command(alias = "g")]
+    Get {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
 
-    /// Set the property value
+        /// Property key to get
+        key: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Set a property value
+    #[command(alias = "s")]
     Set {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key to set
+        key: String,
+
         /// Value to set (as YAML)
         value: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// Remove the property
-    Remove,
+    /// Remove a property
+    #[command(alias = "rm")]
+    Remove {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
 
-    /// Rename the property key
+        /// Property key to remove
+        key: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Rename a property key
+    #[command(alias = "mv")]
     Rename {
-        /// New key name
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Current property key
+        old_key: String,
+
+        /// New property key
         new_key: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// List operations - append a value
+    /// List all properties in a file
+    #[command(alias = "ls")]
+    List {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Append a value to a list property
     Append {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
         /// Value to append
         value: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// List operations - prepend a value
+    /// Prepend a value to a list property
     Prepend {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
         /// Value to prepend
         value: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// List operations - pop a value by index
+    /// Remove a value from a list by index
     Pop {
-        /// Index to remove (default: last item)
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
+        /// Index to remove (negative indices count from end, default: -1)
         #[arg(default_value = "-1")]
         index: i32,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// List operations - set value at index
+    /// Set a value at a specific index in a list
     SetAt {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
         /// Index to set
         index: usize,
 
         /// Value to set
         value: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// List operations - remove by value
+    /// Remove a specific value from a list
     RemoveValue {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
         /// Value to remove
         value: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 
-    /// Show list with indices
-    Show,
+    /// Show list items with their indices
+    Show {
+        /// Path to the entry file (supports directories, globs, dates, fuzzy matching)
+        path: String,
+
+        /// Property key (must be a list)
+        key: String,
+
+        /// Skip confirmation prompts for multi-file operations
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]

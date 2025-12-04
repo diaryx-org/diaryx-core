@@ -57,15 +57,8 @@ pub fn run_cli() {
             entry::handle_create(&app, &path);
         }
 
-        Commands::Property {
-            path,
-            key,
-            operation,
-            list,
-            yes,
-            dry_run,
-        } => {
-            property::handle_property_command(&app, path, key, operation, list, yes, dry_run);
+        Commands::Property { operation } => {
+            property::handle_property_command(&app, operation);
         }
 
         Commands::Sort {
