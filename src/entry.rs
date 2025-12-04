@@ -88,13 +88,18 @@ impl<FS: FileSystem> DiaryxApp<FS> {
 
     /// Renames a frontmatter property key
     /// Returns Ok(true) if the key was found and renamed, Ok(false) if key was not found
-    pub fn rename_frontmatter_property(&self, path: &str, old_key: &str, new_key: &str) -> Result<bool> {
+    pub fn rename_frontmatter_property(
+        &self,
+        path: &str,
+        old_key: &str,
+        new_key: &str,
+    ) -> Result<bool> {
         let (frontmatter, body) = self.parse_file(path)?;
-        
+
         if !frontmatter.contains_key(old_key) {
             return Ok(false);
         }
-        
+
         // Rebuild the map, replacing old_key with new_key at the same position
         let mut result: IndexMap<String, Value> = IndexMap::new();
         for (k, v) in frontmatter {
@@ -104,7 +109,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
                 result.insert(k, v);
             }
         }
-        
+
         self.reconstruct_file(path, &result, &body)?;
         Ok(true)
     }
@@ -126,12 +131,12 @@ impl<FS: FileSystem> DiaryxApp<FS> {
     /// Example: "title,description,*" puts title first, description second, rest alphabetically
     pub fn sort_frontmatter(&self, path: &str, pattern: Option<&str>) -> Result<()> {
         let (frontmatter, body) = self.parse_file(path)?;
-        
+
         let sorted = match pattern {
             Some(p) => self.sort_by_pattern(frontmatter, p),
             None => self.sort_alphabetically(frontmatter),
         };
-        
+
         self.reconstruct_file(path, &sorted, &body)
     }
 
@@ -141,12 +146,16 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         pairs.into_iter().collect()
     }
 
-    fn sort_by_pattern(&self, frontmatter: IndexMap<String, Value>, pattern: &str) -> IndexMap<String, Value> {
+    fn sort_by_pattern(
+        &self,
+        frontmatter: IndexMap<String, Value>,
+        pattern: &str,
+    ) -> IndexMap<String, Value> {
         let priority_keys: Vec<&str> = pattern.split(',').map(|s| s.trim()).collect();
-        
+
         let mut result = IndexMap::new();
         let mut remaining: IndexMap<String, Value> = frontmatter;
-        
+
         for key in &priority_keys {
             if *key == "*" {
                 // Insert remaining keys alphabetically
@@ -160,7 +169,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
                 result.insert(key.to_string(), value);
             }
         }
-        
+
         // If no "*" was in pattern, append any remaining keys alphabetically
         if !remaining.is_empty() {
             let mut rest: Vec<_> = remaining.drain(..).collect();
@@ -169,7 +178,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
                 result.insert(k, v);
             }
         }
-        
+
         result
     }
 

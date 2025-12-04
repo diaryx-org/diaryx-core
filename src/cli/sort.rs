@@ -3,7 +3,7 @@
 use diaryx_core::entry::DiaryxApp;
 use diaryx_core::fs::RealFileSystem;
 
-use crate::cli::util::{load_config, resolve_paths, prompt_confirm, ConfirmResult};
+use crate::cli::util::{load_config, prompt_confirm, resolve_paths, ConfirmResult};
 
 /// Handle the sort command
 pub fn handle_sort_command(
@@ -77,12 +77,10 @@ pub fn handle_sort_command(
         };
 
         match app.sort_frontmatter(&path_str, sort_pattern) {
-            Ok(_) => {
-                match sort_pattern {
-                    Some(p) => println!("{}✓ Sorted with pattern '{}'", prefix, p),
-                    None => println!("{}✓ Sorted alphabetically", prefix),
-                }
-            }
+            Ok(_) => match sort_pattern {
+                Some(p) => println!("{}✓ Sorted with pattern '{}'", prefix, p),
+                None => println!("{}✓ Sorted alphabetically", prefix),
+            },
             Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
         }
     }

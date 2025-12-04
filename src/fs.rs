@@ -1,6 +1,5 @@
-
-use std::path::{Path, PathBuf};
 use std::io::Result;
+use std::path::{Path, PathBuf};
 
 pub trait FileSystem {
     /// Reads the file content (for parsing frontmatter)
@@ -41,24 +40,20 @@ impl FileSystem for RealFileSystem {
         std::fs::remove_file(path)
     }
 
-
     fn create_new(&self, path: &Path, content: &str) -> Result<()> {
         // This atomic check prevents race conditions
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true) 
-            .open(path)?;
-        
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+
         file.write_all(content.as_bytes())
     }
-    
+
     fn list_md_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         if dir.is_dir() {
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "md") {
+                if path.extension().is_some_and(|ext| ext == "md") {
                     files.push(path);
                 }
             }

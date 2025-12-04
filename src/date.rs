@@ -1,6 +1,6 @@
 use chrono::{Local, NaiveDate};
 use chrono_english::{parse_date_string, Dialect};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{DiaryxError, Result};
 
@@ -13,12 +13,12 @@ use crate::error::{DiaryxError, Result};
 /// - "YYYY-MM-DD" format
 pub fn parse_date(date_str: &str) -> Result<NaiveDate> {
     let now = Local::now();
-    
+
     // First try parsing as YYYY-MM-DD for exact dates
     if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
         return Ok(date);
     }
-    
+
     // Use chrono-english for natural language parsing
     parse_date_string(date_str, now, Dialect::Us)
         .map(|dt| dt.date_naive())
@@ -27,7 +27,7 @@ pub fn parse_date(date_str: &str) -> Result<NaiveDate> {
 
 /// Generate the file path for a given date
 /// Format: {base_dir}/YYYY/MM/YYYY-MM-DD.md
-pub fn date_to_path(base_dir: &PathBuf, date: &NaiveDate) -> PathBuf {
+pub fn date_to_path(base_dir: &Path, date: &NaiveDate) -> PathBuf {
     let year = date.format("%Y").to_string();
     let month = date.format("%m").to_string();
     let filename = format!("{}.md", date.format("%Y-%m-%d"));
@@ -37,7 +37,7 @@ pub fn date_to_path(base_dir: &PathBuf, date: &NaiveDate) -> PathBuf {
 
 /// Extract date from a path if it matches the expected format
 /// Returns None if path doesn't match YYYY/MM/YYYY-MM-DD.md
-pub fn path_to_date(path: &PathBuf) -> Option<NaiveDate> {
+pub fn path_to_date(path: &Path) -> Option<NaiveDate> {
     let filename = path.file_stem()?.to_str()?;
     NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok()
 }
@@ -88,7 +88,10 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
         let path = date_to_path(&base, &date);
 
-        assert_eq!(path, PathBuf::from("/home/user/diary/2024/01/2024-01-15.md"));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/diary/2024/01/2024-01-15.md")
+        );
     }
 
     #[test]

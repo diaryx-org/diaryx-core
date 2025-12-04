@@ -10,13 +10,14 @@ use crate::error::{DiaryxError, Result};
 pub fn launch_editor(path: &Path, config: &Config) -> Result<()> {
     let editor = determine_editor(config)?;
 
-    let status = Command::new(&editor)
-        .arg(path)
-        .status()
-        .map_err(|e| DiaryxError::EditorLaunchFailed {
-            editor: editor.clone(),
-            source: e,
-        })?;
+    let status =
+        Command::new(&editor)
+            .arg(path)
+            .status()
+            .map_err(|e| DiaryxError::EditorLaunchFailed {
+                editor: editor.clone(),
+                source: e,
+            })?;
 
     if !status.success() {
         return Err(DiaryxError::EditorExited(status.code().unwrap_or(-1)));

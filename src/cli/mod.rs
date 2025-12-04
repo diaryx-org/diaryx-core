@@ -15,8 +15,8 @@ use diaryx_core::entry::DiaryxApp;
 use diaryx_core::fs::RealFileSystem;
 use diaryx_core::workspace::Workspace;
 
-use args::Commands;
 pub use args::Cli;
+use args::Commands;
 
 /// Main entry point for the CLI
 pub fn run_cli() {

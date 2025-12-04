@@ -5,7 +5,7 @@ use diaryx_core::fs::RealFileSystem;
 use serde_yaml::Value;
 
 use crate::cli::args::PropertyOperation;
-use crate::cli::util::{format_value, load_config, resolve_paths, prompt_confirm, ConfirmResult};
+use crate::cli::util::{format_value, load_config, prompt_confirm, resolve_paths, ConfirmResult};
 
 /// Describes what a mutating operation will do (for dry-run and confirmation)
 pub fn describe_operation(operation: &PropertyOperation, key: &str) -> String {
@@ -156,7 +156,9 @@ pub fn handle_property_command(
             (Some(k), Some(PropertyOperation::Rename { new_key }), _) => {
                 match app.rename_frontmatter_property(&path_str, k, new_key) {
                     Ok(true) => println!("{}✓ Renamed '{}' to '{}'", prefix, k, new_key),
-                    Ok(false) => eprintln!("{}⚠ Property '{}' not found, nothing to rename", prefix, k),
+                    Ok(false) => {
+                        eprintln!("{}⚠ Property '{}' not found, nothing to rename", prefix, k)
+                    }
                     Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
                 }
             }
@@ -191,28 +193,36 @@ pub fn handle_property_command(
 
             // List operations: Append
             (Some(k), Some(PropertyOperation::Append { value }), _) => {
-                handle_list_operation(app, &path_str, &prefix, k, |items| {
-                    match serde_yaml::from_str::<Value>(value) {
+                handle_list_operation(
+                    app,
+                    &path_str,
+                    &prefix,
+                    k,
+                    |items| match serde_yaml::from_str::<Value>(value) {
                         Ok(yaml_value) => {
                             items.push(yaml_value);
                             Ok(format!("✓ Appended to '{}'", k))
                         }
                         Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
-                    }
-                });
+                    },
+                );
             }
 
             // List operations: Prepend
             (Some(k), Some(PropertyOperation::Prepend { value }), _) => {
-                handle_list_operation(app, &path_str, &prefix, k, |items| {
-                    match serde_yaml::from_str::<Value>(value) {
+                handle_list_operation(
+                    app,
+                    &path_str,
+                    &prefix,
+                    k,
+                    |items| match serde_yaml::from_str::<Value>(value) {
                         Ok(yaml_value) => {
                             items.insert(0, yaml_value);
                             Ok(format!("✓ Prepended to '{}'", k))
                         }
                         Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
-                    }
-                });
+                    },
+                );
             }
 
             // List operations: Pop by index
@@ -242,7 +252,11 @@ pub fn handle_property_command(
                     }
 
                     let removed = items.remove(actual_index);
-                    Ok(format!("✓ Removed [{}]: {}", actual_index, format_value(&removed)))
+                    Ok(format!(
+                        "✓ Removed [{}]: {}",
+                        actual_index,
+                        format_value(&removed)
+                    ))
                 });
             }
 
@@ -270,8 +284,12 @@ pub fn handle_property_command(
 
             // List operations: Remove by value
             (Some(k), Some(PropertyOperation::RemoveValue { value }), _) => {
-                handle_list_operation(app, &path_str, &prefix, k, |items| {
-                    match serde_yaml::from_str::<Value>(value) {
+                handle_list_operation(
+                    app,
+                    &path_str,
+                    &prefix,
+                    k,
+                    |items| match serde_yaml::from_str::<Value>(value) {
                         Ok(yaml_value) => {
                             let original_len = items.len();
                             items.retain(|item| item != &yaml_value);
@@ -286,8 +304,8 @@ pub fn handle_property_command(
                             }
                         }
                         Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
-                    }
-                });
+                    },
+                );
             }
         }
     }

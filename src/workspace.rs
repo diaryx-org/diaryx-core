@@ -100,10 +100,13 @@ impl<FS: FileSystem> Workspace<FS> {
 
     /// Parse a markdown file and extract index frontmatter
     pub fn parse_index(&self, path: &Path) -> Result<IndexFile> {
-        let content = self.fs.read_to_string(path).map_err(|e| DiaryxError::FileRead {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        let content = self
+            .fs
+            .read_to_string(path)
+            .map_err(|e| DiaryxError::FileRead {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
 
         // Check if content starts with frontmatter delimiter
         if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
@@ -131,7 +134,7 @@ impl<FS: FileSystem> Workspace<FS> {
 
     /// Check if a file is an index file (has contents property)
     pub fn is_index_file(&self, path: &Path) -> bool {
-        if !path.extension().map_or(false, |ext| ext == "md") {
+        if !path.extension().is_some_and(|ext| ext == "md") {
             return false;
         }
 
@@ -149,10 +152,13 @@ impl<FS: FileSystem> Workspace<FS> {
 
     /// Find a root index in the given directory
     pub fn find_root_index_in_dir(&self, dir: &Path) -> Result<Option<PathBuf>> {
-        let md_files = self.fs.list_md_files(dir).map_err(|e| DiaryxError::FileRead {
-            path: dir.to_path_buf(),
-            source: e,
-        })?;
+        let md_files = self
+            .fs
+            .list_md_files(dir)
+            .map_err(|e| DiaryxError::FileRead {
+                path: dir.to_path_buf(),
+                source: e,
+            })?;
 
         for file in md_files {
             if self.is_root_index(&file) {
@@ -223,12 +229,12 @@ impl<FS: FileSystem> Workspace<FS> {
             display_title, desc, display_title, desc
         );
 
-        self.fs.create_new(&readme_path, &content).map_err(|e| {
-            DiaryxError::FileWrite {
+        self.fs
+            .create_new(&readme_path, &content)
+            .map_err(|e| DiaryxError::FileWrite {
                 path: readme_path.clone(),
                 source: e,
-            }
-        })?;
+            })?;
 
         Ok(readme_path)
     }
@@ -300,39 +306,19 @@ impl<FS: FileSystem> Workspace<FS> {
         let child_count = node.children.len();
         for (i, child) in node.children.iter().enumerate() {
             let is_last_child = i == child_count - 1;
-            let connector = if is_last_child { "└── " } else { "├── " };
+            let connector = if is_last_child {
+                "└── "
+            } else {
+                "├── "
+            };
             let child_prefix = if is_last_child { "    " } else { "│   " };
 
             result.push_str(prefix);
             result.push_str(connector);
-            result.push_str(&self.format_tree_node(child, &format!("{}{}", prefix, child_prefix)));
-        }
-
-        result
-    }
-
-    /// Format a child node and its descendants
-    fn format_tree_node(&self, node: &TreeNode, prefix: &str) -> String {
-        let mut result = String::new();
-
-        // Add node name and description
-        result.push_str(&node.name);
-        if let Some(ref desc) = node.description {
-            result.push_str(" - ");
-            result.push_str(desc);
-        }
-        result.push('\n');
-
-        // Add children
-        let child_count = node.children.len();
-        for (i, child) in node.children.iter().enumerate() {
-            let is_last_child = i == child_count - 1;
-            let connector = if is_last_child { "└── " } else { "├── " };
-            let child_prefix = if is_last_child { "    " } else { "│   " };
-
-            result.push_str(prefix);
-            result.push_str(connector);
-            result.push_str(&self.format_tree_node(child, &format!("{}{}", prefix, child_prefix)));
+            result.push_str(&format_tree_node(
+                child,
+                &format!("{}{}", prefix, child_prefix),
+            ));
         }
 
         result
@@ -343,6 +329,40 @@ impl<FS: FileSystem> Workspace<FS> {
         let tree = self.build_tree(root_path)?;
         Ok(self.format_tree(&tree, "").trim_end().to_string())
     }
+}
+
+/// Format a child node and its descendants (standalone helper function)
+fn format_tree_node(node: &TreeNode, prefix: &str) -> String {
+    let mut result = String::new();
+
+    // Add node name and description
+    result.push_str(&node.name);
+    if let Some(ref desc) = node.description {
+        result.push_str(" - ");
+        result.push_str(desc);
+    }
+    result.push('\n');
+
+    // Add children
+    let child_count = node.children.len();
+    for (i, child) in node.children.iter().enumerate() {
+        let is_last_child = i == child_count - 1;
+        let connector = if is_last_child {
+            "└── "
+        } else {
+            "├── "
+        };
+        let child_prefix = if is_last_child { "    " } else { "│   " };
+
+        result.push_str(prefix);
+        result.push_str(connector);
+        result.push_str(&format_tree_node(
+            child,
+            &format!("{}{}", prefix, child_prefix),
+        ));
+    }
+
+    result
 }
 
 #[cfg(test)]

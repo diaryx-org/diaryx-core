@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 use crate::error::{DiaryxError, Result};
 
@@ -54,8 +54,7 @@ impl Config {
 
     /// Save config to file
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()
-            .ok_or(DiaryxError::NoConfigDir)?;
+        let path = Self::config_path().ok_or(DiaryxError::NoConfigDir)?;
 
         // Create config directory if it doesn't exist
         if let Some(parent) = path.parent() {
