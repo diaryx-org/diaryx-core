@@ -2,7 +2,7 @@
 name = "diaryx_core"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.76"
+rust-version = "1.82"
 description = "A tool to manage markdown files with YAML frontmatter"
 license = "PolyForm Shield License 1.0.0"
 repository = "https://github.com/diaryx-org/diaryx-core"
