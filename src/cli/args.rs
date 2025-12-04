@@ -51,10 +51,11 @@ pub enum Commands {
     /// Open yesterday's entry in your editor
     Yesterday,
 
-    /// Open an entry for a specific date
+    /// Open an entry in your editor
     Open {
-        /// Date to open (e.g., "2024-01-15", "today", "yesterday", "last friday")
-        date: String,
+        /// Path or date to open (supports dates, fuzzy matching, globs, directories)
+        /// Examples: "today", "README", "*.md", ".", "2024-01-15"
+        path: String,
     },
 
     /// Show current configuration

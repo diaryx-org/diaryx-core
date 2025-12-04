@@ -45,8 +45,8 @@ pub fn run_cli() {
             entry::handle_yesterday(&app);
         }
 
-        Commands::Open { date } => {
-            entry::handle_open(&app, &date);
+        Commands::Open { path } => {
+            entry::handle_open(&app, &path);
         }
 
         Commands::Config => {
