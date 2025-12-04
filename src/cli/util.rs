@@ -49,7 +49,7 @@ pub fn resolve_paths(path: &str, config: &Config, app: &DiaryxApp<RealFileSystem
             Ok(paths) => {
                 let mut result: Vec<PathBuf> = paths
                     .filter_map(|p| p.ok())
-                    .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
                     .collect();
                 result.sort();
                 result
@@ -82,7 +82,7 @@ pub fn format_value(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Sequence(items) => {
-            let items_str: Vec<String> = items.iter().map(|v| format_value(v)).collect();
+            let items_str: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", items_str.join(", "))
         }
         _ => serde_yaml::to_string(value)
