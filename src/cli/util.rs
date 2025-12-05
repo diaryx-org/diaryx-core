@@ -54,9 +54,7 @@ pub fn rename_file_with_refs(
     // Calculate old and new relative paths from parent's perspective
     let (old_relative, new_relative) = if let Some(ref parent) = parent_path {
         let parent_canonical = parent.canonicalize().unwrap_or_else(|_| parent.clone());
-        let parent_dir = parent_canonical
-            .parent()
-            .unwrap_or(&parent_canonical);
+        let parent_dir = parent_canonical.parent().unwrap_or(&parent_canonical);
 
         let old_rel = pathdiff::diff_paths(&source_canonical, parent_dir)
             .map(|p| p.to_string_lossy().to_string())
@@ -73,9 +71,8 @@ pub fn rename_file_with_refs(
             let dest_parent_canonical = dest_parent
                 .canonicalize()
                 .unwrap_or_else(|_| dest_parent.to_path_buf());
-            let dest_canonical = dest_parent_canonical.join(
-                dest_path.file_name().unwrap_or_default()
-            );
+            let dest_canonical =
+                dest_parent_canonical.join(dest_path.file_name().unwrap_or_default());
             pathdiff::diff_paths(&dest_canonical, parent_dir)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| {
@@ -161,9 +158,11 @@ pub fn rename_file_with_refs(
                     }
                 }
                 if updated {
-                    if let Err(e) =
-                        app.set_frontmatter_property(&parent_str, "contents", Value::Sequence(items))
-                    {
+                    if let Err(e) = app.set_frontmatter_property(
+                        &parent_str,
+                        "contents",
+                        Value::Sequence(items),
+                    ) {
                         eprintln!("⚠ Error updating parent contents: {}", e);
                     } else {
                         println!(
@@ -317,7 +316,10 @@ pub fn is_glob_pattern(path: &str) -> bool {
 /// - Literal paths are returned as-is
 pub fn resolve_paths(path: &str, config: &Config, app: &DiaryxApp<RealFileSystem>) -> Vec<PathBuf> {
     // Check for title: or t: prefix
-    if let Some(title_query) = path.strip_prefix("title:").or_else(|| path.strip_prefix("t:")) {
+    if let Some(title_query) = path
+        .strip_prefix("title:")
+        .or_else(|| path.strip_prefix("t:"))
+    {
         return match_files_by_title(title_query);
     }
 
@@ -354,7 +356,10 @@ pub fn resolve_paths(path: &str, config: &Config, app: &DiaryxApp<RealFileSystem
 
         // If path doesn't exist and doesn't look like a date, try fuzzy matching
         // (date resolution would have returned a path in daily_entry_dir)
-        if !resolved.starts_with(config.daily_entry_dir()) || path.contains('/') || path.contains('\\') {
+        if !resolved.starts_with(config.daily_entry_dir())
+            || path.contains('/')
+            || path.contains('\\')
+        {
             // This was likely meant as a literal path that doesn't exist
             // Try fuzzy matching in current directory
             if let Some(matches) = fuzzy_match_files(path) {

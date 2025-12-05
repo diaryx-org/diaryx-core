@@ -48,7 +48,15 @@ pub fn handle_workspace_command(
                 if let Some(index_name) = new_index {
                     // Create new index and add files to it
                     handle_add_with_new_index(
-                        app, cfg, ws, &current_dir, &parent_or_child, child, &index_name, yes, dry_run,
+                        app,
+                        cfg,
+                        ws,
+                        &current_dir,
+                        &parent_or_child,
+                        child,
+                        &index_name,
+                        yes,
+                        dry_run,
                     );
                 } else {
                     let (parent, child_pattern) =
@@ -207,13 +215,20 @@ fn handle_mv(
             } else {
                 format!("{}.md", index_name)
             };
-            let index_path = dest_path.parent()
+            let index_path = dest_path
+                .parent()
                 .map(|p| p.join(&index_filename))
                 .unwrap_or_else(|| PathBuf::from(&index_filename));
             if index_path.exists() {
-                println!("Would set part_of to existing index '{}'", index_path.display());
+                println!(
+                    "Would set part_of to existing index '{}'",
+                    index_path.display()
+                );
             } else {
-                println!("Would create new index '{}' and set as parent", index_path.display());
+                println!(
+                    "Would create new index '{}' and set as parent",
+                    index_path.display()
+                );
             }
         }
     }
@@ -227,7 +242,7 @@ fn set_new_index_as_parent(
     index_name: &str,
 ) {
     let file_dir = file_path.parent().unwrap_or(Path::new("."));
-    
+
     // Create index filename
     let index_filename = if index_name.ends_with(".md") {
         index_name.to_string()
@@ -240,9 +255,7 @@ fn set_new_index_as_parent(
     // Check if index exists, if not create it
     if !index_path.exists() {
         // Create title from index name
-        let title = index_name
-            .trim_end_matches(".md")
-            .replace(['_', '-'], " ");
+        let title = index_name.trim_end_matches(".md").replace(['_', '-'], " ");
         let title = title
             .split_whitespace()
             .map(|word| {
@@ -256,11 +269,9 @@ fn set_new_index_as_parent(
             .join(" ");
 
         // Create the index with title and empty contents
-        if let Err(e) = app.set_frontmatter_property(
-            &index_str,
-            "title",
-            serde_yaml::Value::String(title),
-        ) {
+        if let Err(e) =
+            app.set_frontmatter_property(&index_str, "title", serde_yaml::Value::String(title))
+        {
             eprintln!("✗ Error creating index file: {}", e);
             return;
         }
@@ -290,7 +301,7 @@ fn set_new_index_as_parent(
                 // Add new index to parent's contents
                 let parent_str = parent_index.to_string_lossy();
                 let relative_index = calculate_relative_path(&parent_index, &index_path);
-                
+
                 if let Ok(Some(serde_yaml::Value::Sequence(mut items))) =
                     app.get_frontmatter_property(&parent_str, "contents")
                 {
@@ -302,7 +313,11 @@ fn set_new_index_as_parent(
                     ) {
                         eprintln!("⚠ Error updating parent contents: {}", e);
                     } else {
-                        println!("✓ Added '{}' to parent '{}'", relative_index, parent_index.display());
+                        println!(
+                            "✓ Added '{}' to parent '{}'",
+                            relative_index,
+                            parent_index.display()
+                        );
                     }
                 }
             }
@@ -326,7 +341,11 @@ fn set_new_index_as_parent(
                     eprintln!("✗ Error updating index contents: {}", e);
                     return;
                 }
-                println!("✓ Added '{}' to index '{}'", relative_file, index_path.display());
+                println!(
+                    "✓ Added '{}' to index '{}'",
+                    relative_file,
+                    index_path.display()
+                );
             }
         }
         Ok(None) => {
@@ -339,7 +358,11 @@ fn set_new_index_as_parent(
                 eprintln!("✗ Error creating index contents: {}", e);
                 return;
             }
-            println!("✓ Added '{}' to index '{}'", relative_file, index_path.display());
+            println!(
+                "✓ Added '{}' to index '{}'",
+                relative_file,
+                index_path.display()
+            );
         }
         _ => {
             eprintln!("✗ Index contents is not a list");
@@ -589,7 +612,9 @@ fn handle_path(
     } else if let Ok(Some(detected)) = ws.detect_workspace(current_dir) {
         Some(detected)
     } else if let Some(ref cfg) = config {
-        ws.find_root_index_in_dir(&cfg.default_workspace).ok().flatten()
+        ws.find_root_index_in_dir(&cfg.default_workspace)
+            .ok()
+            .flatten()
     } else {
         None
     };
@@ -662,7 +687,10 @@ fn handle_add_with_new_index(
 
     if index_path.exists() {
         eprintln!("✗ Index file already exists: {}", index_path.display());
-        eprintln!("  Use 'diaryx w add {}' to add files to it", index_path.display());
+        eprintln!(
+            "  Use 'diaryx w add {}' to add files to it",
+            index_path.display()
+        );
         return;
     }
 
@@ -701,7 +729,11 @@ fn handle_add_with_new_index(
 
     // Confirm creation
     if !yes {
-        println!("Create new index '{}' with {} file(s)?", index_path.display(), all_files.len());
+        println!(
+            "Create new index '{}' with {} file(s)?",
+            index_path.display(),
+            all_files.len()
+        );
         match prompt_confirm("Proceed?") {
             ConfirmResult::Yes | ConfirmResult::All => {}
             _ => {
@@ -738,7 +770,7 @@ fn handle_add_with_new_index(
 
     // Create the index file
     let index_str = index_path.to_string_lossy();
-    
+
     // First create with title
     if let Err(e) = app.set_frontmatter_property(
         &index_str,
@@ -775,7 +807,7 @@ fn handle_add_with_new_index(
         // Add new index to parent's contents
         let parent_str = parent.to_string_lossy();
         let relative_index = calculate_relative_path(parent, &index_path);
-        
+
         match app.get_frontmatter_property(&parent_str, "contents") {
             Ok(Some(serde_yaml::Value::Sequence(mut items))) => {
                 items.push(serde_yaml::Value::String(relative_index.clone()));
@@ -786,7 +818,11 @@ fn handle_add_with_new_index(
                 ) {
                     eprintln!("⚠ Error updating parent contents: {}", e);
                 } else {
-                    println!("✓ Added '{}' to parent '{}'", relative_index, parent.display());
+                    println!(
+                        "✓ Added '{}' to parent '{}'",
+                        relative_index,
+                        parent.display()
+                    );
                 }
             }
             Ok(None) => {
@@ -798,7 +834,11 @@ fn handle_add_with_new_index(
                 ) {
                     eprintln!("⚠ Error creating parent contents: {}", e);
                 } else {
-                    println!("✓ Added '{}' to parent '{}'", relative_index, parent.display());
+                    println!(
+                        "✓ Added '{}' to parent '{}'",
+                        relative_index,
+                        parent.display()
+                    );
                 }
             }
             _ => {}
@@ -809,19 +849,27 @@ fn handle_add_with_new_index(
     for file_path in &all_files {
         let file_str = file_path.to_string_lossy();
         let relative_to_index = calculate_relative_path(file_path, &index_path);
-        
+
         if let Err(e) = app.set_frontmatter_property(
             &file_str,
             "part_of",
             serde_yaml::Value::String(relative_to_index),
         ) {
-            eprintln!("⚠ Error setting part_of in '{}': {}", file_path.display(), e);
+            eprintln!(
+                "⚠ Error setting part_of in '{}': {}",
+                file_path.display(),
+                e
+            );
         } else {
             println!("✓ Set part_of in '{}'", file_path.display());
         }
     }
 
-    println!("✓ Added {} file(s) to '{}'", all_files.len(), index_path.display());
+    println!(
+        "✓ Added {} file(s) to '{}'",
+        all_files.len(),
+        index_path.display()
+    );
 }
 
 /// Handle the 'workspace add' command
@@ -903,7 +951,11 @@ fn handle_add(
 
         // Confirm if multiple files and not auto-confirming
         if multiple && !confirm_all {
-            println!("Add '{}' to '{}'?", child_path.display(), parent_path.display());
+            println!(
+                "Add '{}' to '{}'?",
+                child_path.display(),
+                parent_path.display()
+            );
             match prompt_confirm("Proceed?") {
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => {
@@ -921,7 +973,13 @@ fn handle_add(
         }
 
         // Add single child
-        add_single_child(app, parent_path, child_path, &relative_child, &relative_parent);
+        add_single_child(
+            app,
+            parent_path,
+            child_path,
+            &relative_child,
+            &relative_parent,
+        );
     }
 }
 
@@ -1246,4 +1304,3 @@ fn handle_remove(
     }
     println!("✓ Removed part_of from '{}'", child_path.display());
 }
-

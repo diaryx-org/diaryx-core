@@ -98,7 +98,10 @@ impl Config {
     }
 
     /// Initialize config with user-provided values including daily folder
-    pub fn init_with_options(default_workspace: PathBuf, daily_entry_folder: Option<String>) -> Result<Self> {
+    pub fn init_with_options(
+        default_workspace: PathBuf,
+        daily_entry_folder: Option<String>,
+    ) -> Result<Self> {
         let config = Config {
             default_workspace,
             daily_entry_folder,

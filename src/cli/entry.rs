@@ -127,10 +127,16 @@ pub fn handle_config() {
     match Config::load() {
         Ok(config) => {
             println!("Current configuration:");
-            println!("  Default workspace: {}", config.default_workspace.display());
+            println!(
+                "  Default workspace: {}",
+                config.default_workspace.display()
+            );
             println!(
                 "  Daily entry folder: {}",
-                config.daily_entry_folder.as_deref().unwrap_or("(workspace root)")
+                config
+                    .daily_entry_folder
+                    .as_deref()
+                    .unwrap_or("(workspace root)")
             );
             println!(
                 "  Editor: {}",

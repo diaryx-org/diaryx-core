@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "diaryx")]
+#[command(version)]
 #[command(about = "A tool to manage markdown files with YAML frontmatter", long_about = None)]
 pub struct Cli {
     /// Override workspace location

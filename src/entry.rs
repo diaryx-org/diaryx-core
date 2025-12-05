@@ -63,7 +63,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         path: &str,
     ) -> Result<(IndexMap<String, Value>, String)> {
         let path_buf = PathBuf::from(path);
-        
+
         // Try to read the file, if it doesn't exist, return empty frontmatter and body
         let content = match self.fs.read_to_string(std::path::Path::new(path)) {
             Ok(c) => c,
@@ -88,9 +88,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
 
         // Find the closing delimiter
         let rest = &content[4..]; // Skip first "---\n"
-        let end_idx = rest
-            .find("\n---\n")
-            .or_else(|| rest.find("\n---\r\n"));
+        let end_idx = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n"));
 
         match end_idx {
             Some(idx) => {
@@ -98,8 +96,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
                 let body = &rest[idx + 5..]; // Skip "\n---\n"
 
                 // Parse YAML frontmatter into IndexMap to preserve order
-                let frontmatter: IndexMap<String, Value> =
-                    serde_yaml::from_str(frontmatter_str)?;
+                let frontmatter: IndexMap<String, Value> = serde_yaml::from_str(frontmatter_str)?;
 
                 Ok((frontmatter, body.to_string()))
             }

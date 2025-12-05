@@ -5,7 +5,9 @@ use diaryx_core::fs::RealFileSystem;
 use serde_yaml::Value;
 use std::path::PathBuf;
 
-use crate::cli::util::{load_config, rename_file_with_refs, resolve_paths, ConfirmResult, prompt_confirm};
+use crate::cli::util::{
+    load_config, prompt_confirm, rename_file_with_refs, resolve_paths, ConfirmResult,
+};
 
 /// Convert a filename (without extension) to a human-readable title
 /// Replaces underscores and hyphens with spaces, applies title case
@@ -17,9 +19,7 @@ fn filename_to_title(filename: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
-                }
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
             }
         })
         .collect::<Vec<_>>()
