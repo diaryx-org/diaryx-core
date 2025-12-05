@@ -5,7 +5,7 @@ use crate::fs::FileSystem;
 use chrono::NaiveDate;
 use indexmap::IndexMap;
 use serde_yaml::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct DiaryxApp<FS: FileSystem> {
     fs: FS,
@@ -277,25 +277,34 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         }
     }
 
-    /// Create a dated entry with proper frontmatter
+    /// Create a dated entry with proper frontmatter and index hierarchy
     pub fn create_dated_entry(&self, date: &NaiveDate, config: &Config) -> Result<PathBuf> {
-        let path = date_to_path(&config.daily_entry_dir(), date);
+        let daily_dir = config.daily_entry_dir();
+        let path = date_to_path(&daily_dir, date);
 
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Ensure the index hierarchy exists
+        self.ensure_daily_index_hierarchy(date, config)?;
+
         // Create entry with date-based frontmatter
         let date_str = date.format("%Y-%m-%d").to_string();
         let title = date.format("%B %d, %Y").to_string(); // e.g., "January 15, 2024"
+        let month_index_name = Self::month_index_filename(date);
 
         let content = format!(
-            "---\ndate: {}\ntitle: {}\n---\n\n# {}\n\n",
-            date_str, title, title
+            "---\ndate: {}\ntitle: {}\npart_of: {}\n---\n\n# {}\n\n",
+            date_str, title, month_index_name, title
         );
 
         self.fs.create_new(&path, &content)?;
+
+        // Add entry to month index contents
+        let month_index_path = path.parent().unwrap().join(&month_index_name);
+        self.add_to_index_contents(&month_index_path, &format!("{}.md", date_str))?;
 
         Ok(path)
     }
@@ -312,5 +321,190 @@ impl<FS: FileSystem> DiaryxApp<FS> {
 
         // Create the entry (create_new will fail if file exists)
         self.create_dated_entry(date, config)
+    }
+
+    /// Ensure the daily index hierarchy exists for a given date
+    /// Creates: daily_index.md -> YYYY_index.md -> YYYY_month.md
+    /// Also connects daily_index.md to workspace root if daily_entry_folder is configured
+    fn ensure_daily_index_hierarchy(&self, date: &NaiveDate, config: &Config) -> Result<()> {
+        let daily_dir = config.daily_entry_dir();
+        let year = date.format("%Y").to_string();
+        let month = date.format("%m").to_string();
+
+        // Paths for each level
+        let daily_index_path = daily_dir.join("daily_index.md");
+        let year_dir = daily_dir.join(&year);
+        let year_index_path = year_dir.join(Self::year_index_filename(date));
+        let month_dir = year_dir.join(&month);
+        let month_index_path = month_dir.join(Self::month_index_filename(date));
+
+        // Create directories
+        std::fs::create_dir_all(&month_dir)?;
+
+        // 1. Ensure daily_index.md exists
+        let daily_index_created = !self.fs.exists(&daily_index_path);
+        if daily_index_created {
+            // Determine if we should link to workspace root
+            let part_of = if config.daily_entry_folder.is_some() {
+                // Daily folder is configured, try to link to workspace root
+                self.find_workspace_root_relative(&daily_dir)
+            } else {
+                None
+            };
+            self.create_daily_index(&daily_index_path, part_of.as_deref())?;
+
+            // If we have a workspace root, add daily_index to its contents
+            if let Some(ref root_rel) = part_of {
+                let workspace_root = daily_dir.join(root_rel);
+                if self.fs.exists(&workspace_root) {
+                    // Calculate relative path from workspace root to daily_index
+                    if let Some(daily_folder) = &config.daily_entry_folder {
+                        let daily_index_rel = format!("{}/daily_index.md", daily_folder);
+                        self.add_to_index_contents(&workspace_root, &daily_index_rel)?;
+                    }
+                }
+            }
+        }
+
+        // 2. Ensure year index exists
+        if !self.fs.exists(&year_index_path) {
+            self.create_year_index(&year_index_path, date)?;
+            // Add year index to daily index contents
+            let year_index_rel = format!("{}/{}", year, Self::year_index_filename(date));
+            self.add_to_index_contents(&daily_index_path, &year_index_rel)?;
+        }
+
+        // 3. Ensure month index exists
+        if !self.fs.exists(&month_index_path) {
+            self.create_month_index(&month_index_path, date)?;
+            // Add month index to year index contents
+            let month_index_rel = format!("{}/{}", month, Self::month_index_filename(date));
+            self.add_to_index_contents(&year_index_path, &month_index_rel)?;
+        }
+
+        Ok(())
+    }
+
+    /// Find the workspace root index relative to a directory
+    fn find_workspace_root_relative(&self, from_dir: &Path) -> Option<String> {
+        // Look for README.md in parent directory (workspace root)
+        let parent = from_dir.parent()?;
+        let readme_path = parent.join("README.md");
+
+        if self.fs.exists(&readme_path) {
+            // Check if it's actually an index (has contents property)
+            let readme_str = readme_path.to_string_lossy();
+            if let Ok(Some(_)) = self.get_frontmatter_property(&readme_str, "contents") {
+                return Some("../README.md".to_string());
+            }
+            // Even without contents, if it exists we can link to it
+            return Some("../README.md".to_string());
+        }
+
+        None
+    }
+
+    /// Create the root daily index file
+    fn create_daily_index(&self, path: &Path, part_of: Option<&str>) -> Result<()> {
+        let part_of_line = match part_of {
+            Some(p) => format!("part_of: {}\n", p),
+            None => String::new(),
+        };
+
+        let content = format!(
+            "---\n\
+            title: Daily Entries\n\
+            {}contents: []\n\
+            ---\n\n\
+            # Daily Entries\n\n\
+            This index contains all daily journal entries organized by year and month.\n",
+            part_of_line
+        );
+
+        self.fs.write_file(path, &content)?;
+        Ok(())
+    }
+
+    /// Create a year index file
+    fn create_year_index(&self, path: &Path, date: &NaiveDate) -> Result<()> {
+        let year = date.format("%Y").to_string();
+        let content = format!(
+            "---\n\
+            title: {year}\n\
+            part_of: ../daily_index.md\n\
+            contents: []\n\
+            ---\n\n\
+            # {year}\n\n\
+            Daily entries for {year}.\n"
+        );
+
+        self.fs.write_file(path, &content)?;
+        Ok(())
+    }
+
+    /// Create a month index file
+    fn create_month_index(&self, path: &Path, date: &NaiveDate) -> Result<()> {
+        let year = date.format("%Y").to_string();
+        let month_name = date.format("%B").to_string(); // e.g., "January"
+        let title = format!("{} {}", month_name, year);
+        let year_index_name = Self::year_index_filename(date);
+
+        let content = format!(
+            "---\n\
+            title: {title}\n\
+            part_of: ../{year_index_name}\n\
+            contents: []\n\
+            ---\n\n\
+            # {title}\n\n\
+            Daily entries for {title}.\n"
+        );
+
+        self.fs.write_file(path, &content)?;
+        Ok(())
+    }
+
+    /// Add an entry to an index's contents list
+    fn add_to_index_contents(&self, index_path: &Path, entry: &str) -> Result<()> {
+        let index_str = index_path.to_string_lossy();
+
+        match self.get_frontmatter_property(&index_str, "contents") {
+            Ok(Some(Value::Sequence(mut items))) => {
+                let entry_value = Value::String(entry.to_string());
+                if !items.contains(&entry_value) {
+                    items.push(entry_value);
+                    // Sort contents for consistent ordering
+                    items.sort_by(|a, b| {
+                        let a_str = a.as_str().unwrap_or("");
+                        let b_str = b.as_str().unwrap_or("");
+                        a_str.cmp(b_str)
+                    });
+                    self.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))?;
+                }
+            }
+            Ok(None) => {
+                // Create contents with just this entry
+                let items = vec![Value::String(entry.to_string())];
+                self.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))?;
+            }
+            _ => {
+                // Contents exists but isn't a sequence, or error reading - skip
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate the year index filename (e.g., "2025_index.md")
+    fn year_index_filename(date: &NaiveDate) -> String {
+        format!("{}_index.md", date.format("%Y"))
+    }
+
+    /// Generate the month index filename (e.g., "2025_january.md")
+    fn month_index_filename(date: &NaiveDate) -> String {
+        format!(
+            "{}_{}.md",
+            date.format("%Y"),
+            date.format("%B").to_string().to_lowercase()
+        )
     }
 }
