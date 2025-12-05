@@ -1,6 +1,7 @@
 //! CLI module - command-line interface for diaryx
 
 mod args;
+mod content;
 mod entry;
 mod normalize;
 mod property;
@@ -90,6 +91,10 @@ pub fn run_cli() {
 
         Commands::Uninstall { yes } => {
             handle_uninstall(yes);
+        }
+
+        Commands::Content { operation } => {
+            content::handle_content_command(&app, operation);
         }
     }
 }

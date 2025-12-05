@@ -198,6 +198,54 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         }
     }
 
+    // ==================== Content Methods ====================
+
+    /// Get the content (body) of a file, excluding frontmatter
+    pub fn get_content(&self, path: &str) -> Result<String> {
+        let (_, body) = self.parse_file_or_create_frontmatter(path)?;
+        Ok(body)
+    }
+
+    /// Set the content (body) of a file, preserving frontmatter
+    /// Creates frontmatter if none exists
+    pub fn set_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, _) = self.parse_file_or_create_frontmatter(path)?;
+        self.reconstruct_file(path, &frontmatter, content)
+    }
+
+    /// Clear the content (body) of a file, preserving frontmatter
+    pub fn clear_content(&self, path: &str) -> Result<()> {
+        self.set_content(path, "")
+    }
+
+    /// Append content to the end of a file's body
+    pub fn append_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
+        let new_body = if body.is_empty() {
+            content.to_string()
+        } else if body.ends_with('\n') {
+            format!("{}{}", body, content)
+        } else {
+            format!("{}\n{}", body, content)
+        };
+        self.reconstruct_file(path, &frontmatter, &new_body)
+    }
+
+    /// Prepend content to the beginning of a file's body
+    pub fn prepend_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
+        let new_body = if body.is_empty() {
+            content.to_string()
+        } else if content.ends_with('\n') {
+            format!("{}{}", content, body)
+        } else {
+            format!("{}\n{}", content, body)
+        };
+        self.reconstruct_file(path, &frontmatter, &new_body)
+    }
+
+    // ==================== Frontmatter Sorting ====================
+
     /// Sort frontmatter keys according to a pattern
     /// Pattern is comma-separated keys, with "*" meaning "rest alphabetically"
     /// Example: "title,description,*" puts title first, description second, rest alphabetically

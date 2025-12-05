@@ -131,6 +131,90 @@ pub enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+
+    /// Manipulate file content (body text after frontmatter)
+    #[command(alias = "c")]
+    Content {
+        #[command(subcommand)]
+        operation: ContentCommands,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ContentCommands {
+    /// Get the content (body) of a file
+    #[command(alias = "g")]
+    Get {
+        /// Path to the entry file (supports fuzzy matching, dates, globs)
+        path: String,
+    },
+
+    /// Set/replace the content (body) of a file
+    #[command(alias = "s")]
+    Set {
+        /// Path to the entry file (supports fuzzy matching, dates)
+        path: String,
+
+        /// Content to set (use --file to read from file instead)
+        content: Option<String>,
+
+        /// Read content from a file
+        #[arg(short, long, value_name = "FILE")]
+        file: Option<PathBuf>,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Clear the content (body) of a file, keeping frontmatter
+    Clear {
+        /// Path to the entry file (supports fuzzy matching, dates)
+        path: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Append content to the end of a file's body
+    #[command(alias = "a")]
+    Append {
+        /// Path to the entry file (supports fuzzy matching, dates)
+        path: String,
+
+        /// Content to append (use --file to read from file instead)
+        content: Option<String>,
+
+        /// Read content from a file
+        #[arg(short, long, value_name = "FILE")]
+        file: Option<PathBuf>,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Prepend content to the beginning of a file's body
+    Prepend {
+        /// Path to the entry file (supports fuzzy matching, dates)
+        path: String,
+
+        /// Content to prepend (use --file to read from file instead)
+        content: Option<String>,
+
+        /// Read content from a file
+        #[arg(short, long, value_name = "FILE")]
+        file: Option<PathBuf>,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
