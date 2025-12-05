@@ -41,11 +41,23 @@ pub fn handle_workspace_command(
             parent_or_child,
             child,
             new_index,
+            recursive,
             yes,
             dry_run,
         } => {
             if let Some(ref cfg) = config {
-                if let Some(index_name) = new_index {
+                if recursive {
+                    // Recursive add - create indexes for directory hierarchy
+                    handle_add_recursive(
+                        app,
+                        cfg,
+                        ws,
+                        &current_dir,
+                        &parent_or_child,
+                        yes,
+                        dry_run,
+                    );
+                } else if let Some(index_name) = new_index {
                     // Create new index and add files to it
                     handle_add_with_new_index(
                         app,
@@ -631,6 +643,439 @@ fn handle_path(
             eprintln!("✗ No workspace found");
             eprintln!("  Run 'diaryx init' or 'diaryx workspace init' first");
         }
+    }
+}
+
+/// Handle the 'workspace add --recursive' command
+/// Recursively creates indexes for a directory hierarchy and connects them
+fn handle_add_recursive(
+    app: &DiaryxApp<RealFileSystem>,
+    config: &Config,
+    ws: &Workspace<RealFileSystem>,
+    current_dir: &Path,
+    dir_path: &str,
+    yes: bool,
+    dry_run: bool,
+) {
+    use crate::cli::util::{prompt_confirm, ConfirmResult};
+
+    // Resolve the directory path
+    let path = Path::new(dir_path);
+    let dir = if path.is_absolute() || path.exists() {
+        PathBuf::from(dir_path)
+    } else {
+        current_dir.join(dir_path)
+    };
+
+    if !dir.exists() {
+        eprintln!("✗ Directory does not exist: {}", dir.display());
+        return;
+    }
+
+    if !dir.is_dir() {
+        eprintln!("✗ Path is not a directory: {}", dir.display());
+        eprintln!("  Use 'diaryx w add' without --recursive for files");
+        return;
+    }
+
+    // Collect the directory structure
+    let mut plan = RecursiveAddPlan::new();
+    build_recursive_plan(&dir, &mut plan, ws);
+
+    if plan.directories.is_empty() {
+        eprintln!("✗ No directories to process");
+        return;
+    }
+
+    // Show the plan
+    println!("Recursive add plan for '{}':", dir.display());
+    println!();
+
+    let mut total_indexes = 0;
+    let mut total_files = 0;
+
+    for dir_plan in &plan.directories {
+        let action = if dir_plan.index_exists {
+            "use existing"
+        } else {
+            total_indexes += 1;
+            "create"
+        };
+        println!(
+            "  {} ({} index): {}",
+            dir_plan.dir.display(),
+            action,
+            dir_plan
+                .index_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        for file in &dir_plan.files {
+            println!(
+                "    + {}",
+                file.file_name().unwrap_or_default().to_string_lossy()
+            );
+            total_files += 1;
+        }
+        for subdir in &dir_plan.subdirs {
+            println!(
+                "    → {}",
+                subdir.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "Summary: {} new index(es), {} file(s) to add",
+        total_indexes, total_files
+    );
+
+    if dry_run {
+        println!();
+        println!("Dry run - no changes made");
+        return;
+    }
+
+    // Confirm
+    if !yes {
+        println!();
+        match prompt_confirm("Proceed?") {
+            ConfirmResult::Yes | ConfirmResult::All => {}
+            _ => {
+                println!("Aborted");
+                return;
+            }
+        }
+    }
+
+    // Execute the plan (process directories from deepest to shallowest)
+    // This ensures child indexes exist before we link them to parents
+    let mut sorted_dirs = plan.directories.clone();
+    sorted_dirs.sort_by(|a, b| {
+        let depth_a = a.dir.components().count();
+        let depth_b = b.dir.components().count();
+        depth_b.cmp(&depth_a) // Deepest first
+    });
+
+    for dir_plan in &sorted_dirs {
+        execute_dir_plan(app, config, ws, dir_plan);
+    }
+
+    // Connect root index to workspace if applicable
+    if let Some(root_plan) = plan.directories.first() {
+        // Find parent index for the root directory
+        if let Some(parent_dir) = root_plan.dir.parent() {
+            if let Ok(Some(parent_index)) = ws.find_any_index_in_dir(parent_dir) {
+                // Check if root index is already in parent's contents
+                let parent_str = parent_index.to_string_lossy();
+                let relative_root = calculate_relative_path(&parent_index, &root_plan.index_path);
+
+                let already_linked = match app.get_frontmatter_property(&parent_str, "contents") {
+                    Ok(Some(serde_yaml::Value::Sequence(items))) => items.iter().any(|item| {
+                        if let serde_yaml::Value::String(s) = item {
+                            s == &relative_root
+                        } else {
+                            false
+                        }
+                    }),
+                    _ => false,
+                };
+
+                if !already_linked {
+                    // Add to parent's contents
+                    match app.get_frontmatter_property(&parent_str, "contents") {
+                        Ok(Some(serde_yaml::Value::Sequence(mut items))) => {
+                            items.push(serde_yaml::Value::String(relative_root.clone()));
+                            if let Err(e) = app.set_frontmatter_property(
+                                &parent_str,
+                                "contents",
+                                serde_yaml::Value::Sequence(items),
+                            ) {
+                                eprintln!("⚠ Error updating parent contents: {}", e);
+                            } else {
+                                println!(
+                                    "✓ Added '{}' to workspace index '{}'",
+                                    relative_root,
+                                    parent_index.display()
+                                );
+                            }
+                        }
+                        Ok(None) | Ok(Some(_)) => {
+                            let items = vec![serde_yaml::Value::String(relative_root.clone())];
+                            if let Err(e) = app.set_frontmatter_property(
+                                &parent_str,
+                                "contents",
+                                serde_yaml::Value::Sequence(items),
+                            ) {
+                                eprintln!("⚠ Error creating parent contents: {}", e);
+                            } else {
+                                println!(
+                                    "✓ Added '{}' to workspace index '{}'",
+                                    relative_root,
+                                    parent_index.display()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("⚠ Error reading parent contents: {}", e);
+                        }
+                    }
+
+                    // Set part_of in root index
+                    let root_str = root_plan.index_path.to_string_lossy();
+                    let relative_parent =
+                        calculate_relative_path(&root_plan.index_path, &parent_index);
+                    if let Err(e) = app.set_frontmatter_property(
+                        &root_str,
+                        "part_of",
+                        serde_yaml::Value::String(relative_parent),
+                    ) {
+                        eprintln!("⚠ Error setting part_of in root index: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("✓ Recursive add complete");
+}
+
+/// Plan for a single directory in recursive add
+#[derive(Clone)]
+struct DirPlan {
+    dir: PathBuf,
+    index_path: PathBuf,
+    index_exists: bool,
+    files: Vec<PathBuf>,
+    subdirs: Vec<PathBuf>,
+}
+
+/// Overall plan for recursive add
+struct RecursiveAddPlan {
+    directories: Vec<DirPlan>,
+}
+
+impl RecursiveAddPlan {
+    fn new() -> Self {
+        Self {
+            directories: Vec::new(),
+        }
+    }
+}
+
+/// Build a plan for recursive directory processing
+fn build_recursive_plan(dir: &Path, plan: &mut RecursiveAddPlan, ws: &Workspace<RealFileSystem>) {
+    // Determine index path for this directory
+    let dir_name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| "index".into());
+    let index_filename = format!("{}_index.md", dir_name);
+    let index_path = dir.join(&index_filename);
+
+    // Check if an index already exists
+    let (final_index_path, index_exists) = match ws.find_any_index_in_dir(dir) {
+        Ok(Some(existing)) => (existing, true),
+        _ => (index_path, false),
+    };
+
+    // Collect files and subdirectories
+    let mut files = Vec::new();
+    let mut subdirs = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                subdirs.push(path);
+            } else if path.is_file()
+                && path.extension().is_some_and(|ext| ext == "md")
+                && path != final_index_path
+            {
+                files.push(path);
+            }
+        }
+    }
+
+    // Sort for consistent ordering
+    files.sort();
+    subdirs.sort();
+
+    // Add this directory to the plan
+    plan.directories.push(DirPlan {
+        dir: dir.to_path_buf(),
+        index_path: final_index_path,
+        index_exists,
+        files,
+        subdirs: subdirs.clone(),
+    });
+
+    // Recurse into subdirectories
+    for subdir in subdirs {
+        build_recursive_plan(&subdir, plan, ws);
+    }
+}
+
+/// Execute the plan for a single directory
+fn execute_dir_plan(
+    app: &DiaryxApp<RealFileSystem>,
+    _config: &Config,
+    ws: &Workspace<RealFileSystem>,
+    dir_plan: &DirPlan,
+) {
+    let index_str = dir_plan.index_path.to_string_lossy();
+
+    // Create index if it doesn't exist
+    if !dir_plan.index_exists {
+        let dir_name = dir_plan
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Index".to_string());
+
+        // Title case the directory name
+        let title = dir_name
+            .replace(['_', '-'], " ")
+            .split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Create with title
+        if let Err(e) = app.set_frontmatter_property(
+            &index_str,
+            "title",
+            serde_yaml::Value::String(title.clone()),
+        ) {
+            eprintln!(
+                "✗ Error creating index '{}': {}",
+                dir_plan.index_path.display(),
+                e
+            );
+            return;
+        }
+        println!("✓ Created index '{}'", dir_plan.index_path.display());
+    } else {
+        println!("✓ Using existing index '{}'", dir_plan.index_path.display());
+    }
+
+    // Build contents list
+    let mut contents: Vec<String> = Vec::new();
+
+    // Get existing contents if index existed
+    if dir_plan.index_exists {
+        if let Ok(Some(serde_yaml::Value::Sequence(items))) =
+            app.get_frontmatter_property(&index_str, "contents")
+        {
+            for item in items {
+                if let serde_yaml::Value::String(s) = item {
+                    contents.push(s);
+                }
+            }
+        }
+    }
+
+    // Add files
+    for file in &dir_plan.files {
+        let relative = calculate_relative_path(&dir_plan.index_path, file);
+        if !contents.contains(&relative) {
+            contents.push(relative.clone());
+
+            // Set part_of in the file
+            let file_str = file.to_string_lossy();
+            let relative_to_index = calculate_relative_path(file, &dir_plan.index_path);
+            if let Err(e) = app.set_frontmatter_property(
+                &file_str,
+                "part_of",
+                serde_yaml::Value::String(relative_to_index),
+            ) {
+                eprintln!("⚠ Error setting part_of in '{}': {}", file.display(), e);
+            }
+        }
+    }
+
+    // Add subdirectory indexes
+    for subdir in &dir_plan.subdirs {
+        // Find the index in the subdirectory
+        if let Ok(Some(subdir_index)) = ws.find_any_index_in_dir(subdir) {
+            let relative = calculate_relative_path(&dir_plan.index_path, &subdir_index);
+            if !contents.contains(&relative) {
+                contents.push(relative.clone());
+
+                // Set part_of in the subdirectory index
+                let subdir_str = subdir_index.to_string_lossy();
+                let relative_to_parent =
+                    calculate_relative_path(&subdir_index, &dir_plan.index_path);
+                if let Err(e) = app.set_frontmatter_property(
+                    &subdir_str,
+                    "part_of",
+                    serde_yaml::Value::String(relative_to_parent),
+                ) {
+                    eprintln!(
+                        "⚠ Error setting part_of in '{}': {}",
+                        subdir_index.display(),
+                        e
+                    );
+                }
+            }
+        } else {
+            // Subdirectory index should have been created - construct the expected path
+            let subdir_name = subdir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_else(|| "index".into());
+            let subdir_index = subdir.join(format!("{}_index.md", subdir_name));
+
+            if subdir_index.exists() {
+                let relative = calculate_relative_path(&dir_plan.index_path, &subdir_index);
+                if !contents.contains(&relative) {
+                    contents.push(relative.clone());
+
+                    // Set part_of in the subdirectory index
+                    let subdir_str = subdir_index.to_string_lossy();
+                    let relative_to_parent =
+                        calculate_relative_path(&subdir_index, &dir_plan.index_path);
+                    if let Err(e) = app.set_frontmatter_property(
+                        &subdir_str,
+                        "part_of",
+                        serde_yaml::Value::String(relative_to_parent),
+                    ) {
+                        eprintln!(
+                            "⚠ Error setting part_of in '{}': {}",
+                            subdir_index.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Update contents in index
+    let contents_yaml: Vec<serde_yaml::Value> = contents
+        .iter()
+        .map(|s| serde_yaml::Value::String(s.clone()))
+        .collect();
+
+    if let Err(e) = app.set_frontmatter_property(
+        &index_str,
+        "contents",
+        serde_yaml::Value::Sequence(contents_yaml),
+    ) {
+        eprintln!(
+            "✗ Error setting contents in '{}': {}",
+            dir_plan.index_path.display(),
+            e
+        );
     }
 }
 

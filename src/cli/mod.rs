@@ -141,7 +141,7 @@ fn handle_uninstall(yes: bool) {
             println!("✓ Diaryx has been uninstalled.");
             println!();
             println!("To reinstall, run:");
-            println!("  curl -fsSL https://raw.githubusercontent.com/diaryx-org/diaryx-core/main/install.sh | bash");
+            println!("  curl -fsSL https://raw.githubusercontent.com/diaryx-org/diaryx-core/refs/heads/master/install.sh | bash");
         }
         Err(e) => {
             eprintln!("✗ Failed to remove binary: {}", e);

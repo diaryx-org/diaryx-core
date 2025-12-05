@@ -398,6 +398,7 @@ pub enum WorkspaceCommands {
     /// Supports globs and multiple files (will skip the parent automatically)
     Add {
         /// Parent index file, or child file if only one argument (supports fuzzy matching, globs)
+        /// With --recursive, this should be a directory path
         parent_or_child: String,
 
         /// Child file(s) to add (optional if parent_or_child is the child, supports globs)
@@ -407,6 +408,11 @@ pub enum WorkspaceCommands {
         /// Example: --new-index docs_index creates docs_index.md as parent
         #[arg(long, value_name = "NAME")]
         new_index: Option<String>,
+
+        /// Recursively add all files in subdirectories, creating indexes for each
+        /// Each directory gets a <dirname>_index.md file
+        #[arg(short, long)]
+        recursive: bool,
 
         /// Skip confirmation prompts for multi-file operations
         #[arg(short = 'y', long)]
