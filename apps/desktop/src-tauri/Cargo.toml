@@ -1,0 +1,24 @@
+[package]
+name = "diaryx-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop application for Diaryx journal management"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+diaryx_core = { workspace = true, features = ["markdown"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

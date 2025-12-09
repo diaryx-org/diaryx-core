@@ -1,41 +1,22 @@
-[package]
-name = "diaryx_core"
+[workspace]
+resolver = "2"
+members = [
+    "crates/diaryx_core",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
 version = "0.3.3"
 edition = "2021"
-rust-version = "1.82"
-description = "A tool to manage markdown files with YAML frontmatter"
 license = "PolyForm Shield License 1.0.0"
 repository = "https://github.com/diaryx-org/diaryx-core"
-keywords = ["diary", "journal", "markdown", "frontmatter", "cli"]
-categories = ["command-line-utilities", "text-processing"]
 
-[[bin]]
-name = "diaryx"
-path = "src/main.rs"
-required-features = ["cli"]
+[workspace.dependencies]
+# Shared dependencies across workspace
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
 
-[dependencies]
-chrono = { version = "0.4.42", features = ["serde"]}
-chrono-english = "0.1"
-dirs = "6.0"
-glob = "0.3"
-indexmap = { version = "2.0", features = ["serde"] }
-pathdiff = "0.2"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_yaml = "0.9.34"
-toml = "0.9.8"
-
-# Optional dependencies
-clap = { version = "4.5", features = ["derive"], optional = true }
-comrak = { version = "0.48", optional = true }
-thiserror = "2.0.17"
-
-[features]
-# Enable CLI features (used by binary)
-cli = ["dep:clap", "markdown"]
-
-# Enable markdown-to-HTML conversion (for publish feature)
-markdown = ["dep:comrak"]
-
-# Default features for the library (no CLI dependencies)
-default = []
+# Internal crates
+diaryx_core = { path = "crates/diaryx_core" }
