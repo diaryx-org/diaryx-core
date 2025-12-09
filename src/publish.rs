@@ -328,7 +328,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             }
 
             if in_property {
-              if let Some(stripped) = trimmed.strip_prefix('-') {
+                if let Some(stripped) = trimmed.strip_prefix('-') {
                     let item = stripped.trim().trim_matches('"').trim_matches('\'');
                     if !item.is_empty() {
                         result.push(item.to_string());
@@ -424,7 +424,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             .unwrap_or(filename);
 
         // Convert snake_case or kebab-case to Title Case
-        stem.split(['_','-'])
+        stem.split(['_', '-'])
             .filter(|s| !s.is_empty())
             .map(|word| {
                 let mut chars: Vec<char> = word.chars().collect();
