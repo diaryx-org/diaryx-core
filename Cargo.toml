@@ -27,11 +27,12 @@ toml = "0.9.8"
 
 # Optional dependencies for CLI binary only
 clap = { version = "4.5", features = ["derive"], optional = true }
+comrak = { version = "0.48", optional = true }
 thiserror = "2.0.17"
 
 [features]
 # Enable CLI features (used by binary)
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:comrak"]
 
 # Default features for the library (no CLI dependencies)
 default = []

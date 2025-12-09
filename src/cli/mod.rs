@@ -6,6 +6,8 @@ mod entry;
 mod export;
 mod normalize;
 mod property;
+mod publish;
+mod search;
 mod sort;
 mod util;
 mod workspace;
@@ -122,6 +124,46 @@ pub fn run_cli() {
 
         Commands::Content { operation } => {
             content::handle_content_command(&app, operation);
+        }
+
+        Commands::Search {
+            pattern,
+            frontmatter,
+            property,
+            case_sensitive,
+            limit,
+            context,
+            count,
+        } => {
+            search::handle_search(
+                pattern,
+                cli.workspace,
+                frontmatter,
+                property,
+                case_sensitive,
+                limit,
+                context,
+                count,
+            );
+        }
+
+        Commands::Publish {
+            destination,
+            audience,
+            single_file,
+            title,
+            force,
+            dry_run,
+        } => {
+            publish::handle_publish(
+                destination,
+                cli.workspace,
+                audience,
+                single_file,
+                title,
+                force,
+                dry_run,
+            );
         }
     }
 }

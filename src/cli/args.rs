@@ -165,6 +165,64 @@ pub enum Commands {
         #[command(subcommand)]
         operation: ContentCommands,
     },
+
+    /// Search workspace files by content or frontmatter
+    #[command(alias = "s")]
+    Search {
+        /// Search pattern (text to find)
+        pattern: String,
+
+        /// Search in frontmatter instead of content
+        #[arg(short, long)]
+        frontmatter: bool,
+
+        /// Search a specific frontmatter property (implies --frontmatter)
+        #[arg(short, long)]
+        property: Option<String>,
+
+        /// Case-sensitive search
+        #[arg(short = 'S', long)]
+        case_sensitive: bool,
+
+        /// Maximum number of results to show
+        #[arg(short, long)]
+        limit: Option<usize>,
+
+        /// Lines of context around matches (default: 0)
+        #[arg(short, long, default_value = "0")]
+        context: usize,
+
+        /// Only show match counts per file
+        #[arg(long)]
+        count: bool,
+    },
+
+    /// Publish workspace as HTML for sharing
+    #[command(alias = "pub")]
+    Publish {
+        /// Destination path (directory for multi-file, file for single-file)
+        destination: PathBuf,
+
+        /// Target audience to publish for (filters files by audience property)
+        #[arg(short, long)]
+        audience: Option<String>,
+
+        /// Output as a single HTML file instead of multiple files
+        #[arg(long)]
+        single_file: bool,
+
+        /// Site title (defaults to workspace title)
+        #[arg(short, long)]
+        title: Option<String>,
+
+        /// Overwrite existing destination
+        #[arg(short, long)]
+        force: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
