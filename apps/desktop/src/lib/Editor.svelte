@@ -206,6 +206,21 @@
     }
   });
 
+  // Track previous content to detect external changes
+  let previousContent = content;
+
+  // Update editor content when the content prop changes (e.g., switching files)
+  $effect(() => {
+    if (editor && content !== previousContent) {
+      // Only update if the new content is different from what's currently in the editor
+      const currentEditorContent = turndownService.turndown(editor.getHTML());
+      if (content !== currentEditorContent) {
+        editor.commands.setContent(markdownToHtml(content));
+      }
+      previousContent = content;
+    }
+  });
+
   // Toolbar button handlers
   function toggleBold() {
     editor?.chain().focus().toggleBold().run();
