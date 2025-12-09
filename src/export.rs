@@ -380,7 +380,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
         // Optionally remove audience property
         if !options.keep_audience {
             if let Some(map) = frontmatter.as_mapping_mut() {
-                map.remove(&serde_yaml::Value::String("audience".to_string()));
+                map.remove(serde_yaml::Value::String("audience".to_string()));
             }
         }
 
@@ -414,7 +414,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
         // Remove audience property
         if let Some(map) = frontmatter.as_mapping_mut() {
             let had_audience = map
-                .remove(&serde_yaml::Value::String("audience".to_string()))
+                .remove(serde_yaml::Value::String("audience".to_string()))
                 .is_some();
 
             if !had_audience {

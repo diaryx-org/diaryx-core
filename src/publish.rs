@@ -11,7 +11,7 @@ use crate::fs::FileSystem;
 use crate::workspace::Workspace;
 
 /// Options for publishing
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct PublishOptions {
     /// Output as a single HTML file instead of multiple files
     pub single_file: bool,
@@ -21,17 +21,6 @@ pub struct PublishOptions {
     pub audience: Option<String>,
     /// Overwrite existing destination
     pub force: bool,
-}
-
-impl Default for PublishOptions {
-    fn default() -> Self {
-        Self {
-            single_file: false,
-            title: None,
-            audience: None,
-            force: false,
-        }
-    }
 }
 
 /// A navigation link
@@ -339,8 +328,8 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             }
 
             if in_property {
-                if trimmed.starts_with('-') {
-                    let item = trimmed[1..].trim().trim_matches('"').trim_matches('\'');
+              if let Some(stripped) = trimmed.strip_prefix('-') {
+                    let item = stripped.trim().trim_matches('"').trim_matches('\'');
                     if !item.is_empty() {
                         result.push(item.to_string());
                     }
@@ -366,7 +355,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         contents
             .into_iter()
-            .filter_map(|child_ref| {
+            .map(|child_ref| {
                 let child_path = current_dir
                     .map(|d| d.join(&child_ref))
                     .unwrap_or_else(|| PathBuf::from(&child_ref));
@@ -382,7 +371,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
                     .get_title_from_file(&child_path)
                     .unwrap_or_else(|| self.filename_to_title(&child_ref));
 
-                Some(NavLink { href, title })
+                NavLink { href, title }
             })
             .collect()
     }
@@ -435,7 +424,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             .unwrap_or(filename);
 
         // Convert snake_case or kebab-case to Title Case
-        stem.split(|c| c == '_' || c == '-')
+        stem.split(['_','-'])
             .filter(|s| !s.is_empty())
             .map(|word| {
                 let mut chars: Vec<char> = word.chars().collect();
