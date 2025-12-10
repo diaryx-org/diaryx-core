@@ -415,7 +415,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
 
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            self.fs.create_dir_all(parent)?;
         }
 
         // Ensure the index hierarchy exists
@@ -494,7 +494,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         let month_index_path = month_dir.join(Self::month_index_filename(date));
 
         // Create directories
-        std::fs::create_dir_all(&month_dir)?;
+        self.fs.create_dir_all(&month_dir)?;
 
         // 1. Ensure daily_index.md exists
         let daily_index_created = !self.fs.exists(&daily_index_path);
@@ -765,6 +765,16 @@ mod tests {
                 }
             }
             Ok(result)
+        }
+
+        fn create_dir_all(&self, _path: &Path) -> io::Result<()> {
+            // Mock implementation - directories are implicit
+            Ok(())
+        }
+
+        fn is_dir(&self, _path: &Path) -> bool {
+            // Mock implementation - assume any non-file path could be a directory
+            false
         }
     }
 

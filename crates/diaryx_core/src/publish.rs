@@ -76,6 +76,8 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Publish a workspace to HTML
+    /// Only available on native platforms (not WASM) since it writes to the filesystem
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn publish(
         &self,
         workspace_root: &Path,
@@ -473,6 +475,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Write multiple HTML files
+    #[cfg(not(target_arch = "wasm32"))]
     fn write_multi_file(
         &self,
         pages: &[PublishedPage],
@@ -480,7 +483,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
         options: &PublishOptions,
     ) -> Result<()> {
         // Create destination directory
-        std::fs::create_dir_all(destination)?;
+        self.fs.create_dir_all(destination)?;
 
         let site_title = options.title.clone().unwrap_or_else(|| {
             pages
@@ -492,17 +495,18 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
         for page in pages {
             let html = self.render_page(page, &site_title, false);
             let dest_path = destination.join(&page.dest_filename);
-            std::fs::write(&dest_path, html)?;
+            self.fs.write_file(&dest_path, &html)?;
         }
 
         // Write CSS file
         let css_path = destination.join("style.css");
-        std::fs::write(&css_path, Self::get_css())?;
+        self.fs.write_file(&css_path, Self::get_css())?;
 
         Ok(())
     }
 
     /// Write a single HTML file containing all pages
+    #[cfg(not(target_arch = "wasm32"))]
     fn write_single_file(
         &self,
         pages: &[PublishedPage],
@@ -520,10 +524,10 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         // Ensure parent directory exists
         if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)?;
+            self.fs.create_dir_all(parent)?;
         }
 
-        std::fs::write(destination, html)?;
+        self.fs.write_file(destination, &html)?;
 
         Ok(())
     }

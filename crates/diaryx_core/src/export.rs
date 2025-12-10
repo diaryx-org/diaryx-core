@@ -291,6 +291,8 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
     }
 
     /// Execute an export plan
+    /// Only available on native platforms (not WASM) since it writes to the filesystem
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn execute_export(
         &self,
         plan: &ExportPlan,
@@ -304,14 +306,14 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
         }
 
         // Create destination directory
-        std::fs::create_dir_all(&plan.destination)?;
+        self.workspace.fs_ref().create_dir_all(&plan.destination)?;
 
         let mut stats = ExportStats::default();
 
         for export_file in &plan.included {
             // Create parent directories if needed
             if let Some(parent) = export_file.dest_path.parent() {
-                std::fs::create_dir_all(parent)?;
+                self.workspace.fs_ref().create_dir_all(parent)?;
             }
 
             // Read source file
@@ -334,7 +336,9 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
             };
 
             // Write to destination
-            std::fs::write(&export_file.dest_path, processed_content)?;
+            self.workspace
+                .fs_ref()
+                .write_file(&export_file.dest_path, &processed_content)?;
             stats.files_exported += 1;
         }
 
@@ -519,6 +523,16 @@ mod tests {
 
         fn exists(&self, path: &Path) -> bool {
             self.files.borrow().contains_key(path)
+        }
+
+        fn create_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+            // Mock implementation - directories are implicit
+            Ok(())
+        }
+
+        fn is_dir(&self, _path: &Path) -> bool {
+            // Mock implementation
+            false
         }
     }
 

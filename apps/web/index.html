@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Diaryx - A modern journaling application" />
     <title>Diaryx</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -26,6 +27,10 @@
         color: #1a1a1a;
       }
 
+      #app {
+        height: 100%;
+      }
+
       @media (prefers-color-scheme: dark) {
         html,
         body {
@@ -33,10 +38,22 @@
           color: #e5e5e5;
         }
       }
+
+      /* Loading state */
+      .app-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-size: 1.125rem;
+        color: #6b7280;
+      }
     </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="app-loading">Loading Diaryx...</div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

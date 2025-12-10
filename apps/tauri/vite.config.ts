@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { resolve } from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -8,6 +9,8 @@ export default defineConfig({
   plugins: [svelte()],
   // prevent vite from obscuring rust errors
   clearScreen: false,
+  // Use the web app's source directory
+  root: resolve(__dirname, "../web"),
   server: {
     // make sure this port matches the devUrl port in tauri.conf.json file
     port: 5173,
@@ -37,5 +40,14 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     // produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Output to the tauri app's dist folder
+    outDir: resolve(__dirname, "dist"),
+    emptyOutDir: true,
+  },
+  resolve: {
+    alias: {
+      // Ensure imports resolve correctly
+      "@": resolve(__dirname, "../web/src"),
+    },
   },
 });

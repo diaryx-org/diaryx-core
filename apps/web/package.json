@@ -1,5 +1,5 @@
 {
-  "name": "diaryx-tauri",
+  "name": "diaryx-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,14 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ../web/tsconfig.json",
-    "tauri": "tauri"
+    "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.9.1",
-    "@tauri-apps/plugin-dialog": "^2.4.2",
-    "@tauri-apps/plugin-fs": "^2.4.4",
-    "@tauri-apps/plugin-shell": "^2.3.3",
     "@tiptap/core": "^3.13.0",
     "@tiptap/extension-code-block": "^3.13.0",
     "@tiptap/extension-highlight": "^3.13.0",
@@ -29,7 +24,6 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
-    "@tauri-apps/cli": "^2.9.6",
     "@tsconfig/svelte": "^5.0.6",
     "@types/turndown": "^5.0.6",
     "svelte": "^5.45.8",
@@ -37,5 +31,8 @@
     "tslib": "^2.8.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.7"
+  },
+  "optionalDependencies": {
+    "@tauri-apps/api": "^2.9.1"
   }
 }

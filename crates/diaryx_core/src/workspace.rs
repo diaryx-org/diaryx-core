@@ -328,7 +328,7 @@ impl<FS: FileSystem> Workspace<FS> {
         }
 
         // Create directory if needed
-        std::fs::create_dir_all(dir)?;
+        self.fs.create_dir_all(dir)?;
 
         let display_title = title.unwrap_or_else(|| {
             dir.file_name()

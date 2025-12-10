@@ -286,6 +286,9 @@ pub struct TemplateManager<FS> {
 
 impl<FS: FileSystem> TemplateManager<FS> {
     /// Create a new template manager
+    /// On native platforms, uses the system config directory for user templates
+    /// On WASM, user_templates_dir will be None (use with_user_templates_dir to set)
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(fs: FS) -> Self {
         let user_templates_dir = dirs::config_dir().map(|d| d.join("diaryx").join("templates"));
 
@@ -294,6 +297,24 @@ impl<FS: FileSystem> TemplateManager<FS> {
             user_templates_dir,
             workspace_templates_dir: None,
         }
+    }
+
+    /// Create a new template manager (WASM version)
+    /// User templates directory must be set explicitly with with_user_templates_dir
+    #[cfg(target_arch = "wasm32")]
+    pub fn new(fs: FS) -> Self {
+        Self {
+            fs,
+            user_templates_dir: None,
+            workspace_templates_dir: None,
+        }
+    }
+
+    /// Set the user templates directory explicitly
+    /// Useful for WASM or when you want to override the default location
+    pub fn with_user_templates_dir(mut self, dir: PathBuf) -> Self {
+        self.user_templates_dir = Some(dir);
+        self
     }
 
     /// Set the workspace templates directory
@@ -418,7 +439,7 @@ impl<FS: FileSystem> TemplateManager<FS> {
             .ok_or(DiaryxError::NoConfigDir)?;
 
         // Create templates directory if it doesn't exist
-        std::fs::create_dir_all(dir)?;
+        self.fs.create_dir_all(dir)?;
 
         let path = dir.join(format!("{}.md", name));
         self.fs.create_new(&path, content)?;
@@ -434,7 +455,7 @@ impl<FS: FileSystem> TemplateManager<FS> {
             .ok_or(DiaryxError::NoConfigDir)?;
 
         // Create templates directory if it doesn't exist
-        std::fs::create_dir_all(dir)?;
+        self.fs.create_dir_all(dir)?;
 
         let path = dir.join(format!("{}.md", name));
         self.fs.write_file(&path, content)?;

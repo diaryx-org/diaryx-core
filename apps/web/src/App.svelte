@@ -1,17 +1,23 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import {
-    getConfig,
-    getWorkspaceTree,
-    getEntry,
-    saveEntry,
-    searchWorkspace,
-  } from "./lib/api";
-  import type { Config, TreeNode, EntryData, SearchResults } from "./lib/types";
+    getBackend,
+    startAutoPersist,
+    stopAutoPersist,
+    persistNow,
+    type Backend,
+    type Config,
+    type TreeNode,
+    type EntryData,
+    type SearchResults,
+  } from "./lib/backend";
 
   // Dynamically import Editor to avoid SSR issues
   let Editor: typeof import("./lib/Editor.svelte").default | null =
     $state(null);
+
+  // Backend instance
+  let backend: Backend | null = $state(null);
 
   // State
   let config: Config | null = $state(null);
@@ -31,27 +37,54 @@
   onMount(async () => {
     // We're in the browser now
     isBrowser = true;
-
-    // Dynamically import the Editor component
-    const module = await import("./lib/Editor.svelte");
-    Editor = module.default;
+    console.log("[App] onMount started");
 
     try {
-      config = await getConfig();
-      tree = await getWorkspaceTree();
+      // Dynamically import the Editor component
+      console.log("[App] Loading Editor component...");
+      const module = await import("./lib/Editor.svelte");
+      Editor = module.default;
+      console.log("[App] Editor component loaded");
+
+      // Initialize the backend (auto-detects Tauri vs WASM)
+      console.log("[App] Initializing backend...");
+      backend = await getBackend();
+      console.log("[App] Backend initialized");
+
+      // Start auto-persist for WASM backend (no-op for Tauri)
+      startAutoPersist(5000);
+
+      console.log("[App] Getting config...");
+      config = await backend.getConfig();
+      console.log("[App] Config loaded:", config);
+
+      console.log("[App] Getting workspace tree...");
+      tree = await backend.getWorkspaceTree();
+      console.log("[App] Workspace tree loaded:", tree);
+
       // Expand root by default
       if (tree) {
         expandedNodes.add(tree.path);
       }
+      console.log("[App] Initialization complete");
     } catch (e) {
+      console.error("[App] Initialization error:", e);
       error = e instanceof Error ? e.message : String(e);
     } finally {
       isLoading = false;
     }
   });
 
+  onDestroy(() => {
+    // Stop auto-persist and do a final persist
+    stopAutoPersist();
+    persistNow();
+  });
+
   // Open an entry
   async function openEntry(path: string) {
+    if (!backend) return;
+
     if (isDirty) {
       const confirm = window.confirm(
         "You have unsaved changes. Do you want to discard them?",
@@ -61,7 +94,7 @@
 
     try {
       isLoading = true;
-      currentEntry = await getEntry(path);
+      currentEntry = await backend.getEntry(path);
       isDirty = false;
       error = null;
     } catch (e) {
@@ -73,12 +106,14 @@
 
   // Save current entry
   async function save() {
-    if (!currentEntry || !editorRef) return;
+    if (!backend || !currentEntry || !editorRef) return;
 
     try {
       const markdown = editorRef.getMarkdown();
-      await saveEntry(currentEntry.path, markdown);
+      await backend.saveEntry(currentEntry.path, markdown);
       isDirty = false;
+      // Trigger persist for WASM backend
+      await persistNow();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -91,14 +126,14 @@
 
   // Search
   async function handleSearch() {
-    if (!searchQuery.trim()) {
+    if (!backend || !searchQuery.trim()) {
       searchResults = null;
       return;
     }
 
     try {
       isSearching = true;
-      searchResults = await searchWorkspace(searchQuery);
+      searchResults = await backend.searchWorkspace(searchQuery);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -177,13 +212,32 @@
         {#if tree}
           {@render treeNode(tree, 0)}
         {:else if isLoading}
-          <div class="loading">Loading...</div>
+          <div class="loading">Loading workspace...</div>
         {:else if error}
-          <div class="error">{error}</div>
+          <div class="error">
+            <p><strong>Error:</strong></p>
+            <p>{error}</p>
+            <p style="font-size: 11px; margin-top: 8px;">
+              Check browser console for details
+            </p>
+          </div>
+        {:else}
+          <div class="loading">No workspace found</div>
         {/if}
       </nav>
     {/if}
   </aside>
+
+  <!-- Show error prominently during loading if it occurred -->
+  {#if isLoading && error}
+    <div class="loading-error">
+      <h2>Failed to load Diaryx</h2>
+      <p>{error}</p>
+      <p style="font-size: 12px; color: #666;">
+        Check browser console for details
+      </p>
+    </div>
+  {/if}
 
   <!-- Main Content -->
   <main class="content">
@@ -428,5 +482,181 @@
 
   .expand-icon.expanded {
     transform: rotate(90deg);
+  }
+
+  .loading-error {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    border: 1px solid #dc2626;
+    border-radius: 8px;
+    padding: 24px 32px;
+    text-align: center;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .loading-error h2 {
+    color: #dc2626;
+    margin: 0 0 12px 0;
+    font-size: 1.25rem;
+  }
+
+  .loading-error p {
+    margin: 0 0 8px 0;
+    color: #1a1a1a;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .loading-error {
+      background: #1f2937;
+      border-color: #f87171;
+    }
+
+    .loading-error h2 {
+      color: #f87171;
+    }
+
+    .loading-error p {
+      color: #e5e5e5;
+    }
+  }
+
+  .expand-icon.placeholder {
+    visibility: hidden;
+  }
+
+  .tree-children {
+    margin-left: 0;
+  }
+
+  .node-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .loading,
+  .error {
+    padding: 16px;
+    text-align: center;
+    color: var(--muted-color, #6b7280);
+  }
+
+  .error {
+    color: #dc2626;
+  }
+
+  /* Main Content */
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .content-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border-color, #e5e7eb);
+    background: var(--header-bg, #ffffff);
+  }
+
+  .entry-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .entry-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text-color, #1a1a1a);
+  }
+
+  .entry-path {
+    font-size: 12px;
+    color: var(--muted-color, #6b7280);
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .unsaved-indicator {
+    font-size: 12px;
+    color: #f59e0b;
+  }
+
+  .save-button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent-color, #2563eb);
+    color: white;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .save-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .save-button:not(:disabled):hover {
+    opacity: 0.9;
+  }
+
+  .editor-area {
+    flex: 1;
+    padding: 24px;
+    overflow: hidden;
+  }
+
+  .empty-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .empty-state-content {
+    text-align: center;
+    color: var(--muted-color, #6b7280);
+  }
+
+  .empty-state-content h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+    color: var(--text-color, #1a1a1a);
+  }
+
+  .empty-state-content p {
+    margin: 0;
+  }
+
+  /* Dark mode support */
+  @media (prefers-color-scheme: dark) {
+    .app {
+      --sidebar-bg: #111827;
+      --border-color: #374151;
+      --text-color: #e5e5e5;
+      --muted-color: #9ca3af;
+      --hover-bg: #1f2937;
+      --active-bg: #1e3a5f;
+      --accent-color: #60a5fa;
+      --input-bg: #1f2937;
+      --header-bg: #111827;
+    }
   }
 </style>

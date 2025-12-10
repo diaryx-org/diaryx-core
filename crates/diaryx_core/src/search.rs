@@ -455,6 +455,16 @@ mod tests {
         fn exists(&self, path: &Path) -> bool {
             self.files.borrow().contains_key(path)
         }
+
+        fn create_dir_all(&self, _path: &Path) -> Result<()> {
+            // Mock implementation - directories are implicit
+            Ok(())
+        }
+
+        fn is_dir(&self, _path: &Path) -> bool {
+            // Mock implementation
+            false
+        }
     }
 
     #[test]
