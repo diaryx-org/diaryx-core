@@ -546,9 +546,9 @@ dependencies = [
 
 [[package]]
 name = "comrak"
-version = "0.48.0"
+version = "0.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48bf2260aceee247c6c5639f5751dc635211895066d782d2a28fb87f2e0d5613"
+checksum = "ab87129dce2f2d7e75e753b1df0e5093b27dec8fa5970b6eb51280faacb25bd6"
 dependencies = [
  "bon",
  "caseless",
@@ -768,7 +768,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "diaryx-desktop"
+name = "diaryx-tauri"
 version = "0.4.0"
 dependencies = [
  "diaryx_core",
@@ -784,12 +784,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "diaryx_cli"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "diaryx_core",
+ "dirs",
+ "glob",
+ "indexmap 2.12.1",
+ "pathdiff",
+ "serde",
+ "serde_yaml",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "diaryx_core"
 version = "0.4.0"
 dependencies = [
  "chrono",
  "chrono-english",
- "clap",
  "comrak",
  "dirs",
  "glob",

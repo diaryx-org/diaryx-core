@@ -8,6 +8,3 @@ pub mod publish;
 pub mod search;
 pub mod template;
 pub mod workspace;
-
-#[cfg(feature = "cli")]
-pub mod editor;

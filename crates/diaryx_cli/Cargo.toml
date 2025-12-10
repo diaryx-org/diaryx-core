@@ -1,0 +1,26 @@
+[package]
+name = "diaryx_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.82"
+description = "Command-line interface for Diaryx journal management"
+keywords = ["diary", "journal", "markdown", "frontmatter", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "diaryx"
+path = "src/main.rs"
+
+[dependencies]
+diaryx_core = { workspace = true, features = ["markdown"] }
+clap = { version = "4.5", features = ["derive"] }
+chrono.workspace = true
+serde.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+dirs = "6.0"
+glob = "0.3"
+pathdiff = "0.2"
+indexmap = { version = "2.0", features = ["serde"] }

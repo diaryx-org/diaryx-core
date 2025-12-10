@@ -4,9 +4,10 @@ use std::path::Path;
 
 use diaryx_core::config::Config;
 use diaryx_core::date::parse_date;
-use diaryx_core::editor::launch_editor;
 use diaryx_core::entry::DiaryxApp;
 use diaryx_core::fs::RealFileSystem;
+
+use crate::editor::launch_editor;
 
 use crate::cli::util::{load_config, resolve_paths};
 

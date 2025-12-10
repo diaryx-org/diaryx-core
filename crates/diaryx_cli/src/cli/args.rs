@@ -213,6 +213,13 @@ pub enum Commands {
         count: bool,
     },
 
+    /// Manage templates for creating entries
+    #[command(alias = "tmpl")]
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
+    },
+
     /// Publish workspace as HTML for sharing
     #[command(alias = "pub")]
     Publish {
@@ -672,4 +679,59 @@ pub enum WorkspaceCommands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum TemplateCommands {
+    /// List all available templates
+    #[command(alias = "ls")]
+    List {
+        /// Show full paths instead of just names
+        #[arg(short, long)]
+        paths: bool,
+    },
+
+    /// Show a template's contents
+    #[command(alias = "cat")]
+    Show {
+        /// Name of the template to show
+        name: String,
+    },
+
+    /// Create a new custom template
+    New {
+        /// Name for the new template
+        name: String,
+
+        /// Create from an existing template
+        #[arg(short, long)]
+        from: Option<String>,
+
+        /// Open in editor after creating
+        #[arg(short, long)]
+        edit: bool,
+    },
+
+    /// Edit an existing template
+    Edit {
+        /// Name of the template to edit
+        name: String,
+    },
+
+    /// Delete a custom template
+    #[command(alias = "rm")]
+    Delete {
+        /// Name of the template to delete
+        name: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Show the directories where templates are stored
+    Path,
+
+    /// List available template variables
+    Variables,
 }

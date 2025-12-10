@@ -1,7 +1,6 @@
 //! Workspace command handlers
 
 use diaryx_core::config::Config;
-use diaryx_core::editor::launch_editor;
 use diaryx_core::entry::DiaryxApp;
 use diaryx_core::fs::RealFileSystem;
 use diaryx_core::template::TemplateContext;
@@ -10,6 +9,7 @@ use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
 use crate::cli::args::WorkspaceCommands;
+use crate::editor::launch_editor;
 use crate::cli::util::{calculate_relative_path, rename_file_with_refs, resolve_paths};
 
 pub fn handle_workspace_command(

@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::config::Config;
-use crate::error::{DiaryxError, Result};
+use diaryx_core::config::Config;
+use diaryx_core::error::{DiaryxError, Result};
 
 /// Launch an editor to open a file
 pub fn launch_editor(path: &Path, config: &Config) -> Result<()> {

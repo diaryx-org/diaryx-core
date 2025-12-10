@@ -9,6 +9,7 @@ mod property;
 mod publish;
 mod search;
 mod sort;
+mod template;
 mod util;
 mod workspace;
 
@@ -69,6 +70,10 @@ pub fn run_cli() {
 
         Commands::Property { operation } => {
             property::handle_property_command(&app, operation);
+        }
+
+        Commands::Template { command } => {
+            template::handle_template_command(command, &app);
         }
 
         Commands::Sort {

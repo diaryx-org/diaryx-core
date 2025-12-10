@@ -1,9 +1,9 @@
 [package]
-name = "diaryx-desktop"
+name = "diaryx-tauri"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Desktop application for Diaryx journal management"
+description = "Tauri application for Diaryx journal management (desktop and mobile)"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

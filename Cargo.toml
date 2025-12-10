@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "crates/diaryx_core",
-    "apps/desktop/src-tauri",
+    "crates/diaryx_cli",
+    "apps/tauri/src-tauri",
 ]
 
 [workspace.package]
