@@ -2,8 +2,9 @@
 name = "Diaryx"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Tauri application for Diaryx journal management (desktop and mobile)"
+publish = false
 
 [lib]
 name = "diaryx_lib" # Optional, but good practice. Defaults to package name if omitted.

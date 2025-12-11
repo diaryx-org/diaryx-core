@@ -1,9 +1,10 @@
 [package]
 name = "diaryx_wasm"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "WebAssembly bindings for Diaryx core functionality"
-license = "MIT"
+license-file.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

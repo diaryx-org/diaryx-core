@@ -8,17 +8,33 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
-license = "PolyForm Shield License 1.0.0"
-repository = "https://github.com/diaryx-org/diaryx-core"
+rust-version = "1.82"
+repository = "https://github.com/diaryx-org/diaryx"
+homepage = "https://github.com/diaryx-org/diaryx"
+readme = "README.md"
+# PolyForm Shield is not an SPDX identifier, so we use license-file
+license-file = "LICENSE.md"
 
 [workspace.dependencies]
 # Shared dependencies across workspace
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
+indexmap = { version = "2.0", features = ["serde"] }
 
-# Internal crates
-diaryx_core = { path = "crates/diaryx_core" }
+# Internal crates - version must match workspace.package.version for publishing
+diaryx_core = { path = "crates/diaryx_core", version = "0.4.2" }
+
+# cargo-release configuration
+[workspace.metadata.release]
+# Shared release configuration
+shared-version = true
+tag-name = "v{{version}}"
+tag-message = "Release v{{version}}"
+pre-release-commit-message = "chore: release v{{version}}"
+publish = true
+push = true

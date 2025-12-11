@@ -1,0 +1,46 @@
+# cargo-release configuration
+# https://github.com/crate-ci/cargo-release
+
+# Shared settings
+[workspace]
+# Use a single shared version across all crates
+shared-version = true
+# Consolidate commits and tags
+consolidate-commits = true
+# Don't push to git automatically (let CI handle it)
+push = false
+# Don't publish automatically (let CI handle it)
+publish = false
+# Don't create tags automatically (we'll do this manually)
+tag = false
+
+# Pre-release replacements (update version strings in files)
+[[workspace.pre-release-replacements]]
+file = "README.md"
+search = "diaryx = \"[0-9]+\\.[0-9]+\\.[0-9]+\""
+replace = "diaryx = \"{{version}}\""
+exactly = 0  # Don't fail if not found
+
+[[workspace.pre-release-replacements]]
+file = "README.md"
+search = "cargo install diaryx@[0-9]+\\.[0-9]+\\.[0-9]+"
+replace = "cargo install diaryx@{{version}}"
+exactly = 0
+
+# Crate-specific settings
+
+[package.diaryx_core]
+# Core library should be published
+publish = true
+
+[package.diaryx]
+# CLI binary should be published
+publish = true
+
+[package.diaryx_wasm]
+# WASM package should not be published to crates.io
+release = false
+
+[package.Diaryx]
+# Tauri app should not be published to crates.io
+release = false

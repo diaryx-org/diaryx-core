@@ -3,11 +3,11 @@ name: CLI Release
 on:
   push:
     tags:
-      - "cli-v*"
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g., cli-v0.1.0)"
+        description: "Release tag (e.g., v0.1.0)"
         required: true
 
 env:
@@ -15,6 +15,31 @@ env:
   BINARY_NAME: diaryx
 
 jobs:
+  # Publish to crates.io
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish diaryx_core
+        run: cargo publish -p diaryx_core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true # May already be published
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish diaryx (CLI)
+        run: cargo publish -p diaryx --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Build binaries for cargo-binstall
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -33,7 +58,7 @@ jobs:
 
           # macOS
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -63,7 +88,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build binary
-        run: cargo build --release --features cli --target ${{ matrix.target }}
+        run: cargo build --release -p diaryx --target ${{ matrix.target }}
 
       - name: Prepare artifacts (Unix)
         if: matrix.os != 'windows-latest'
@@ -72,7 +97,6 @@ jobs:
           cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/
           # Copy README and LICENSE if they exist
           [ -f README.md ] && cp README.md dist/ || true
-          [ -f LICENSE ] && cp LICENSE dist/ || true
           [ -f LICENSE.md ] && cp LICENSE.md dist/ || true
           cd dist
           tar -czvf ../${{ env.BINARY_NAME }}-${{ matrix.target }}.tar.gz *
@@ -84,7 +108,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" -Destination dist/
           if (Test-Path README.md) { Copy-Item README.md -Destination dist/ }
-          if (Test-Path LICENSE) { Copy-Item LICENSE -Destination dist/ }
           if (Test-Path LICENSE.md) { Copy-Item LICENSE.md -Destination dist/ }
           Compress-Archive -Path dist/* -DestinationPath "${{ env.BINARY_NAME }}-${{ matrix.target }}.zip"
 
@@ -95,9 +118,10 @@ jobs:
           path: |
             ${{ env.BINARY_NAME }}-${{ matrix.target }}.${{ matrix.archive }}
 
+  # Create GitHub Release with binaries
   release:
     name: Create Release
-    needs: build
+    needs: [publish, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -135,10 +159,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: Diaryx CLI ${{ steps.tag.outputs.tag }}
+          name: Diaryx ${{ steps.tag.outputs.tag }}
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
           generate_release_notes: true
+          body: |
+            ## Installation
+
+            ### Via Cargo (from crates.io)
+            ```bash
+            cargo install diaryx
+            ```
+
+            ### Via cargo-binstall (pre-built binary)
+            ```bash
+            cargo binstall diaryx
+            ```
+
+            ### Manual Download
+            Download the appropriate binary for your platform from the assets below.
           files: |
             release/*
         env:

@@ -2,9 +2,10 @@
 name = "diaryx_core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
-rust-version = "1.82"
+homepage.workspace = true
+license-file.workspace = true
 description = "Core library for Diaryx - a tool to manage markdown files with YAML frontmatter"
 keywords = ["diary", "journal", "markdown", "frontmatter"]
 categories = ["text-processing"]
@@ -12,10 +13,10 @@ categories = ["text-processing"]
 [dependencies]
 chrono.workspace = true
 chrono-english = "0.1"
-indexmap = { version = "2.0", features = ["serde"] }
+indexmap.workspace = true
 pathdiff = "0.2"
 serde.workspace = true
-serde_yaml = "0.9.34"
+serde_yaml.workspace = true
 toml = "0.9.8"
 thiserror.workspace = true
 
@@ -38,3 +39,7 @@ markdown = ["dep:comrak"]
 
 # Default features for the library
 default = []
+
+[package.metadata.release]
+# This crate should be published to crates.io
+publish = true

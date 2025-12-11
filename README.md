@@ -5,7 +5,7 @@ author: adammharris
 contents:
   - LICENSE.md
   - roadmap.md
-version: v0.4.1
+version: v0.4.2
 ---
 
 # Diaryx
