@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "Diaryx"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "diaryx_core",
  "serde",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "clap",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "chrono-english",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_wasm"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
