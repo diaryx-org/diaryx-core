@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Tauri application for Diaryx journal management (desktop and mobile)"
 
+[lib]
+name = "diaryx_lib" # Optional, but good practice. Defaults to package name if omitted.
+crate-type = ["staticlib", "cdylib", "lib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

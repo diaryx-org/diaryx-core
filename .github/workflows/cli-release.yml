@@ -1,13 +1,13 @@
-name: Release
+name: CLI Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "cli-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v0.1.0)'
+        description: "Release tag (e.g., cli-v0.1.0)"
         required: true
 
 env:
@@ -135,7 +135,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release ${{ steps.tag.outputs.tag }}
+          name: Diaryx CLI ${{ steps.tag.outputs.tag }}
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
           generate_release_notes: true

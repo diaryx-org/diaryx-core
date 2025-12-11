@@ -5,7 +5,7 @@ author: adammharris
 contents:
   - LICENSE.md
   - roadmap.md
-version: v0.3.3
+version: v0.4.0
 ---
 
 # diaryx-core
@@ -96,3 +96,33 @@ The README file has a title, "diaryx," and a description, "A diaryx workspace." 
 These `contents`/`part_of` relationships can be deeply nested, and don't necessarily need folders to function. You can use it for chapters of a book, phases of a project, recipes in a recipe book, or whatever you like!
 
 From here, you can learn about the tool using `--help` menus. Try `diaryx --help`, `diaryx workspace --help`, or `diaryx property --help` to learn more about what you can do with Diaryx.
+
+## Development
+
+First, clone the repository.
+
+```bash
+git clone https://github.com/diaryx-org/diaryx-core.git
+cd /path/to/diaryx-core
+```
+
+To install the CLI:
+
+```bash
+cargo install --path crates/diaryx_cli .
+```
+
+To build the Tauri app:
+
+```bash
+cd apps/tauri
+bun tauri dev
+```
+
+To run the website:
+
+```bash
+wasm-pack build crates/diaryx_wasm --target web --out-dir apps/web/src/lib/wasm
+cd apps/web
+bun run dev
+```

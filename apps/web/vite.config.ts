@@ -6,6 +6,9 @@ import path from "path";
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [tailwindcss(), svelte() as any],
+  // Base path for GitHub Pages deployment
+  // Set VITE_BASE_PATH env var to deploy to a subdirectory (e.g., "/repo-name/")
+  base: process.env.VITE_BASE_PATH || "/",
   server: { port: 5174, strictPort: false },
   build: { target: "es2020", sourcemap: true },
   resolve: {
