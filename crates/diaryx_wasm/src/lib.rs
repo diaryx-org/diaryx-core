@@ -1,19 +1,32 @@
 //! WebAssembly bindings for Diaryx core functionality.
 //!
-//! This crate provides JavaScript-accessible functions for parsing frontmatter,
-//! serializing YAML, rendering templates, and searching content.
+//! This crate provides a complete backend implementation for the web frontend,
+//! using an in-memory filesystem that can be persisted to IndexedDB.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use diaryx_core::{
+    entry::DiaryxApp,
+    fs::{FileSystem, InMemoryFileSystem},
+    search::{SearchQuery, Searcher},
+    template::TemplateManager,
+    workspace::Workspace,
+};
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-// When the `console_error_panic_hook` feature is enabled, we can call the
-// `set_panic_hook` function at least once during initialization, and then
-// we will get better error messages if our code ever panics.
+// ============================================================================
+// Initialization
+// ============================================================================
+
 #[cfg(feature = "console_error_panic_hook")]
 pub fn set_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-/// Initialize the WASM module. Call this once before using other functions.
+/// Initialize the WASM module. Called automatically on module load.
 #[wasm_bindgen(start)]
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
@@ -21,191 +34,693 @@ pub fn init() {
 }
 
 // ============================================================================
-// Frontmatter Parsing
+// Global State
 // ============================================================================
 
-/// Parse YAML frontmatter from markdown content.
-///
-/// Returns a JavaScript object with the frontmatter key-value pairs.
-/// If no frontmatter is found, returns an empty object.
+thread_local! {
+    static FILESYSTEM: RefCell<InMemoryFileSystem> = RefCell::new(InMemoryFileSystem::new());
+}
+
+fn with_fs<F, R>(f: F) -> R
+where
+    F: FnOnce(&InMemoryFileSystem) -> R,
+{
+    FILESYSTEM.with(|fs| f(&fs.borrow()))
+}
+
+fn with_fs_mut<F, R>(f: F) -> R
+where
+    F: FnOnce(&InMemoryFileSystem) -> R,
+{
+    FILESYSTEM.with(|fs| f(&fs.borrow()))
+}
+
+// ============================================================================
+// Filesystem Operations (for IndexedDB sync)
+// ============================================================================
+
+/// Load files into the in-memory filesystem from JavaScript.
+/// Takes an array of [path, content] tuples.
 #[wasm_bindgen]
-pub fn parse_frontmatter(content: &str) -> Result<JsValue, JsValue> {
-    // Check for frontmatter delimiters
-    if !content.starts_with("---\n") {
-        return Ok(serde_wasm_bindgen::to_value(&serde_json::Map::<String, serde_json::Value>::new())?);
-    }
+pub fn load_files(entries: JsValue) -> Result<(), JsValue> {
+    let entries: Vec<(String, String)> = serde_wasm_bindgen::from_value(entries)?;
 
-    // Find the closing delimiter
-    let rest = &content[4..]; // Skip "---\n"
-    let end_idx = rest.find("\n---");
+    FILESYSTEM.with(|fs| {
+        *fs.borrow_mut() = InMemoryFileSystem::load_from_entries(entries);
+    });
 
-    let yaml_str = match end_idx {
-        Some(idx) => &rest[..idx],
-        None => {
-            return Ok(serde_wasm_bindgen::to_value(&serde_json::Map::<String, serde_json::Value>::new())?);
+    Ok(())
+}
+
+/// Export all files from the in-memory filesystem.
+/// Returns an array of [path, content] tuples for persistence to IndexedDB.
+#[wasm_bindgen]
+pub fn export_files() -> Result<JsValue, JsValue> {
+    let entries = with_fs(|fs| fs.export_entries());
+    Ok(serde_wasm_bindgen::to_value(&entries)?)
+}
+
+/// Check if a file exists.
+#[wasm_bindgen]
+pub fn file_exists(path: &str) -> bool {
+    with_fs(|fs| FileSystem::exists(fs, std::path::Path::new(path)))
+}
+
+/// Read a file's content.
+#[wasm_bindgen]
+pub fn read_file(path: &str) -> Result<String, JsValue> {
+    use diaryx_core::fs::FileSystem;
+    with_fs(|fs| {
+        fs.read_to_string(std::path::Path::new(path))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Write content to a file (creates or overwrites).
+#[wasm_bindgen]
+pub fn write_file(path: &str, content: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+    with_fs_mut(|fs| {
+        fs.write_file(std::path::Path::new(path), content)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Delete a file.
+#[wasm_bindgen]
+pub fn delete_file(path: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+    with_fs_mut(|fs| {
+        fs.delete_file(std::path::Path::new(path))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+// ============================================================================
+// Workspace Operations
+// ============================================================================
+
+/// Tree node returned to JavaScript
+#[derive(Debug, Serialize)]
+pub struct JsTreeNode {
+    pub name: String,
+    pub description: Option<String>,
+    pub path: String,
+    pub children: Vec<JsTreeNode>,
+}
+
+impl From<diaryx_core::workspace::TreeNode> for JsTreeNode {
+    fn from(node: diaryx_core::workspace::TreeNode) -> Self {
+        JsTreeNode {
+            name: node.name,
+            description: node.description,
+            path: node.path.to_string_lossy().to_string(),
+            children: node.children.into_iter().map(JsTreeNode::from).collect(),
         }
+    }
+}
+
+/// Get the workspace tree structure.
+#[wasm_bindgen]
+pub fn get_workspace_tree(workspace_path: &str, depth: Option<u32>) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let ws = Workspace::new(fs);
+        let root_path = PathBuf::from(workspace_path);
+
+        // Find root index in the workspace
+        let root_index = ws
+            .find_root_index_in_dir(&root_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .or_else(|| ws.find_any_index_in_dir(&root_path).ok().flatten())
+            .ok_or_else(|| {
+                JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
+            })?;
+
+        let max_depth = depth.map(|d| d as usize);
+        let mut visited = HashSet::new();
+
+        let tree = ws
+            .build_tree_with_depth(&root_index, max_depth, &mut visited)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let js_tree: JsTreeNode = tree.into();
+        Ok(serde_wasm_bindgen::to_value(&js_tree)?)
+    })
+}
+
+/// Initialize a new workspace with an index.md file.
+#[wasm_bindgen]
+pub fn create_workspace(path: &str, name: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+
+    with_fs_mut(|fs| {
+        let index_path = PathBuf::from(path).join("index.md");
+
+        if fs.exists(&index_path) {
+            return Err(JsValue::from_str(&format!(
+                "Workspace already exists at '{}'",
+                path
+            )));
+        }
+
+        let content = format!(
+            "---\ntitle: \"{}\"\ncontents: []\n---\n\n# {}\n",
+            name, name
+        );
+
+        fs.write_file(&index_path, &content)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+// ============================================================================
+// Entry Operations
+// ============================================================================
+
+/// Entry data returned to JavaScript
+#[derive(Debug, Serialize)]
+pub struct JsEntryData {
+    pub path: String,
+    pub title: Option<String>,
+    pub frontmatter: serde_json::Map<String, serde_json::Value>,
+    pub content: String,
+}
+
+/// Get an entry's content and metadata.
+#[wasm_bindgen]
+pub fn get_entry(path: &str) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let app = DiaryxApp::new(fs);
+
+        let frontmatter = app
+            .get_all_frontmatter(path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Convert YAML values to JSON
+        let mut json_frontmatter = serde_json::Map::new();
+        for (key, value) in frontmatter {
+            if let Ok(json_val) = serde_json::to_value(&value) {
+                json_frontmatter.insert(key, json_val);
+            }
+        }
+
+        let title = json_frontmatter
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let content = app
+            .get_content(path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let entry = JsEntryData {
+            path: path.to_string(),
+            title,
+            frontmatter: json_frontmatter,
+            content,
+        };
+
+        Ok(serde_wasm_bindgen::to_value(&entry)?)
+    })
+}
+
+/// Save an entry's content (preserves frontmatter).
+#[wasm_bindgen]
+pub fn save_entry(path: &str, content: &str) -> Result<(), JsValue> {
+    with_fs_mut(|fs| {
+        let app = DiaryxApp::new(fs);
+
+        // Update the "updated" timestamp
+        let _ = app.set_frontmatter_property(
+            path,
+            "updated",
+            serde_yaml::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+
+        app.set_content(path, content)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Options for creating an entry
+#[derive(Debug, Deserialize)]
+pub struct CreateEntryOptions {
+    pub title: Option<String>,
+    pub part_of: Option<String>,
+    pub template: Option<String>,
+}
+
+/// Create a new entry.
+#[wasm_bindgen]
+pub fn create_entry(path: &str, options: JsValue) -> Result<String, JsValue> {
+    let options: Option<CreateEntryOptions> = if options.is_undefined() || options.is_null() {
+        None
+    } else {
+        Some(serde_wasm_bindgen::from_value(options)?)
     };
 
-    // Parse YAML into a JSON-compatible structure
-    match serde_yaml::from_str::<serde_json::Value>(yaml_str) {
-        Ok(value) => {
-            if let serde_json::Value::Object(map) = value {
-                Ok(serde_wasm_bindgen::to_value(&map)?)
-            } else {
-                Ok(serde_wasm_bindgen::to_value(&serde_json::Map::<String, serde_json::Value>::new())?)
+    with_fs_mut(|fs| {
+        let app = DiaryxApp::new(fs);
+        let path_buf = PathBuf::from(path);
+
+        // Determine title
+        let title = options
+            .as_ref()
+            .and_then(|o| o.title.clone())
+            .unwrap_or_else(|| {
+                path_buf
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Untitled")
+                    .to_string()
+            });
+
+        // Check if template is requested
+        if let Some(ref opts) = options {
+            if let Some(ref template_name) = opts.template {
+                let manager = TemplateManager::new(fs);
+                if let Some(template) = manager.get(template_name) {
+                    let mut context = diaryx_core::template::TemplateContext::new()
+                        .with_title(&title)
+                        .with_date(chrono::Utc::now().date_naive());
+
+                    if let Some(ref part_of) = opts.part_of {
+                        context = context.with_part_of(part_of);
+                    }
+
+                    let content = template.render(&context);
+
+                    use diaryx_core::fs::FileSystem;
+                    fs.create_new(&path_buf, &content)
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+                    // Add to parent index contents
+                    add_to_parent_index(fs, path)?;
+
+                    return Ok(path.to_string());
+                }
             }
         }
-        Err(_) => {
-            Ok(serde_wasm_bindgen::to_value(&serde_json::Map::<String, serde_json::Value>::new())?)
+
+        // Create entry without template
+        app.create_entry(path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Set title
+        app.set_frontmatter_property(path, "title", serde_yaml::Value::String(title))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Set timestamps
+        let now = chrono::Utc::now().to_rfc3339();
+        app.set_frontmatter_property(path, "created", serde_yaml::Value::String(now.clone()))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        app.set_frontmatter_property(path, "updated", serde_yaml::Value::String(now))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Set part_of if provided
+        if let Some(ref opts) = options {
+            if let Some(ref part_of) = opts.part_of {
+                app.set_frontmatter_property(
+                    path,
+                    "part_of",
+                    serde_yaml::Value::String(part_of.clone()),
+                )
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            }
         }
-    }
+
+        // Add to parent index contents
+        add_to_parent_index(fs, path)?;
+
+        Ok(path.to_string())
+    })
 }
 
-/// Serialize a JavaScript object to YAML frontmatter format.
-///
-/// Returns a string in the format:
-///
-///     ---
-///     key: value
-///     ---
-#[wasm_bindgen]
-pub fn serialize_frontmatter(frontmatter: JsValue) -> Result<String, JsValue> {
-    let map: serde_json::Map<String, serde_json::Value> =
-        serde_wasm_bindgen::from_value(frontmatter)?;
+/// Helper to add an entry to its parent index's contents array
+fn add_to_parent_index(fs: &InMemoryFileSystem, entry_path: &str) -> Result<(), JsValue> {
+    let path = PathBuf::from(entry_path);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| JsValue::from_str("Invalid path"))?;
 
-    let yaml = serde_yaml::to_string(&map)
+    let parent = path.parent().ok_or_else(|| JsValue::from_str("No parent directory"))?;
+    let index_path = parent.join("index.md");
+
+    // Check if parent index exists
+    if !fs.exists(&index_path) {
+        return Ok(()); // No index to update
+    }
+
+    let app = DiaryxApp::new(fs);
+    let index_path_str = index_path.to_string_lossy();
+
+    // Get current contents
+    let frontmatter = app
+        .get_all_frontmatter(&index_path_str)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    // serde_yaml adds a trailing newline, and we want to wrap in delimiters
-    let yaml = yaml.trim_end();
-
-    Ok(format!("---\n{}\n---", yaml))
-}
-
-// ============================================================================
-// Template Rendering
-// ============================================================================
-
-/// Render a template with the given context.
-///
-/// Supports `{{variable}}` and `{{variable:format}}` syntax.
-/// For dates, supports strftime-like format specifiers.
-#[wasm_bindgen]
-pub fn render_template(template: &str, context: JsValue) -> Result<String, JsValue> {
-    let ctx: std::collections::HashMap<String, String> =
-        serde_wasm_bindgen::from_value(context)?;
-
-    let mut result = template.to_string();
-
-    // Find all {{...}} patterns
-    let mut i = 0;
-    while i < result.len() {
-        if let Some(start) = result[i..].find("{{") {
-            let start = start + i;
-            if let Some(end) = result[start..].find("}}") {
-                let end = start + end + 2;
-                let placeholder = &result[start + 2..end - 2];
-
-                // Check for format specifier
-                let (var_name, format) = if let Some(colon_idx) = placeholder.find(':') {
-                    (&placeholder[..colon_idx], Some(&placeholder[colon_idx + 1..]))
-                } else {
-                    (placeholder, None)
-                };
-
-                if let Some(value) = ctx.get(var_name) {
-                    let replacement = if let Some(fmt) = format {
-                        if var_name == "date" || var_name == "timestamp" {
-                            format_date_string(value, fmt)
-                        } else {
-                            value.clone()
-                        }
-                    } else {
-                        value.clone()
-                    };
-
-                    result.replace_range(start..end, &replacement);
-                    i = start + replacement.len();
-                } else {
-                    // Keep the placeholder if variable not found
-                    i = end;
-                }
+    let mut contents: Vec<String> = frontmatter
+        .get("contents")
+        .and_then(|v| {
+            if let serde_yaml::Value::Sequence(seq) = v {
+                Some(
+                    seq.iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect(),
+                )
             } else {
-                i = start + 2;
+                None
             }
-        } else {
-            break;
+        })
+        .unwrap_or_default();
+
+    // Add entry if not present
+    if !contents.contains(&file_name.to_string()) {
+        contents.push(file_name.to_string());
+        contents.sort();
+
+        let yaml_contents: Vec<serde_yaml::Value> = contents
+            .into_iter()
+            .map(serde_yaml::Value::String)
+            .collect();
+
+        app.set_frontmatter_property(
+            &index_path_str,
+            "contents",
+            serde_yaml::Value::Sequence(yaml_contents),
+        )
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+/// Delete an entry.
+#[wasm_bindgen]
+pub fn delete_entry(path: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+
+    with_fs_mut(|fs| {
+        fs.delete_file(std::path::Path::new(path))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+// ============================================================================
+// Frontmatter Operations
+// ============================================================================
+
+/// Get all frontmatter for an entry.
+#[wasm_bindgen]
+pub fn get_frontmatter(path: &str) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let app = DiaryxApp::new(fs);
+
+        let frontmatter = app
+            .get_all_frontmatter(path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Convert to JSON
+        let mut json_map = serde_json::Map::new();
+        for (key, value) in frontmatter {
+            if let Ok(json_val) = serde_json::to_value(&value) {
+                json_map.insert(key, json_val);
+            }
         }
-    }
 
-    Ok(result)
+        Ok(serde_wasm_bindgen::to_value(&json_map)?)
+    })
 }
 
-/// Format a date string using strftime-like format specifiers.
-fn format_date_string(date_str: &str, format: &str) -> String {
-    // Try to parse as ISO 8601
-    let parsed = chrono::DateTime::parse_from_rfc3339(date_str)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .or_else(|_| {
-            // Try parsing as a date only
-            chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
-                .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc())
-        });
+/// Set a frontmatter property.
+#[wasm_bindgen]
+pub fn set_frontmatter_property(path: &str, key: &str, value: JsValue) -> Result<(), JsValue> {
+    with_fs_mut(|fs| {
+        let app = DiaryxApp::new(fs);
 
-    match parsed {
-        Ok(dt) => dt.format(format).to_string(),
-        Err(_) => date_str.to_string(),
-    }
+        // Convert JS value to YAML value
+        let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)?;
+        let yaml_value: serde_yaml::Value =
+            serde_json::from_value(json_value).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        app.set_frontmatter_property(path, key, yaml_value)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Remove a frontmatter property.
+#[wasm_bindgen]
+pub fn remove_frontmatter_property(path: &str, key: &str) -> Result<(), JsValue> {
+    with_fs_mut(|fs| {
+        let app = DiaryxApp::new(fs);
+
+        app.remove_frontmatter_property(path, key)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
 }
 
 // ============================================================================
-// Content Search
+// Search Operations
 // ============================================================================
 
-/// A match found during content search.
-#[derive(serde::Serialize)]
-pub struct SearchMatch {
+/// Search result returned to JavaScript
+#[derive(Debug, Serialize)]
+pub struct JsSearchResults {
+    pub files: Vec<JsFileSearchResult>,
+    pub files_searched: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsFileSearchResult {
+    pub path: String,
+    pub title: Option<String>,
+    pub matches: Vec<JsSearchMatch>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsSearchMatch {
     pub line_number: u32,
     pub line_content: String,
     pub match_start: u32,
     pub match_end: u32,
 }
 
-/// Search content for a pattern.
-///
-/// Returns an array of match objects with line numbers and positions.
+/// Search options
+#[derive(Debug, Deserialize, Default)]
+pub struct SearchOptions {
+    pub workspace_path: Option<String>,
+    pub search_frontmatter: Option<bool>,
+    pub property: Option<String>,
+    pub case_sensitive: Option<bool>,
+}
+
+/// Search the workspace for entries matching a pattern.
 #[wasm_bindgen]
-pub fn search_content(
-    content: &str,
-    pattern: &str,
-    case_sensitive: bool
-) -> Result<JsValue, JsValue> {
-    use regex::RegexBuilder;
+pub fn search_workspace(pattern: &str, options: JsValue) -> Result<JsValue, JsValue> {
+    let opts: SearchOptions = if options.is_undefined() || options.is_null() {
+        SearchOptions::default()
+    } else {
+        serde_wasm_bindgen::from_value(options)?
+    };
 
-    let regex = RegexBuilder::new(pattern)
-        .case_insensitive(!case_sensitive)
-        .build()
-        .map_err(|e| JsValue::from_str(&format!("Invalid regex: {}", e)))?;
+    with_fs(|fs| {
+        let searcher = Searcher::new(fs);
+        let ws = Workspace::new(fs);
 
-    let mut matches = Vec::new();
+        let workspace_path = opts.workspace_path.as_deref().unwrap_or("workspace");
+        let root_path = PathBuf::from(workspace_path);
 
-    for (line_idx, line) in content.lines().enumerate() {
-        for mat in regex.find_iter(line) {
-            matches.push(SearchMatch {
-                line_number: (line_idx + 1) as u32,
-                line_content: line.to_string(),
-                match_start: mat.start() as u32,
-                match_end: mat.end() as u32,
-            });
-        }
-    }
+        // Find root index
+        let root_index = ws
+            .find_root_index_in_dir(&root_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .or_else(|| ws.find_any_index_in_dir(&root_path).ok().flatten())
+            .ok_or_else(|| {
+                JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
+            })?;
 
-    Ok(serde_wasm_bindgen::to_value(&matches)?)
+        // Build query
+        let query = if let Some(ref prop) = opts.property {
+            SearchQuery::property(pattern, prop)
+        } else if opts.search_frontmatter.unwrap_or(false) {
+            SearchQuery::frontmatter(pattern)
+        } else {
+            SearchQuery::content(pattern)
+        };
+
+        let query = query.case_sensitive(opts.case_sensitive.unwrap_or(false));
+
+        let results = searcher
+            .search_workspace(&root_index, &query)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Convert to JS-friendly format
+        let js_results = JsSearchResults {
+            files_searched: results.files_searched as u32,
+            files: results
+                .files
+                .into_iter()
+                .map(|f| JsFileSearchResult {
+                    path: f.path.to_string_lossy().to_string(),
+                    title: f.title,
+                    matches: f
+                        .matches
+                        .into_iter()
+                        .map(|m| JsSearchMatch {
+                            line_number: m.line_number as u32,
+                            line_content: m.line_content,
+                            match_start: m.match_start as u32,
+                            match_end: m.match_end as u32,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+
+        Ok(serde_wasm_bindgen::to_value(&js_results)?)
+    })
 }
 
 // ============================================================================
-// Utility Functions
+// Template Operations
 // ============================================================================
+
+/// Template info returned to JavaScript
+#[derive(Debug, Serialize)]
+pub struct JsTemplateInfo {
+    pub name: String,
+    pub path: String,
+    pub source: String,
+}
+
+/// List available templates.
+#[wasm_bindgen]
+pub fn list_templates(workspace_path: Option<String>) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let mut manager = TemplateManager::new(fs);
+
+        if let Some(ref ws_path) = workspace_path {
+            manager = manager.with_workspace_dir(std::path::Path::new(ws_path));
+        }
+
+        let templates: Vec<JsTemplateInfo> = manager
+            .list()
+            .into_iter()
+            .map(|t| JsTemplateInfo {
+                name: t.name,
+                path: t.path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                source: format!("{}", t.source),
+            })
+            .collect();
+
+        Ok(serde_wasm_bindgen::to_value(&templates)?)
+    })
+}
+
+/// Get a template's content.
+#[wasm_bindgen]
+pub fn get_template(name: &str, workspace_path: Option<String>) -> Result<String, JsValue> {
+    with_fs(|fs| {
+        let mut manager = TemplateManager::new(fs);
+
+        if let Some(ref ws_path) = workspace_path {
+            manager = manager.with_workspace_dir(std::path::Path::new(ws_path));
+        }
+
+        manager
+            .get(name)
+            .map(|t| t.raw_content.clone())
+            .ok_or_else(|| JsValue::from_str(&format!("Template not found: {}", name)))
+    })
+}
+
+/// Save a user template.
+#[wasm_bindgen]
+pub fn save_template(name: &str, content: &str, workspace_path: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+
+    with_fs_mut(|fs| {
+        let templates_dir = PathBuf::from(workspace_path).join("_templates");
+
+        // Ensure templates directory exists
+        fs.create_dir_all(&templates_dir)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let template_path = templates_dir.join(format!("{}.md", name));
+        fs.write_file(&template_path, content)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Delete a user template.
+#[wasm_bindgen]
+pub fn delete_template(name: &str, workspace_path: &str) -> Result<(), JsValue> {
+    use diaryx_core::fs::FileSystem;
+
+    with_fs_mut(|fs| {
+        let template_path = PathBuf::from(workspace_path)
+            .join("_templates")
+            .join(format!("{}.md", name));
+
+        fs.delete_file(&template_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+// ============================================================================
+// Utility Functions (kept for backwards compatibility)
+// ============================================================================
+
+/// Parse YAML frontmatter from markdown content.
+#[wasm_bindgen]
+pub fn parse_frontmatter(content: &str) -> Result<JsValue, JsValue> {
+    if !content.starts_with("---\n") {
+        return Ok(serde_wasm_bindgen::to_value(
+            &serde_json::Map::<String, serde_json::Value>::new(),
+        )?);
+    }
+
+    let rest = &content[4..];
+    let end_idx = rest.find("\n---");
+
+    let yaml_str = match end_idx {
+        Some(idx) => &rest[..idx],
+        None => {
+            return Ok(serde_wasm_bindgen::to_value(
+                &serde_json::Map::<String, serde_json::Value>::new(),
+            )?)
+        }
+    };
+
+    match serde_yaml::from_str::<serde_json::Value>(yaml_str) {
+        Ok(value) => {
+            if let serde_json::Value::Object(map) = value {
+                Ok(serde_wasm_bindgen::to_value(&map)?)
+            } else {
+                Ok(serde_wasm_bindgen::to_value(
+                    &serde_json::Map::<String, serde_json::Value>::new(),
+                )?)
+            }
+        }
+        Err(_) => Ok(serde_wasm_bindgen::to_value(
+            &serde_json::Map::<String, serde_json::Value>::new(),
+        )?),
+    }
+}
+
+/// Serialize a JavaScript object to YAML frontmatter format.
+#[wasm_bindgen]
+pub fn serialize_frontmatter(frontmatter: JsValue) -> Result<String, JsValue> {
+    let map: serde_json::Map<String, serde_json::Value> =
+        serde_wasm_bindgen::from_value(frontmatter)?;
+
+    let yaml =
+        serde_yaml::to_string(&map).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let yaml = yaml.trim_end();
+    Ok(format!("---\n{}\n---", yaml))
+}
 
 /// Extract the body content from a markdown file (everything after frontmatter).
 #[wasm_bindgen]
@@ -214,11 +729,9 @@ pub fn extract_body(content: &str) -> String {
         return content.to_string();
     }
 
-    let rest = &content[4..]; // Skip "---\n"
-
+    let rest = &content[4..];
     if let Some(end_idx) = rest.find("\n---") {
-        let after_frontmatter = &rest[end_idx + 4..]; // Skip "\n---"
-        // Skip newlines after the closing delimiter
+        let after_frontmatter = &rest[end_idx + 4..];
         after_frontmatter.trim_start_matches('\n').to_string()
     } else {
         content.to_string()
@@ -257,12 +770,5 @@ mod tests {
         let content = "# Hello\n\nWorld";
         let body = extract_body(content);
         assert_eq!(body, "# Hello\n\nWorld");
-    }
-
-    #[test]
-    fn test_format_date() {
-        let date = "2024-01-15T10:30:00Z";
-        let formatted = format_date_string(date, "%B %d, %Y");
-        assert_eq!(formatted, "January 15, 2024");
     }
 }

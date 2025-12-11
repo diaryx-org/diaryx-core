@@ -1,12 +1,13 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [tailwindcss(), svelte() as any],
   // prevent vite from obscuring rust errors
   clearScreen: false,
   // Use the web app's source directory
@@ -48,6 +49,7 @@ export default defineConfig({
     alias: {
       // Ensure imports resolve correctly
       "@": resolve(__dirname, "../web/src"),
+      $lib: resolve(__dirname, "../web/src/lib"),
     },
   },
 });

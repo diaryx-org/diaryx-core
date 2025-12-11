@@ -2,6 +2,21 @@
   import { onMount, onDestroy } from "svelte";
   import TurndownService from "turndown";
   import type { Editor as EditorType } from "@tiptap/core";
+  import {
+    Bold,
+    Italic,
+    Strikethrough,
+    Code,
+    Heading1,
+    Heading2,
+    Heading3,
+    List,
+    ListOrdered,
+    CheckSquare,
+    Quote,
+    Braces,
+    Link,
+  } from "@lucide/svelte";
 
   interface Props {
     content?: string;
@@ -19,7 +34,7 @@
 
   let element: HTMLDivElement;
   let editor: EditorType | null = $state(null);
-  let isMounted = $state(false);
+  let isUpdatingContent = false; // Flag to skip onchange during programmatic updates
 
   // Turndown service for HTML -> Markdown conversion
   const turndownService = new TurndownService({
@@ -46,7 +61,7 @@
   });
 
   turndownService.addRule("strikethrough", {
-    filter: ["s", "strike", "del"],
+    filter: ["s", "strike", "del"] as any,
     replacement: (content) => `~~${content}~~`,
   });
 
@@ -182,7 +197,8 @@
       content: markdownToHtml(content),
       editable: !readonly,
       onUpdate: ({ editor }) => {
-        if (onchange) {
+        // Skip onchange during programmatic content updates (e.g., switching files)
+        if (onchange && !isUpdatingContent) {
           const markdown = turndownService.turndown(editor.getHTML());
           onchange(markdown);
         }
@@ -199,25 +215,20 @@
     editor?.destroy();
   });
 
-  // Set mounted state after editor is ready
-  $effect(() => {
-    if (editor) {
-      isMounted = true;
-    }
-  });
-
-  // Track previous content to detect external changes
-  let previousContent = content;
-
   // Update editor content when the content prop changes (e.g., switching files)
   $effect(() => {
-    if (editor && content !== previousContent) {
+    if (editor) {
       // Only update if the new content is different from what's currently in the editor
       const currentEditorContent = turndownService.turndown(editor.getHTML());
       if (content !== currentEditorContent) {
+        // Set flag to prevent onchange from firing during programmatic update
+        isUpdatingContent = true;
         editor.commands.setContent(markdownToHtml(content));
+        // Reset flag after a tick to allow future user edits to trigger onchange
+        setTimeout(() => {
+          isUpdatingContent = false;
+        }, 0);
       }
-      previousContent = content;
     }
   });
 
@@ -279,193 +290,200 @@
   }
 </script>
 
-<div class="editor-wrapper">
+<div
+  class="flex flex-col h-full border border-border rounded-lg overflow-hidden bg-card"
+>
   {#if !readonly}
-    <div class="toolbar">
-      <div class="toolbar-group">
+    <div
+      class="flex flex-wrap items-center gap-1 px-2 py-1.5 border-b border-border bg-muted/50"
+    >
+      <!-- Headings -->
+      <div class="flex items-center gap-0.5">
         <button
           type="button"
-          class:active={isActive("heading", { level: 1 })}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'heading',
+            { level: 1 },
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={() => toggleHeading(1)}
           title="Heading 1"
         >
-          H1
+          <Heading1 class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("heading", { level: 2 })}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'heading',
+            { level: 2 },
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={() => toggleHeading(2)}
           title="Heading 2"
         >
-          H2
+          <Heading2 class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("heading", { level: 3 })}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'heading',
+            { level: 3 },
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={() => toggleHeading(3)}
           title="Heading 3"
         >
-          H3
+          <Heading3 class="size-4" />
         </button>
       </div>
 
-      <div class="toolbar-divider"></div>
+      <div class="w-px h-5 bg-border mx-1"></div>
 
-      <div class="toolbar-group">
+      <!-- Text formatting -->
+      <div class="flex items-center gap-0.5">
         <button
           type="button"
-          class:active={isActive("bold")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'bold',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleBold}
           title="Bold (Ctrl+B)"
         >
-          <strong>B</strong>
+          <Bold class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("italic")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'italic',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleItalic}
           title="Italic (Ctrl+I)"
         >
-          <em>I</em>
+          <Italic class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("strike")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'strike',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleStrike}
           title="Strikethrough"
         >
-          <s>S</s>
+          <Strikethrough class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("code")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'code',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleCode}
           title="Inline Code"
         >
-          &lt;/&gt;
+          <Code class="size-4" />
         </button>
       </div>
 
-      <div class="toolbar-divider"></div>
+      <div class="w-px h-5 bg-border mx-1"></div>
 
-      <div class="toolbar-group">
+      <!-- Lists -->
+      <div class="flex items-center gap-0.5">
         <button
           type="button"
-          class:active={isActive("bulletList")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'bulletList',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleBulletList}
           title="Bullet List"
         >
-          •
+          <List class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("orderedList")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'orderedList',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleOrderedList}
           title="Numbered List"
         >
-          1.
+          <ListOrdered class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("taskList")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'taskList',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleTaskList}
           title="Task List"
         >
-          ☑
+          <CheckSquare class="size-4" />
         </button>
       </div>
 
-      <div class="toolbar-divider"></div>
+      <div class="w-px h-5 bg-border mx-1"></div>
 
-      <div class="toolbar-group">
+      <!-- Blocks -->
+      <div class="flex items-center gap-0.5">
         <button
           type="button"
-          class:active={isActive("blockquote")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'blockquote',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleBlockquote}
           title="Quote"
         >
-          "
+          <Quote class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("codeBlock")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'codeBlock',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={toggleCodeBlock}
           title="Code Block"
         >
-          &lbrace;&rbrace;
+          <Braces class="size-4" />
         </button>
         <button
           type="button"
-          class:active={isActive("link")}
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground {isActive(
+            'link',
+          )
+            ? 'bg-accent text-accent-foreground'
+            : 'text-muted-foreground'}"
           onclick={isActive("link") ? unsetLink : setLink}
           title="Link"
         >
-          🔗
+          <Link class="size-4" />
         </button>
       </div>
     </div>
   {/if}
 
-  <div class="editor-container" bind:this={element}></div>
+  <div class="flex-1 overflow-y-auto p-4" bind:this={element}></div>
 </div>
 
 <style>
-  .editor-wrapper {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    border: 1px solid var(--border-color, #e5e7eb);
-    border-radius: 8px;
-    overflow: hidden;
-    background: var(--bg-color, #ffffff);
-  }
-
-  .toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 8px;
-    border-bottom: 1px solid var(--border-color, #e5e7eb);
-    background: var(--toolbar-bg, #f9fafb);
-  }
-
-  .toolbar-group {
-    display: flex;
-    gap: 2px;
-  }
-
-  .toolbar-divider {
-    width: 1px;
-    background: var(--border-color, #e5e7eb);
-    margin: 0 4px;
-  }
-
-  .toolbar button {
-    padding: 6px 10px;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    cursor: pointer;
-    font-size: 14px;
-    color: var(--text-color, #374151);
-    transition: background-color 0.15s;
-  }
-
-  .toolbar button:hover {
-    background: var(--hover-bg, #e5e7eb);
-  }
-
-  .toolbar button.active {
-    background: var(--active-bg, #dbeafe);
-    color: var(--active-color, #2563eb);
-  }
-
-  .editor-container {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-  }
-
   :global(.editor-content) {
     outline: none;
     min-height: 100%;
@@ -479,22 +497,26 @@
     font-size: 2em;
     font-weight: 700;
     line-height: 1.2;
+    color: var(--foreground);
   }
 
   :global(.editor-content h2) {
     font-size: 1.5em;
     font-weight: 600;
     line-height: 1.3;
+    color: var(--foreground);
   }
 
   :global(.editor-content h3) {
     font-size: 1.25em;
     font-weight: 600;
     line-height: 1.4;
+    color: var(--foreground);
   }
 
   :global(.editor-content p) {
     line-height: 1.6;
+    color: var(--foreground);
   }
 
   :global(.editor-content ul),
@@ -519,18 +541,19 @@
 
   :global(.editor-content ul[data-type="taskList"] li input) {
     margin-top: 4px;
+    accent-color: var(--primary);
   }
 
   :global(.editor-content blockquote) {
-    border-left: 3px solid var(--accent-color, #2563eb);
+    border-left: 3px solid var(--primary);
     padding-left: 1em;
     margin-left: 0;
-    color: var(--muted-color, #6b7280);
+    color: var(--muted-foreground);
     font-style: italic;
   }
 
   :global(.editor-content code) {
-    background: var(--code-bg, #f3f4f6);
+    background: var(--muted);
     padding: 2px 6px;
     border-radius: 4px;
     font-family: "SF Mono", Monaco, "Cascadia Code", monospace;
@@ -538,7 +561,7 @@
   }
 
   :global(.editor-code-block) {
-    background: var(--code-bg, #f3f4f6);
+    background: var(--muted);
     padding: 12px 16px;
     border-radius: 6px;
     font-family: "SF Mono", Monaco, "Cascadia Code", monospace;
@@ -552,7 +575,7 @@
   }
 
   :global(.editor-link) {
-    color: var(--accent-color, #2563eb);
+    color: var(--primary);
     text-decoration: underline;
     cursor: pointer;
   }
@@ -560,25 +583,35 @@
   :global(.editor-content p.is-editor-empty:first-child::before) {
     content: attr(data-placeholder);
     float: left;
-    color: var(--placeholder-color, #9ca3af);
+    color: var(--muted-foreground);
     pointer-events: none;
     height: 0;
   }
 
-  /* Dark mode support */
-  @media (prefers-color-scheme: dark) {
-    .editor-wrapper {
-      --bg-color: #1f2937;
-      --border-color: #374151;
-      --toolbar-bg: #111827;
-      --text-color: #e5e7eb;
-      --hover-bg: #374151;
-      --active-bg: #1e3a5f;
-      --active-color: #60a5fa;
-      --muted-color: #9ca3af;
-      --code-bg: #111827;
-      --placeholder-color: #6b7280;
-      --accent-color: #60a5fa;
-    }
+  :global(.editor-content hr) {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.5em 0;
+  }
+
+  :global(.editor-content strong) {
+    font-weight: 600;
+  }
+
+  :global(.editor-content em) {
+    font-style: italic;
+  }
+
+  :global(.editor-content s) {
+    text-decoration: line-through;
+  }
+
+  :global(.editor-content a) {
+    color: var(--primary);
+    text-decoration: underline;
+  }
+
+  :global(.editor-content a:hover) {
+    opacity: 0.8;
   }
 </style>
