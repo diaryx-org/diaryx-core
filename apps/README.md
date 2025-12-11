@@ -1,3 +1,14 @@
+---
+title: Diaryx Apps
+author: adammharris
+audience:
+  - public
+contents:
+  - web/README.md
+  - tauri/README.md
+part_of: ../README.md
+---
+
 # Diaryx Frontend Apps
 
 This directory contains the frontend applications for Diaryx.
@@ -47,9 +58,10 @@ The key to supporting both Tauri (desktop) and pure web targets is the **Backend
    - JavaScript fallbacks (or WASM module) for parsing/rendering
 
 4. **`index.ts`** - Factory that auto-detects the runtime environment:
+
    ```typescript
-   import { getBackend } from './lib/backend';
-   
+   import { getBackend } from "./lib/backend";
+
    const backend = await getBackend();
    // Returns TauriBackend if window.__TAURI__ exists
    // Returns WasmBackend otherwise
@@ -60,7 +72,7 @@ The key to supporting both Tauri (desktop) and pure web targets is the **Backend
 ```typescript
 // Tauri injects __TAURI__ into the window object
 function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  return typeof window !== "undefined" && "__TAURI__" in window;
 }
 ```
 
@@ -118,6 +130,7 @@ The WASM backend uses a "load all, work in memory, persist periodically" approac
 3. **On persist**: Dirty files are written back to IndexedDB
 
 Auto-persist runs every 5 seconds, and manual persist happens on:
+
 - Save operations
 - Before page unload
 
