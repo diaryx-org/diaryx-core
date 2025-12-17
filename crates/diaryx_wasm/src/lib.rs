@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use diaryx_core::{
     entry::DiaryxApp,
     fs::{FileSystem, InMemoryFileSystem},
+    path_utils::{relative_path_from_dir_to_target, relative_path_from_file_to_target},
     search::{SearchQuery, Searcher},
     template::TemplateManager,
     workspace::Workspace,
@@ -443,9 +444,7 @@ pub fn attach_entry_to_parent(entry_path: &str, parent_index_path: &str) -> Resu
 
         // Add child link to parent's contents (path relative to the parent index directory)
         let child_rel = relative_path_from_dir_to_target(
-            parent_index
-                .parent()
-                .unwrap_or_else(|| Path::new("")),
+            parent_index.parent().unwrap_or_else(|| Path::new("")),
             &entry,
         );
 
@@ -453,91 +452,24 @@ pub fn attach_entry_to_parent(entry_path: &str, parent_index_path: &str) -> Resu
         add_to_index_contents(&app, &parent_index_str, &child_rel)?;
 
         // Set child's part_of (path relative to the entry directory)
-        let parent_rel = relative_path_from_entry_to_target(&entry, &parent_index);
-        app.set_frontmatter_property(
-            entry_path,
-            "part_of",
-            serde_yaml::Value::String(parent_rel),
-        )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let parent_rel = relative_path_from_file_to_target(&entry, &parent_index);
+        app.set_frontmatter_property(entry_path, "part_of", serde_yaml::Value::String(parent_rel))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         Ok(())
     })
 }
 
 /// Add `entry` to `index_path` frontmatter `contents` sequence (if not already present).
+/// Uses the core implementation from `DiaryxApp::add_to_index_contents`.
 fn add_to_index_contents(
     app: &DiaryxApp<&InMemoryFileSystem>,
     index_path: &str,
     entry: &str,
 ) -> Result<(), JsValue> {
-    let frontmatter = app
-        .get_all_frontmatter(index_path)
+    app.add_to_index_contents(std::path::Path::new(index_path), entry)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let mut contents: Vec<String> = frontmatter
-        .get("contents")
-        .and_then(|v| {
-            if let serde_yaml::Value::Sequence(seq) = v {
-                Some(
-                    seq.iter()
-                        .filter_map(|item| item.as_str().map(String::from))
-                        .collect(),
-                )
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-
-    if !contents.contains(&entry.to_string()) {
-        contents.push(entry.to_string());
-        contents.sort();
-
-        let yaml_contents: Vec<serde_yaml::Value> = contents
-            .into_iter()
-            .map(serde_yaml::Value::String)
-            .collect();
-
-        app.set_frontmatter_property(
-            index_path,
-            "contents",
-            serde_yaml::Value::Sequence(yaml_contents),
-        )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    }
-
     Ok(())
-}
-
-/// Compute a relative path from a base directory to a target file.
-/// Example: base_dir `workspace`, target `workspace/Daily/daily_index.md` => `Daily/daily_index.md`
-fn relative_path_from_dir_to_target(base_dir: &Path, target_path: &Path) -> String {
-    let base_components: Vec<_> = base_dir.components().collect();
-    let target_components: Vec<_> = target_path.components().collect();
-
-    let mut common = 0usize;
-    while common < base_components.len()
-        && common < target_components.len()
-        && base_components[common] == target_components[common]
-    {
-        common += 1;
-    }
-
-    let mut parts: Vec<String> = Vec::new();
-    for _ in common..base_components.len() {
-        parts.push("..".to_string());
-    }
-
-    for comp in target_components.iter().skip(common) {
-        parts.push(comp.as_os_str().to_string_lossy().to_string());
-    }
-
-    if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    }
 }
 
 /// Delete an entry.
@@ -610,9 +542,9 @@ pub fn move_entry(from_path: &str, to_path: &str) -> Result<String, JsValue> {
             add_to_index_contents(&app, &new_index_str, &new_file_name)?;
 
             // Update moved entry's part_of to point to the new parent index, relative to the entry location.
-            let rel_part_of = relative_path_from_entry_to_target(&to, &new_index_path);
+            let rel_part_of = relative_path_from_file_to_target(&to, &new_index_path);
             app.set_frontmatter_property(
-                &to_path,
+                to_path,
                 "part_of",
                 serde_yaml::Value::String(rel_part_of),
             )
@@ -623,85 +555,16 @@ pub fn move_entry(from_path: &str, to_path: &str) -> Result<String, JsValue> {
     })
 }
 
-/// (removed) duplicate `add_to_index_contents` helper
-/// Use the earlier `add_to_index_contents` defined above (used by `attach_entry_to_parent`).
-
 /// Remove `entry` from `index_path` frontmatter `contents` sequence (if present).
-fn remove_from_index_contents(app: &DiaryxApp<&InMemoryFileSystem>, index_path: &str, entry: &str) -> Result<(), JsValue> {
-    let frontmatter = app
-        .get_all_frontmatter(index_path)
+/// Uses the core implementation from `DiaryxApp::remove_from_index_contents`.
+fn remove_from_index_contents(
+    app: &DiaryxApp<&InMemoryFileSystem>,
+    index_path: &str,
+    entry: &str,
+) -> Result<(), JsValue> {
+    app.remove_from_index_contents(std::path::Path::new(index_path), entry)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let mut contents: Vec<String> = frontmatter
-        .get("contents")
-        .and_then(|v| {
-            if let serde_yaml::Value::Sequence(seq) = v {
-                Some(
-                    seq.iter()
-                        .filter_map(|item| item.as_str().map(String::from))
-                        .collect(),
-                )
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-
-    let before_len = contents.len();
-    contents.retain(|c| c != entry);
-
-    if contents.len() != before_len {
-        contents.sort();
-        let yaml_contents: Vec<serde_yaml::Value> = contents
-            .into_iter()
-            .map(serde_yaml::Value::String)
-            .collect();
-
-        app.set_frontmatter_property(
-            index_path,
-            "contents",
-            serde_yaml::Value::Sequence(yaml_contents),
-        )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    }
-
     Ok(())
-}
-
-/// Compute a relative path from the entry file location to a target file.
-/// Example: entry at `a/b/note.md`, target at `a/index.md` => `../index.md`
-fn relative_path_from_entry_to_target(entry_path: &Path, target_path: &Path) -> String {
-    // We want relative from entry's directory.
-    let entry_dir = entry_path.parent().unwrap_or_else(|| Path::new(""));
-
-    let entry_components: Vec<_> = entry_dir.components().collect();
-    let target_components: Vec<_> = target_path.components().collect();
-
-    // Find common prefix length
-    let mut common = 0usize;
-    while common < entry_components.len()
-        && common < target_components.len()
-        && entry_components[common] == target_components[common]
-    {
-        common += 1;
-    }
-
-    // For each remaining entry_dir component, we need a `..`
-    let mut parts: Vec<String> = Vec::new();
-    for _ in common..entry_components.len() {
-        parts.push("..".to_string());
-    }
-
-    // Then append the remaining target components
-    for comp in target_components.iter().skip(common) {
-        parts.push(comp.as_os_str().to_string_lossy().to_string());
-    }
-
-    if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    }
 }
 
 // ============================================================================
@@ -949,10 +812,18 @@ pub fn delete_template(name: &str, workspace_path: &str) -> Result<(), JsValue> 
 }
 
 // ============================================================================
-// Utility Functions (kept for backwards compatibility)
+// Utility Functions
+// These functions operate on raw content strings for JavaScript compatibility.
+// Core's `DiaryxApp::parse_file` works on file paths, but these utilities are
+// needed for web frontend scenarios where raw content is passed from JavaScript.
 // ============================================================================
 
-/// Parse YAML frontmatter from markdown content.
+/// Parse YAML frontmatter from raw markdown content.
+///
+/// This function operates on raw content strings for JavaScript compatibility.
+/// For file-based parsing, use `get_entry` or `get_frontmatter` instead.
+///
+/// Returns an empty object if no valid frontmatter is found.
 #[wasm_bindgen]
 pub fn parse_frontmatter(content: &str) -> Result<JsValue, JsValue> {
     if !content.starts_with("---\n") {
@@ -1005,7 +876,11 @@ pub fn serialize_frontmatter(frontmatter: JsValue) -> Result<String, JsValue> {
     Ok(format!("---\n{}\n---", yaml))
 }
 
-/// Extract the body content from a markdown file (everything after frontmatter).
+/// Extract the body content from raw markdown (everything after frontmatter).
+///
+/// This function operates on raw content strings for JavaScript compatibility.
+/// For file-based content retrieval, use `get_entry` which returns both
+/// frontmatter and body content parsed via `DiaryxApp::get_content`.
 #[wasm_bindgen]
 pub fn extract_body(content: &str) -> String {
     if !content.starts_with("---\n") {

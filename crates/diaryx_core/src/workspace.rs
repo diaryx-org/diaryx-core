@@ -130,7 +130,7 @@ pub struct Workspace<FS: FileSystem> {
 }
 
 impl<FS: FileSystem> Workspace<FS> {
-  /// Create a new workspace
+    /// Create a new workspace
     pub fn new(fs: FS) -> Self {
         Self { fs }
     }

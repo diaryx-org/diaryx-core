@@ -16,7 +16,6 @@ pub struct DiaryxApp<FS: FileSystem> {
 
 /// This is the implementation of a Diaryx app. Given a filesytem, it can do various operations in any filesystem environment.
 impl<FS: FileSystem> DiaryxApp<FS> {
-
     /// DiaryxApp constructor
     pub fn new(fs: FS) -> Self {
         Self { fs }
@@ -638,8 +637,11 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         Ok(())
     }
 
-    /// Add an entry to an index's contents list
-    fn add_to_index_contents(&self, index_path: &Path, entry: &str) -> Result<()> {
+    /// Add an entry to an index's contents list.
+    ///
+    /// Does nothing if the entry is already present.
+    /// Returns `Ok(true)` if the entry was added, `Ok(false)` if already present or skipped.
+    pub fn add_to_index_contents(&self, index_path: &Path, entry: &str) -> Result<bool> {
         let index_str = index_path.to_string_lossy();
 
         match self.get_frontmatter_property(&index_str, "contents") {
@@ -654,19 +656,55 @@ impl<FS: FileSystem> DiaryxApp<FS> {
                         a_str.cmp(b_str)
                     });
                     self.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))?;
+                    return Ok(true);
                 }
+                Ok(false)
             }
             Ok(None) => {
                 // Create contents with just this entry
                 let items = vec![Value::String(entry.to_string())];
                 self.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))?;
+                Ok(true)
             }
             _ => {
                 // Contents exists but isn't a sequence, or error reading - skip
+                Ok(false)
             }
         }
+    }
 
-        Ok(())
+    /// Remove an entry from an index's contents list.
+    ///
+    /// Returns `Ok(true)` if the entry was found and removed, `Ok(false)` if not found or skipped.
+    pub fn remove_from_index_contents(&self, index_path: &Path, entry: &str) -> Result<bool> {
+        let index_str = index_path.to_string_lossy();
+
+        match self.get_frontmatter_property(&index_str, "contents") {
+            Ok(Some(Value::Sequence(mut items))) => {
+                let before_len = items.len();
+                items.retain(|item| item.as_str() != Some(entry));
+
+                if items.len() != before_len {
+                    // Sort contents for consistent ordering
+                    items.sort_by(|a, b| {
+                        let a_str = a.as_str().unwrap_or("");
+                        let b_str = b.as_str().unwrap_or("");
+                        a_str.cmp(b_str)
+                    });
+                    self.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))?;
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            Ok(None) | Ok(Some(_)) => {
+                // No contents property or not a sequence - nothing to remove
+                Ok(false)
+            }
+            Err(_) => {
+                // Error reading - skip
+                Ok(false)
+            }
+        }
     }
 
     /// Generate the year index filename (e.g., "2025_index.md")
@@ -704,119 +742,7 @@ pub fn prettify_filename(filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::io;
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-
-    /// A mock filesystem for testing
-    #[derive(Clone, Default)]
-    struct MockFileSystem {
-        files: Arc<Mutex<HashMap<PathBuf, String>>>,
-    }
-
-    impl MockFileSystem {
-        fn new() -> Self {
-            Self {
-                files: Arc::new(Mutex::new(HashMap::new())),
-            }
-        }
-
-        fn with_file(self, path: &str, content: &str) -> Self {
-            self.files
-                .lock()
-                .unwrap()
-                .insert(PathBuf::from(path), content.to_string());
-            self
-        }
-
-        fn get_content(&self, path: &str) -> Option<String> {
-            self.files
-                .lock()
-                .unwrap()
-                .get(&PathBuf::from(path))
-                .cloned()
-        }
-    }
-
-    impl crate::fs::FileSystem for MockFileSystem {
-        fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            self.files
-                .lock()
-                .unwrap()
-                .get(path)
-                .cloned()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "File not found"))
-        }
-
-        fn write_file(&self, path: &Path, content: &str) -> io::Result<()> {
-            self.files
-                .lock()
-                .unwrap()
-                .insert(path.to_path_buf(), content.to_string());
-            Ok(())
-        }
-
-        fn exists(&self, path: &Path) -> bool {
-            self.files.lock().unwrap().contains_key(path)
-        }
-
-        fn create_new(&self, path: &Path, content: &str) -> io::Result<()> {
-            let mut files = self.files.lock().unwrap();
-            if files.contains_key(path) {
-                return Err(io::Error::new(io::ErrorKind::AlreadyExists, "File exists"));
-            }
-            files.insert(path.to_path_buf(), content.to_string());
-            Ok(())
-        }
-
-        fn delete_file(&self, path: &Path) -> io::Result<()> {
-            self.files.lock().unwrap().remove(path);
-            Ok(())
-        }
-
-        fn list_md_files(&self, dir: &Path) -> io::Result<Vec<PathBuf>> {
-            let files = self.files.lock().unwrap();
-            let mut result = Vec::new();
-            for path in files.keys() {
-                if path.parent() == Some(dir) && path.extension().is_some_and(|ext| ext == "md") {
-                    result.push(path.clone());
-                }
-            }
-            Ok(result)
-        }
-
-        fn create_dir_all(&self, _path: &Path) -> io::Result<()> {
-            // Mock implementation - directories are implicit
-            Ok(())
-        }
-
-        fn is_dir(&self, _path: &Path) -> bool {
-            // Mock implementation - assume any non-file path could be a directory
-            false
-        }
-
-        fn move_file(&self, from: &Path, to: &Path) -> io::Result<()> {
-            let mut files = self.files.lock().unwrap();
-
-            if !files.contains_key(from) {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "File not found"));
-            }
-            if files.contains_key(to) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "Destination exists",
-                ));
-            }
-
-            let content = files
-                .remove(from)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "File not found"))?;
-            files.insert(to.to_path_buf(), content);
-
-            Ok(())
-        }
-    }
+    use crate::test_utils::MockFileSystem;
 
     #[test]
     fn test_get_content() {

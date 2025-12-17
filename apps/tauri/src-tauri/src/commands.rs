@@ -61,18 +61,22 @@ fn get_platform_paths<R: Runtime>(app: &AppHandle<R>) -> Result<AppPaths, Serial
     if is_mobile {
         // On mobile, use document_dir for user files so they appear in Files app
         // (UIFileSharingEnabled and LSSupportsOpeningDocumentsInPlace must be set in Info.plist)
-        let document_dir = path_resolver.document_dir().map_err(|e| SerializableError {
-            kind: "PathError".to_string(),
-            message: format!("Failed to get document directory: {}", e),
-            path: None,
-        })?;
+        let document_dir = path_resolver
+            .document_dir()
+            .map_err(|e| SerializableError {
+                kind: "PathError".to_string(),
+                message: format!("Failed to get document directory: {}", e),
+                path: None,
+            })?;
 
         // Use app_data_dir for internal config (not exposed to Files app)
-        let data_dir = path_resolver.app_data_dir().map_err(|e| SerializableError {
-            kind: "PathError".to_string(),
-            message: format!("Failed to get app data directory: {}", e),
-            path: None,
-        })?;
+        let data_dir = path_resolver
+            .app_data_dir()
+            .map_err(|e| SerializableError {
+                kind: "PathError".to_string(),
+                message: format!("Failed to get app data directory: {}", e),
+                path: None,
+            })?;
 
         // Workspace goes in Documents so users can access via Files app
         let default_workspace = document_dir.join("Diaryx");
@@ -88,27 +92,35 @@ fn get_platform_paths<R: Runtime>(app: &AppHandle<R>) -> Result<AppPaths, Serial
         })
     } else {
         // On desktop, use standard locations
-        let data_dir = path_resolver.app_data_dir().map_err(|e| SerializableError {
-            kind: "PathError".to_string(),
-            message: format!("Failed to get app data directory: {}", e),
-            path: None,
-        })?;
+        let data_dir = path_resolver
+            .app_data_dir()
+            .map_err(|e| SerializableError {
+                kind: "PathError".to_string(),
+                message: format!("Failed to get app data directory: {}", e),
+                path: None,
+            })?;
 
-        let document_dir = path_resolver.document_dir().map_err(|e| SerializableError {
-            kind: "PathError".to_string(),
-            message: format!("Failed to get document directory: {}", e),
-            path: None,
-        })?;
+        let document_dir = path_resolver
+            .document_dir()
+            .map_err(|e| SerializableError {
+                kind: "PathError".to_string(),
+                message: format!("Failed to get document directory: {}", e),
+                path: None,
+            })?;
 
         // Use the standard config location
-        let config_path = path_resolver.app_config_dir().map_err(|e| SerializableError {
-            kind: "PathError".to_string(),
-            message: format!("Failed to get config directory: {}", e),
-            path: None,
-        })?.join("config.toml");
+        let config_path = path_resolver
+            .app_config_dir()
+            .map_err(|e| SerializableError {
+                kind: "PathError".to_string(),
+                message: format!("Failed to get config directory: {}", e),
+                path: None,
+            })?
+            .join("config.toml");
 
         // Default workspace in home directory for desktop
-        let default_workspace = path_resolver.home_dir()
+        let default_workspace = path_resolver
+            .home_dir()
             .unwrap_or_else(|_| document_dir.clone())
             .join("diaryx");
 
@@ -162,7 +174,10 @@ pub fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, Seriali
     if !paths.default_workspace.exists() {
         log::info!("[initialize_app] Creating workspace directory...");
         std::fs::create_dir_all(&paths.default_workspace).map_err(|e| {
-            log::error!("[initialize_app] Failed to create workspace directory: {}", e);
+            log::error!(
+                "[initialize_app] Failed to create workspace directory: {}",
+                e
+            );
             SerializableError {
                 kind: "IoError".to_string(),
                 message: format!("Failed to create workspace directory: {}", e),
@@ -184,7 +199,10 @@ pub fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, Seriali
             false
         }
         Err(e) => {
-            log::warn!("[initialize_app] Error checking for root index: {:?}, assuming not initialized", e);
+            log::warn!(
+                "[initialize_app] Error checking for root index: {:?}, assuming not initialized",
+                e
+            );
             false
         }
     };
@@ -208,12 +226,17 @@ pub fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, Seriali
         log::info!("[initialize_app] Mobile: using placeholder workspace path in config");
         Config::new(PathBuf::from("workspace"))
     } else if paths.config_path.exists() {
-        log::info!("[initialize_app] Loading existing config from {:?}", paths.config_path);
-        Config::load_from(&RealFileSystem, &paths.config_path)
-            .unwrap_or_else(|e| {
-                log::warn!("[initialize_app] Failed to load config, creating new: {:?}", e);
-                Config::new(paths.default_workspace.clone())
-            })
+        log::info!(
+            "[initialize_app] Loading existing config from {:?}",
+            paths.config_path
+        );
+        Config::load_from(&RealFileSystem, &paths.config_path).unwrap_or_else(|e| {
+            log::warn!(
+                "[initialize_app] Failed to load config, creating new: {:?}",
+                e
+            );
+            Config::new(paths.default_workspace.clone())
+        })
     } else {
         log::info!("[initialize_app] Creating new config");
         Config::new(paths.default_workspace.clone())
@@ -221,7 +244,8 @@ pub fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, Seriali
 
     // Save config (ensures parent directories exist)
     log::info!("[initialize_app] Saving config to {:?}", paths.config_path);
-    config.save_to(&RealFileSystem, &paths.config_path)
+    config
+        .save_to(&RealFileSystem, &paths.config_path)
         .map_err(|e| {
             log::error!("[initialize_app] Failed to save config: {:?}", e);
             e.to_serializable()
@@ -276,8 +300,7 @@ pub fn get_config<R: Runtime>(app: AppHandle<R>) -> Result<Config, SerializableE
     }
 
     if paths.config_path.exists() {
-        Config::load_from(&RealFileSystem, &paths.config_path)
-            .map_err(|e| e.to_serializable())
+        Config::load_from(&RealFileSystem, &paths.config_path).map_err(|e| e.to_serializable())
     } else {
         // Return default config with platform-appropriate paths
         Ok(Config::new(paths.default_workspace))
@@ -286,12 +309,10 @@ pub fn get_config<R: Runtime>(app: AppHandle<R>) -> Result<Config, SerializableE
 
 /// Save the configuration (platform-aware)
 #[tauri::command]
-pub fn save_config<R: Runtime>(
-    app: AppHandle<R>,
-    config: Config,
-) -> Result<(), SerializableError> {
+pub fn save_config<R: Runtime>(app: AppHandle<R>, config: Config) -> Result<(), SerializableError> {
     let paths = get_platform_paths(&app)?;
-    config.save_to(&RealFileSystem, &paths.config_path)
+    config
+        .save_to(&RealFileSystem, &paths.config_path)
         .map_err(|e| e.to_serializable())
 }
 
@@ -302,11 +323,18 @@ pub fn get_workspace_tree<R: Runtime>(
     workspace_path: Option<String>,
     depth: Option<usize>,
 ) -> Result<TreeNode, SerializableError> {
-    log::info!("[get_workspace_tree] Called with workspace_path: {:?}, depth: {:?}", workspace_path, depth);
+    log::info!(
+        "[get_workspace_tree] Called with workspace_path: {:?}, depth: {:?}",
+        workspace_path,
+        depth
+    );
 
     let ws = Workspace::new(RealFileSystem);
     let paths = get_platform_paths(&app)?;
-    log::info!("[get_workspace_tree] Platform paths: default_workspace={:?}", paths.default_workspace);
+    log::info!(
+        "[get_workspace_tree] Platform paths: default_workspace={:?}",
+        paths.default_workspace
+    );
 
     // Resolve workspace path
     // On mobile (iOS/Android), ALWAYS use the current app data directory
@@ -319,7 +347,10 @@ pub fn get_workspace_tree<R: Runtime>(
         }
         _ if paths.is_mobile => {
             // On mobile, always use current default_workspace from platform paths
-            log::info!("[get_workspace_tree] Mobile: using current app data directory: {:?}", paths.default_workspace);
+            log::info!(
+                "[get_workspace_tree] Mobile: using current app data directory: {:?}",
+                paths.default_workspace
+            );
             paths.default_workspace.clone()
         }
         _ => {
@@ -331,12 +362,18 @@ pub fn get_workspace_tree<R: Runtime>(
             } else {
                 paths.default_workspace.clone()
             };
-            log::info!("[get_workspace_tree] Desktop: resolved workspace path from config: {:?}", resolved);
+            log::info!(
+                "[get_workspace_tree] Desktop: resolved workspace path from config: {:?}",
+                resolved
+            );
             resolved
         }
     };
 
-    log::info!("[get_workspace_tree] Looking for root index in: {:?}", root_path);
+    log::info!(
+        "[get_workspace_tree] Looking for root index in: {:?}",
+        root_path
+    );
 
     // Find the root index
     let root_index = match ws.find_root_index_in_dir(&root_path) {
@@ -345,10 +382,16 @@ pub fn get_workspace_tree<R: Runtime>(
             path
         }
         Ok(None) => {
-            log::error!("[get_workspace_tree] No root index found in {:?}", root_path);
+            log::error!(
+                "[get_workspace_tree] No root index found in {:?}",
+                root_path
+            );
             return Err(SerializableError {
                 kind: "WorkspaceNotFound".to_string(),
-                message: format!("No workspace found at '{}'. Try initializing the app first.", root_path.display()),
+                message: format!(
+                    "No workspace found at '{}'. Try initializing the app first.",
+                    root_path.display()
+                ),
                 path: Some(root_path.clone()),
             });
         }
@@ -361,13 +404,17 @@ pub fn get_workspace_tree<R: Runtime>(
     let max_depth = depth;
     let mut visited = HashSet::new();
     log::info!("[get_workspace_tree] Building tree from root index...");
-    let tree = ws.build_tree_with_depth(&root_index, max_depth, &mut visited)
+    let tree = ws
+        .build_tree_with_depth(&root_index, max_depth, &mut visited)
         .map_err(|e| {
             log::error!("[get_workspace_tree] Error building tree: {:?}", e);
             e.to_serializable()
         })?;
 
-    log::info!("[get_workspace_tree] Tree built successfully: name={}", tree.name);
+    log::info!(
+        "[get_workspace_tree] Tree built successfully: name={}",
+        tree.name
+    );
     Ok(tree)
 }
 
@@ -590,13 +637,14 @@ pub fn move_entry(request: MoveEntryRequest) -> Result<PathBuf, SerializableErro
         path: Some(from.clone()),
     })?;
     let old_index = old_parent.join("index.md");
-    let old_file_name = from.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-        SerializableError {
-            kind: "InvalidPath".to_string(),
-            message: "Invalid source file name".to_string(),
-            path: Some(from.clone()),
-        }
-    })?;
+    let old_file_name =
+        from.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| SerializableError {
+                kind: "InvalidPath".to_string(),
+                message: "Invalid source file name".to_string(),
+                path: Some(from.clone()),
+            })?;
 
     let new_parent = to.parent().ok_or_else(|| SerializableError {
         kind: "InvalidPath".to_string(),
@@ -604,13 +652,14 @@ pub fn move_entry(request: MoveEntryRequest) -> Result<PathBuf, SerializableErro
         path: Some(to.clone()),
     })?;
     let new_index = new_parent.join("index.md");
-    let new_file_name = to.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-        SerializableError {
-            kind: "InvalidPath".to_string(),
-            message: "Invalid destination file name".to_string(),
-            path: Some(to.clone()),
-        }
-    })?;
+    let new_file_name =
+        to.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| SerializableError {
+                kind: "InvalidPath".to_string(),
+                message: "Invalid destination file name".to_string(),
+                path: Some(to.clone()),
+            })?;
 
     // Move file
     RealFileSystem
@@ -635,12 +684,8 @@ pub fn move_entry(request: MoveEntryRequest) -> Result<PathBuf, SerializableErro
 
         let rel_part_of = relative_path_from_entry_to_target(&to, &new_index);
         let to_str = request.to_path.clone();
-        app.set_frontmatter_property(
-            &to_str,
-            "part_of",
-            serde_yaml::Value::String(rel_part_of),
-        )
-        .map_err(|e| e.to_serializable())?;
+        app.set_frontmatter_property(&to_str, "part_of", serde_yaml::Value::String(rel_part_of))
+            .map_err(|e| e.to_serializable())?;
     }
 
     Ok(to)
@@ -823,7 +868,9 @@ fn add_to_index_contents_tauri(
 /// - Adds the entry to the parent's `contents` using a path relative to the parent index directory
 /// - Sets the entry's `part_of` to point back to the parent index (relative to the entry)
 #[tauri::command]
-pub fn attach_entry_to_parent(request: AttachEntryToParentRequest) -> Result<(), SerializableError> {
+pub fn attach_entry_to_parent(
+    request: AttachEntryToParentRequest,
+) -> Result<(), SerializableError> {
     let app = DiaryxApp::new(RealFileSystem);
 
     let entry = PathBuf::from(&request.entry_path);
