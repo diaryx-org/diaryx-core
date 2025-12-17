@@ -63,36 +63,35 @@ use diaryx_core::export::{ExportOptions, ExportPlan, Exporter};
 use diaryx_core::fs::RealFileSystem;
 use std::path::Path;
 
-fn main() {
-  let workspace_root = Path::new("./workspace");
-  let audience = "public";
-  let destination = Path::new("./export");
-  let fs = RealFileSystem;
-  let exporter = Exporter::new(fs);
-  let plan = match exporter.plan_export(&workspace_root, audience, destination) {
-    Ok(plan) => plan,
-    Err(e) => {
-      eprintln!("✗ Failed to plan export: {}", e);
-      return;
-    }
-  };
-  let force = false;
-  let keep_audience = false;
-  let options = ExportOptions {
+let workspace_root = Path::new("./workspace");
+let audience = "public";
+let destination = Path::new("./export");
+let fs = RealFileSystem;
+let exporter = Exporter::new(fs);
+let plan = match exporter.plan_export(&workspace_root, audience, destination) {
+  Ok(plan) => plan,
+  Err(e) => {
+    eprintln!("✗ Failed to plan export: {}", e);
+    return;
+  }
+};
+
+let force = false;
+let keep_audience = false;
+let options = ExportOptions {
     force,
     keep_audience,
-  };
+};
 
-  match exporter.execute_export(&plan, &options) {
-    Ok(stats) => {
-      println!("✓ {}", stats);
-      println!("  Exported to: {}", destination.display());
-    }
-    Err(e) => {
-      eprintln!("✗ Export failed: {}", e);
-      if !force && destination.exists() {
-        eprintln!("  (use --force to overwrite existing destination)");
-      }
+match exporter.execute_export(&plan, &options) {
+  Ok(stats) => {
+    println!("✓ {}", stats);
+    println!("  Exported to: {}", destination.display());
+  }
+  Err(e) => {
+    eprintln!("✗ Export failed: {}", e);
+    if !force && destination.exists() {
+      eprintln!("  (use --force to overwrite existing destination)");
     }
   }
 }

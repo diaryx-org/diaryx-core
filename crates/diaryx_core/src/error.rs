@@ -18,7 +18,6 @@ pub enum DiaryxError {
     /// - insufficient permissions
     /// - locking/concurrent access
     /// - resource issues
-    /// and so forth.
     ///
     /// Diaryx should display an error message if a file cannot be read.
     #[error("Failed to read file '{path}': {source}")]
@@ -35,7 +34,6 @@ pub enum DiaryxError {
     /// - insufficient permissions
     /// - locking/concurrent access
     /// - resource issues
-    /// and so forth.
     ///
     /// Diaryx should display an error message if a file cannot be written.
     #[error("Failed to write file '{path}': {source}")]

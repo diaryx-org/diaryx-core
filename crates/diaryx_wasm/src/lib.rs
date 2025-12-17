@@ -238,9 +238,14 @@ impl From<diaryx_core::validate::ValidationWarning> for JsValidationWarning {
             ValidationWarning::OrphanFile { file } => JsValidationWarning::OrphanFile {
                 file: file.to_string_lossy().to_string(),
             },
-            ValidationWarning::CircularReference { files } => JsValidationWarning::CircularReference {
-                files: files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
-            },
+            ValidationWarning::CircularReference { files } => {
+                JsValidationWarning::CircularReference {
+                    files: files
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect(),
+                }
+            }
         }
     }
 }
@@ -277,8 +282,16 @@ pub fn validate_workspace(workspace_path: &str) -> Result<JsValue, JsValue> {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         let js_result = JsValidationResult {
-            errors: result.errors.into_iter().map(JsValidationError::from).collect(),
-            warnings: result.warnings.into_iter().map(JsValidationWarning::from).collect(),
+            errors: result
+                .errors
+                .into_iter()
+                .map(JsValidationError::from)
+                .collect(),
+            warnings: result
+                .warnings
+                .into_iter()
+                .map(JsValidationWarning::from)
+                .collect(),
             files_checked: result.files_checked,
         };
 
@@ -571,7 +584,6 @@ pub fn move_entry(from_path: &str, to_path: &str) -> Result<String, JsValue> {
         Ok(to_path.to_string())
     })
 }
-
 
 // ============================================================================
 // Frontmatter Operations

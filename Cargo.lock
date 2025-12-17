@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "clap",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "chrono-english",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_tauri"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "diaryx_core",
  "env_logger",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_wasm"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
