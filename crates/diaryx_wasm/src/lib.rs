@@ -700,6 +700,39 @@ pub fn create_child_entry(parent_path: &str) -> Result<String, JsValue> {
     })
 }
 
+/// Convert a title to a kebab-case filename.
+///
+/// Uses core `slugify_title` which:
+/// - Converts to lowercase
+/// - Replaces non-alphanumeric characters with dashes
+/// - Removes consecutive dashes
+/// - Returns "untitled.md" for empty titles
+#[wasm_bindgen]
+pub fn slugify_title(title: &str) -> String {
+    diaryx_core::entry::slugify_title(title)
+}
+
+/// Rename an entry file by giving it a new filename.
+///
+/// Uses core `Workspace::rename_entry` which:
+/// - For leaf files: renames the file and updates parent `contents`
+/// - For index files: renames the containing directory and updates grandparent `contents`
+///
+/// Returns the new path to the renamed file.
+#[wasm_bindgen]
+pub fn rename_entry(path: &str, new_filename: &str) -> Result<String, JsValue> {
+    with_fs_mut(|fs| {
+        let ws = Workspace::new(fs);
+        let path_buf = PathBuf::from(path);
+
+        let new_path = ws
+            .rename_entry(&path_buf, new_filename)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        Ok(new_path.to_string_lossy().to_string())
+    })
+}
+
 // ============================================================================
 // Frontmatter Operations
 // ============================================================================

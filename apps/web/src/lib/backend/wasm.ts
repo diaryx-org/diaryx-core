@@ -330,6 +330,16 @@ export class WasmBackend implements Backend {
     return wasm.create_child_entry(parentPath);
   }
 
+  slugifyTitle(title: string): string {
+    const wasm = this.requireWasm();
+    return wasm.slugify_title(title);
+  }
+
+  async renameEntry(path: string, newFilename: string): Promise<string> {
+    const wasm = this.requireWasm();
+    return wasm.rename_entry(path, newFilename);
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

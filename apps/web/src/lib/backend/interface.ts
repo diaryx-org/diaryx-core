@@ -221,6 +221,26 @@ export interface Backend {
    */
   createChildEntry(parentPath: string): Promise<string>;
 
+  /**
+   * Convert a title to a kebab-case filename.
+   * Example: "My Cool Entry" → "my-cool-entry.md"
+   *
+   * @param title The title to convert.
+   * @returns The slugified filename.
+   */
+  slugifyTitle(title: string): string;
+
+  /**
+   * Rename an entry file by giving it a new filename.
+   * For leaf files: renames the file and updates parent `contents`.
+   * For index files: renames the containing directory and updates grandparent `contents`.
+   *
+   * @param path Path to the entry to rename.
+   * @param newFilename The new filename (e.g., "new-name.md").
+   * @returns The new path to the renamed file.
+   */
+  renameEntry(path: string, newFilename: string): Promise<string>;
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

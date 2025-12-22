@@ -282,8 +282,39 @@
     try {
       await backend.setFrontmatterProperty(currentEntry.path, key, value);
       await persistNow();
-      // Update local state
-      currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+      
+      // If title changed, sync the filename
+      if (key === "title" && typeof value === "string" && value.trim()) {
+        const newFilename = backend.slugifyTitle(value);
+        const currentFilename = currentEntry.path.split("/").pop() || "";
+        
+        // Only rename if the filename would actually change
+        // For index files, compare the directory name, not "index.md"
+        const isIndex = currentFilename === "index.md";
+        const currentDir = isIndex 
+          ? currentEntry.path.split("/").slice(-2, -1)[0] || ""
+          : currentFilename.replace(/\.md$/, "");
+        const newDir = newFilename.replace(/\.md$/, "");
+        
+        if (currentDir !== newDir) {
+          try {
+            const newPath = await backend.renameEntry(currentEntry.path, newFilename);
+            // Update current entry path and refresh tree
+            currentEntry = { ...currentEntry, path: newPath, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+            tree = await backend.getWorkspaceTree();
+          } catch (renameError) {
+            // Rename failed (e.g., target exists), but the title was still updated
+            console.warn("Filename sync failed:", renameError);
+            currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+          }
+        } else {
+          // No rename needed, just update local state
+          currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+        }
+      } else {
+        // Update local state for non-title properties
+        currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }

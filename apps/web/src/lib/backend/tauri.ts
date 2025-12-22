@@ -408,6 +408,25 @@ export class TauriBackend implements Backend {
     );
   }
 
+  slugifyTitle(title: string): string {
+    // Simple fallback implementation for Tauri
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return slug ? `${slug}.md` : "untitled.md";
+  }
+
+  async renameEntry(path: string, _newFilename: string): Promise<string> {
+    // TODO: Implement Tauri command for rename_entry
+    throw new BackendError(
+      "renameEntry not yet implemented for Tauri backend",
+      "NotImplemented",
+      path,
+    );
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

@@ -564,8 +564,8 @@ impl<FS: FileSystem> Workspace<FS> {
     ///
     /// This method:
     /// - Moves the file from `from_path` to `to_path`
-    /// - Removes the entry from old parent's `contents` (if old `index.md` exists)
-    /// - Adds the entry to new parent's `contents` (if new `index.md` exists)
+    /// - Removes the entry from old parent's `contents` (if parent index exists)
+    /// - Adds the entry to new parent's `contents` (if parent index exists)
     /// - Updates the moved file's `part_of` to point to new parent index
     ///
     /// Returns `Ok(())` if successful. Does nothing if source equals destination.
@@ -583,7 +583,6 @@ impl<FS: FileSystem> Workspace<FS> {
             path: from_path.to_path_buf(),
             message: "No parent directory for source path".to_string(),
         })?;
-        let old_index_path = old_parent.join("index.md");
         let old_file_name = from_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -597,7 +596,6 @@ impl<FS: FileSystem> Workspace<FS> {
             path: to_path.to_path_buf(),
             message: "No parent directory for destination path".to_string(),
         })?;
-        let new_index_path = new_parent.join("index.md");
         let new_file_name = to_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -617,13 +615,13 @@ impl<FS: FileSystem> Workspace<FS> {
 
         let app = DiaryxApp::new(&self.fs);
 
-        // Remove from old parent's contents (if old index exists)
-        if self.fs.exists(&old_index_path) {
+        // Remove from old parent's contents (if old parent has an index)
+        if let Ok(Some(old_index_path)) = self.find_any_index_in_dir(old_parent) {
             let _ = app.remove_from_index_contents(&old_index_path, &old_file_name);
         }
 
-        // Add to new parent's contents and update part_of (if new index exists)
-        if self.fs.exists(&new_index_path) {
+        // Add to new parent's contents and update part_of (if new parent has an index)
+        if let Ok(Some(new_index_path)) = self.find_any_index_in_dir(new_parent) {
             let _ = app.add_to_index_contents(&new_index_path, &new_file_name);
 
             // Update moved entry's part_of
@@ -633,6 +631,151 @@ impl<FS: FileSystem> Workspace<FS> {
         }
 
         Ok(())
+    }
+
+    /// Rename an entry file by giving it a new filename.
+    ///
+    /// This method handles both leaf files and index files:
+    /// - Leaf files: renames the file directly and updates parent `contents`
+    /// - Index files: renames the containing directory AND the file itself, updates grandparent `contents`
+    ///
+    /// Returns the new path to the renamed file.
+    pub fn rename_entry(&self, path: &Path, new_filename: &str) -> Result<PathBuf> {
+        use crate::entry::DiaryxApp;
+
+        let is_index = self.is_index_file(path);
+
+        if is_index {
+            // For index files, we rename the containing directory AND the file
+            let current_dir = path.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Index file has no parent directory".to_string(),
+            })?;
+            
+            let parent_of_dir = current_dir.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Directory has no parent".to_string(),
+            })?;
+
+            // Get new directory name from the filename (strip .md extension)
+            let new_dir_name = new_filename.trim_end_matches(".md");
+            let new_dir_path = parent_of_dir.join(new_dir_name);
+            // New file will be named {dirname}.md
+            let new_file_path = new_dir_path.join(new_filename);
+
+            // Don't rename if same path
+            if new_dir_path == current_dir {
+                return Ok(path.to_path_buf());
+            }
+
+            // Check if target directory already exists
+            if self.fs.exists(&new_dir_path) {
+                return Err(DiaryxError::InvalidPath {
+                    path: new_dir_path,
+                    message: "Target directory already exists".to_string(),
+                });
+            }
+
+            let old_dir_name = current_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: current_dir.to_path_buf(),
+                    message: "Invalid directory name".to_string(),
+                })?
+                .to_string();
+            
+            // Get the old file name
+            let old_file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: path.to_path_buf(),
+                    message: "Invalid file name".to_string(),
+                })?
+                .to_string();
+
+            // Rename the directory (this moves all files within)
+            self.fs
+                .move_file(current_dir, &new_dir_path)
+                .map_err(|e| DiaryxError::FileWrite {
+                    path: new_dir_path.clone(),
+                    source: e,
+                })?;
+
+            // Now rename the file itself from old name to new name (e.g., index.md -> newname.md)
+            let old_file_in_new_dir = new_dir_path.join(&old_file_name);
+            if old_file_in_new_dir != new_file_path {
+                self.fs
+                    .move_file(&old_file_in_new_dir, &new_file_path)
+                    .map_err(|e| DiaryxError::FileWrite {
+                        path: new_file_path.clone(),
+                        source: e,
+                    })?;
+            }
+
+            // Update children's part_of references to point to the new filename
+            let app = DiaryxApp::new(&self.fs);
+            if let Ok(child_files) = self.fs.list_md_files(&new_dir_path) {
+                for child_file in child_files {
+                    // Skip the index file itself
+                    if child_file == new_file_path {
+                        continue;
+                    }
+                    
+                    let child_str = child_file.to_string_lossy();
+                    if let Ok(fm) = app.get_all_frontmatter(&child_str) {
+                        if let Some(Value::String(old_part_of)) = fm.get("part_of") {
+                            // Check if it points to the old filename
+                            if old_part_of == &old_file_name {
+                                let _ = app.set_frontmatter_property(
+                                    &child_str,
+                                    "part_of",
+                                    Value::String(new_filename.to_string()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update grandparent's contents if there's an index file there
+            if let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(parent_of_dir) {
+                let app = DiaryxApp::new(&self.fs);
+                // Update references: old format could be "oldname/" or "oldname/oldname.md" or "oldname/index.md"
+                let old_ref_slash = format!("{}/", old_dir_name);
+                let old_ref_dirname = format!("{}/{}.md", old_dir_name, old_dir_name);
+                let old_ref_index = format!("{}/index.md", old_dir_name);
+                let new_reference = format!("{}/{}", new_dir_name, new_filename);
+                
+                // Try to remove any of the possible old reference formats
+                let _ = app.remove_from_index_contents(&grandparent_index, &old_ref_slash);
+                let _ = app.remove_from_index_contents(&grandparent_index, &old_ref_dirname);
+                let _ = app.remove_from_index_contents(&grandparent_index, &old_ref_index);
+                let _ = app.remove_from_index_contents(&grandparent_index, &old_file_name);
+                let _ = app.add_to_index_contents(&grandparent_index, &new_reference);
+            }
+
+            Ok(new_file_path)
+        } else {
+            // For leaf files, simple rename
+            let parent = path.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "No parent directory".to_string(),
+            })?;
+
+            let new_path = parent.join(new_filename);
+
+            // Don't rename if same path
+            if new_path == path {
+                return Ok(path.to_path_buf());
+            }
+
+            // Use move_entry which handles contents updates
+            self.move_entry(path, &new_path)?;
+
+            Ok(new_path)
+        }
     }
 
     /// Generate a unique filename for a new child entry in the given directory.
@@ -667,11 +810,11 @@ impl<FS: FileSystem> Workspace<FS> {
     ///
     /// This method:
     /// - Creates a directory with the same name as the file (without .md)
-    /// - Moves the file into the directory as `index.md`
+    /// - Moves the file into the directory as `{dirname}.md`
     /// - Adds `contents: []` to the frontmatter
-    /// - Adjusts `part_of` path to account for the new nesting level (e.g., `index.md` → `../index.md`)
+    /// - Adjusts `part_of` path to account for the new nesting level (e.g., `parent.md` → `../parent.md`)
     ///
-    /// Example: `journal/my-note.md` → `journal/my-note/index.md`
+    /// Example: `journal/my-note.md` → `journal/my-note/my-note.md`
     ///
     /// Returns the new path to the index file.
     pub fn convert_to_index(&self, path: &Path) -> Result<PathBuf> {
@@ -702,10 +845,21 @@ impl<FS: FileSystem> Workspace<FS> {
                 message: "Invalid file name".to_string(),
             })?;
 
-        // Calculate new paths
+        // Get old filename for updating parent's contents
+        let old_filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Invalid file name".to_string(),
+            })?
+            .to_string();
+
+        // Calculate new paths - use {dirname}.md instead of index.md
         let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
         let new_dir = parent_dir.join(file_stem);
-        let new_index_path = new_dir.join("index.md");
+        let new_index_filename = format!("{}.md", file_stem);
+        let new_index_path = new_dir.join(&new_index_filename);
 
         // Create the new directory
         self.fs.create_dir_all(&new_dir).map_err(|e| DiaryxError::FileWrite {
@@ -747,13 +901,11 @@ impl<FS: FileSystem> Workspace<FS> {
             )?;
         }
 
-        // Update parent index if it exists (change the reference from file.md to file/index.md)
-        let parent_index = parent_dir.join("index.md");
-        if self.fs.exists(&parent_index) {
-            let old_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let new_reference = format!("{}/index.md", file_stem);
+        // Update parent index if there is one (change reference from file.md to file/{file}.md)
+        if let Ok(Some(parent_index)) = self.find_any_index_in_dir(parent_dir) {
+            let new_reference = format!("{}/{}", file_stem, new_index_filename);
 
-            let _ = app.remove_from_index_contents(&parent_index, old_filename);
+            let _ = app.remove_from_index_contents(&parent_index, &old_filename);
             let _ = app.add_to_index_contents(&parent_index, &new_reference);
         }
 
@@ -764,12 +916,12 @@ impl<FS: FileSystem> Workspace<FS> {
     ///
     /// This method:
     /// - Fails if the index has non-empty `contents`
-    /// - Moves `dir/index.md` → `parent/dir.md`
+    /// - Moves `dir/{name}.md` → `parent/dir.md`
     /// - Removes the now-empty directory
     /// - Removes the `contents` property
-    /// - Adjusts `part_of` path to account for the reduced nesting level (e.g., `../index.md` → `index.md`)
+    /// - Adjusts `part_of` path to account for the reduced nesting level (e.g., `../parent.md` → `parent.md`)
     ///
-    /// Example: `journal/my-note/index.md` → `journal/my-note.md`
+    /// Example: `journal/my-note/my-note.md` → `journal/my-note.md`
     ///
     /// Returns the new path to the leaf file.
     pub fn convert_to_leaf(&self, path: &Path) -> Result<PathBuf> {
@@ -812,6 +964,16 @@ impl<FS: FileSystem> Workspace<FS> {
                 path: path.to_path_buf(),
                 message: "Invalid directory name".to_string(),
             })?;
+        
+        // Get the current filename for updating parent's contents
+        let old_filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Invalid file name".to_string(),
+            })?
+            .to_string();
 
         // Calculate new path
         let grandparent = index_dir.parent().unwrap_or_else(|| Path::new(""));
@@ -843,14 +1005,13 @@ impl<FS: FileSystem> Workspace<FS> {
             }
         }
 
-        // Update parent index if it exists (change the reference from dir/index.md to dir.md)
-        let parent_index = grandparent.join("index.md");
-        if self.fs.exists(&parent_index) {
-            let old_reference = format!("{}/index.md", dir_name);
-            let new_filename = format!("{}.md", dir_name);
+        // Update parent index if there is one (change reference from dir/{name}.md to dir.md)
+        if let Ok(Some(parent_index)) = self.find_any_index_in_dir(grandparent) {
+            let old_reference = format!("{}/{}", dir_name, old_filename);
+            let new_reference = format!("{}.md", dir_name);
 
             let _ = app.remove_from_index_contents(&parent_index, &old_reference);
-            let _ = app.add_to_index_contents(&parent_index, &new_filename);
+            let _ = app.add_to_index_contents(&parent_index, &new_reference);
         }
 
         // Note: We don't delete the empty directory here because some filesystems

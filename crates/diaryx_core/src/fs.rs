@@ -376,41 +376,123 @@ impl FileSystem for InMemoryFileSystem {
             return Ok(());
         }
 
-        // Validate existence and destination availability up-front.
-        {
-            let files = self.files.read().unwrap();
-
-            if !files.contains_key(&from_norm) {
+        // Check if this is a directory move
+        let is_dir = self.is_dir(&from_norm);
+        
+        if is_dir {
+            // Moving a directory: relocate all files within it
+            let files_to_move: Vec<(PathBuf, String)>;
+            {
+                let files = self.files.read().unwrap();
+                files_to_move = files
+                    .iter()
+                    .filter(|(path, _)| path.starts_with(&from_norm))
+                    .map(|(path, content)| (path.clone(), content.clone()))
+                    .collect();
+            }
+            
+            if files_to_move.is_empty() && !self.is_dir(&from_norm) {
                 return Err(Error::new(
                     ErrorKind::NotFound,
+                    format!("Source directory not found or empty: {:?}", from),
+                ));
+            }
+            
+            // Check destination doesn't already exist as a file or directory
+            {
+                let files = self.files.read().unwrap();
+                let dirs = self.directories.read().unwrap();
+                if files.contains_key(&to_norm) || dirs.contains(&to_norm) {
+                    return Err(Error::new(
+                        ErrorKind::AlreadyExists,
+                        format!("Destination already exists: {:?}", to),
+                    ));
+                }
+            }
+            
+            // Move all files to new location
+            {
+                let mut files = self.files.write().unwrap();
+                for (old_path, content) in files_to_move {
+                    files.remove(&old_path);
+                    // Replace the source prefix with the destination prefix
+                    let relative = old_path.strip_prefix(&from_norm).unwrap();
+                    let new_path = to_norm.join(relative);
+                    files.insert(new_path, content);
+                }
+            }
+            
+            // Update directories: remove old, add new
+            {
+                let mut dirs = self.directories.write().unwrap();
+                // Remove old directory and its subdirectories
+                let old_dirs: Vec<PathBuf> = dirs
+                    .iter()
+                    .filter(|d| d.starts_with(&from_norm) || **d == from_norm)
+                    .cloned()
+                    .collect();
+                for old_dir in old_dirs {
+                    dirs.remove(&old_dir);
+                    // Add corresponding new directory
+                    if old_dir == from_norm {
+                        dirs.insert(to_norm.clone());
+                    } else if let Ok(relative) = old_dir.strip_prefix(&from_norm) {
+                        dirs.insert(to_norm.join(relative));
+                    }
+                }
+                
+                // Ensure parent directories of destination exist
+                let mut current = to_norm.as_path();
+                loop {
+                    match current.parent() {
+                        Some(parent) if !parent.as_os_str().is_empty() => {
+                            dirs.insert(parent.to_path_buf());
+                            current = parent;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            
+            Ok(())
+        } else {
+            // Moving a single file (original behavior)
+            // Validate existence and destination availability up-front.
+            {
+                let files = self.files.read().unwrap();
+
+                if !files.contains_key(&from_norm) {
+                    return Err(Error::new(
+                        ErrorKind::NotFound,
+                        format!("Source file not found: {:?}", from),
+                    ));
+                }
+
+                if files.contains_key(&to_norm) {
+                    return Err(Error::new(
+                        ErrorKind::AlreadyExists,
+                        format!("Destination already exists: {:?}", to),
+                    ));
+                }
+            }
+
+            // Ensure destination parent directories exist.
+            if let Some(parent) = to_norm.parent() {
+                self.create_dir_all(parent)?;
+            }
+
+            // Perform the move.
+            let mut files = self.files.write().unwrap();
+            let content = files.remove(&from_norm).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
                     format!("Source file not found: {:?}", from),
-                ));
-            }
+                )
+            })?;
+            files.insert(to_norm, content);
 
-            if files.contains_key(&to_norm) {
-                return Err(Error::new(
-                    ErrorKind::AlreadyExists,
-                    format!("Destination already exists: {:?}", to),
-                ));
-            }
+            Ok(())
         }
-
-        // Ensure destination parent directories exist.
-        if let Some(parent) = to_norm.parent() {
-            self.create_dir_all(parent)?;
-        }
-
-        // Perform the move.
-        let mut files = self.files.write().unwrap();
-        let content = files.remove(&from_norm).ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotFound,
-                format!("Source file not found: {:?}", from),
-            )
-        })?;
-        files.insert(to_norm, content);
-
-        Ok(())
     }
 }
 
