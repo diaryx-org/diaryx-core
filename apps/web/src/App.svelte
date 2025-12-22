@@ -37,6 +37,7 @@
   let editorRef: any = $state(null);
   let showNewEntryModal = $state(false);
   let validationResult: ValidationResult | null = $state(null);
+  let titleError: string | null = $state(null);
 
   // Sidebar states - collapsed by default on mobile
   let leftSidebarCollapsed = $state(true);
@@ -98,6 +99,7 @@
     try {
       isLoading = true;
       currentEntry = await backend.getEntry(path);
+      titleError = null; // Clear any title error when switching files
       console.log("[App] Loaded entry:", currentEntry);
       console.log("[App] Frontmatter:", currentEntry?.frontmatter);
       console.log(
@@ -280,10 +282,7 @@
   async function handlePropertyChange(key: string, value: unknown) {
     if (!backend || !currentEntry) return;
     try {
-      await backend.setFrontmatterProperty(currentEntry.path, key, value);
-      await persistNow();
-      
-      // If title changed, sync the filename
+      // Special handling for title: need to check rename first
       if (key === "title" && typeof value === "string" && value.trim()) {
         const newFilename = backend.slugifyTitle(value);
         const currentFilename = currentEntry.path.split("/").pop() || "";
@@ -298,22 +297,38 @@
         const newDir = newFilename.replace(/\.md$/, "");
         
         if (currentDir !== newDir) {
+          // Try rename FIRST, before updating frontmatter
           try {
             const newPath = await backend.renameEntry(currentEntry.path, newFilename);
+            // Rename succeeded, now update title in frontmatter (at new path)
+            await backend.setFrontmatterProperty(newPath, key, value);
+            await persistNow();
             // Update current entry path and refresh tree
             currentEntry = { ...currentEntry, path: newPath, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
             tree = await backend.getWorkspaceTree();
+            titleError = null; // Clear any previous error
           } catch (renameError) {
-            // Rename failed (e.g., target exists), but the title was still updated
-            console.warn("Filename sync failed:", renameError);
-            currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+            // Rename failed (e.g., target exists), show user-friendly error near title input
+            // DON'T update the title - leave frontmatter unchanged
+            const errorMsg = renameError instanceof Error ? renameError.message : String(renameError);
+            if (errorMsg.includes("already exists") || errorMsg.includes("Destination")) {
+              titleError = `A file named "${newFilename.replace('.md', '')}" already exists. Choose a different title.`;
+            } else {
+              titleError = `Could not rename: ${errorMsg}`;
+            }
+            // Don't update anything - input will show original value
           }
         } else {
-          // No rename needed, just update local state
+          // No rename needed, just update title
+          await backend.setFrontmatterProperty(currentEntry.path, key, value);
+          await persistNow();
           currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+          titleError = null;
         }
       } else {
-        // Update local state for non-title properties
+        // Non-title properties: update normally
+        await backend.setFrontmatterProperty(currentEntry.path, key, value);
+        await persistNow();
         currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
       }
     } catch (e) {
@@ -595,5 +610,7 @@
     onPropertyChange={handlePropertyChange}
     onPropertyRemove={handlePropertyRemove}
     onPropertyAdd={handlePropertyAdd}
+    {titleError}
+    onTitleErrorClear={() => titleError = null}
   />
 </div>

@@ -2,6 +2,7 @@
   import type { EntryData } from "./backend";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
+  import * as Alert from "$lib/components/ui/alert";
   import {
     Calendar,
     Clock,
@@ -16,6 +17,7 @@
     Plus,
     X,
     Check,
+    AlertCircle,
   } from "@lucide/svelte";
 
   interface Props {
@@ -25,6 +27,8 @@
     onPropertyChange?: (key: string, value: unknown) => void;
     onPropertyRemove?: (key: string) => void;
     onPropertyAdd?: (key: string, value: unknown) => void;
+    titleError?: string | null;
+    onTitleErrorClear?: () => void;
   }
 
   let {
@@ -34,6 +38,8 @@
     onPropertyChange,
     onPropertyRemove,
     onPropertyAdd,
+    titleError = null,
+    onTitleErrorClear,
   }: Props = $props();
 
   // State for adding new properties
@@ -332,8 +338,11 @@
                   <Input
                     type="text"
                     value={String(value ?? "")}
-                    class="h-8 text-sm"
+                    class="h-8 text-sm {key.toLowerCase() === 'title' && titleError ? 'border-destructive' : ''}"
                     onblur={(e) => handleStringChange(key, e)}
+                    onfocus={() => {
+                      if (key.toLowerCase() === 'title') onTitleErrorClear?.();
+                    }}
                     onkeydown={(e) => {
                       if (e.key === "Enter") {
                         handleStringChange(key, e);
@@ -341,6 +350,14 @@
                       }
                     }}
                   />
+                  {#if key.toLowerCase() === 'title' && titleError}
+                    <Alert.Root variant="destructive" class="mt-2 py-2">
+                      <AlertCircle class="size-4" />
+                      <Alert.Description class="text-xs">
+                        {titleError}
+                      </Alert.Description>
+                    </Alert.Root>
+                  {/if}
                 {/if}
               </div>
             </div>
