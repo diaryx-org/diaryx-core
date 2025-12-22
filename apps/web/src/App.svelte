@@ -289,10 +289,11 @@
         const currentFilename = currentEntry.path.split("/").pop() || "";
         
         // Only rename if the filename would actually change
-        // For index files, compare the directory name, not "index.md"
-        const isIndex = currentFilename === "index.md";
+        // For index files (have contents property), compare the directory name
+        const isIndex = Array.isArray(currentEntry.frontmatter?.contents);
+        const pathParts = currentEntry.path.split("/");
         const currentDir = isIndex 
-          ? currentEntry.path.split("/").slice(-2, -1)[0] || ""
+          ? pathParts.slice(-2, -1)[0] || ""
           : currentFilename.replace(/\.md$/, "");
         const newDir = newFilename.replace(/\.md$/, "");
         
@@ -396,7 +397,10 @@
   }
 
   function getEntryTitle(entry: EntryData): string {
+    // Prioritize frontmatter.title for live updates, fall back to cached title
+    const frontmatterTitle = entry.frontmatter?.title as string | undefined;
     return (
+      frontmatterTitle ??
       entry.title ??
       entry.path.split("/").pop()?.replace(".md", "") ??
       "Untitled"
