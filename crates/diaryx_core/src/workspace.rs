@@ -651,11 +651,13 @@ impl<FS: FileSystem> Workspace<FS> {
                 path: path.to_path_buf(),
                 message: "Index file has no parent directory".to_string(),
             })?;
-            
-            let parent_of_dir = current_dir.parent().ok_or_else(|| DiaryxError::InvalidPath {
-                path: path.to_path_buf(),
-                message: "Directory has no parent".to_string(),
-            })?;
+
+            let parent_of_dir = current_dir
+                .parent()
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: path.to_path_buf(),
+                    message: "Directory has no parent".to_string(),
+                })?;
 
             // Get new directory name from the filename (strip .md extension)
             let new_dir_name = new_filename.trim_end_matches(".md");
@@ -684,7 +686,7 @@ impl<FS: FileSystem> Workspace<FS> {
                     message: "Invalid directory name".to_string(),
                 })?
                 .to_string();
-            
+
             // Get the old file name
             let old_file_name = path
                 .file_name()
@@ -722,7 +724,7 @@ impl<FS: FileSystem> Workspace<FS> {
                     if child_file == new_file_path {
                         continue;
                     }
-                    
+
                     let child_str = child_file.to_string_lossy();
                     if let Ok(fm) = app.get_all_frontmatter(&child_str) {
                         if let Some(Value::String(old_part_of)) = fm.get("part_of") {
@@ -747,7 +749,7 @@ impl<FS: FileSystem> Workspace<FS> {
                 let old_ref_dirname = format!("{}/{}.md", old_dir_name, old_dir_name);
                 let old_ref_index = format!("{}/index.md", old_dir_name);
                 let new_reference = format!("{}/{}", new_dir_name, new_filename);
-                
+
                 // Try to remove any of the possible old reference formats
                 let _ = app.remove_from_index_contents(&grandparent_index, &old_ref_slash);
                 let _ = app.remove_from_index_contents(&grandparent_index, &old_ref_dirname);
@@ -837,13 +839,13 @@ impl<FS: FileSystem> Workspace<FS> {
         }
 
         // Get the file stem (name without .md extension)
-        let file_stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| DiaryxError::InvalidPath {
-                path: path.to_path_buf(),
-                message: "Invalid file name".to_string(),
-            })?;
+        let file_stem =
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: path.to_path_buf(),
+                    message: "Invalid file name".to_string(),
+                })?;
 
         // Get old filename for updating parent's contents
         let old_filename = path
@@ -862,10 +864,12 @@ impl<FS: FileSystem> Workspace<FS> {
         let new_index_path = new_dir.join(&new_index_filename);
 
         // Create the new directory
-        self.fs.create_dir_all(&new_dir).map_err(|e| DiaryxError::FileWrite {
-            path: new_dir.clone(),
-            source: e,
-        })?;
+        self.fs
+            .create_dir_all(&new_dir)
+            .map_err(|e| DiaryxError::FileWrite {
+                path: new_dir.clone(),
+                source: e,
+            })?;
 
         // Read the current file content to preserve frontmatter
         let app = DiaryxApp::new(&self.fs);
@@ -885,20 +889,12 @@ impl<FS: FileSystem> Workspace<FS> {
         let new_index_str = new_index_path.to_string_lossy();
 
         // Add contents: [] property to make it an index
-        app.set_frontmatter_property(
-            &new_index_str,
-            "contents",
-            Value::Sequence(vec![]),
-        )?;
+        app.set_frontmatter_property(&new_index_str, "contents", Value::Sequence(vec![]))?;
 
         // Adjust part_of path if it exists (add ../ prefix since we're one level deeper)
         if let Some(Value::String(old_part_of)) = frontmatter.get("part_of") {
             let new_part_of = format!("../{}", old_part_of);
-            app.set_frontmatter_property(
-                &new_index_str,
-                "part_of",
-                Value::String(new_part_of),
-            )?;
+            app.set_frontmatter_property(&new_index_str, "part_of", Value::String(new_part_of))?;
         }
 
         // Update parent index if there is one (change reference from file.md to file/{file}.md)
@@ -964,7 +960,7 @@ impl<FS: FileSystem> Workspace<FS> {
                 path: path.to_path_buf(),
                 message: "Invalid directory name".to_string(),
             })?;
-        
+
         // Get the current filename for updating parent's contents
         let old_filename = path
             .file_name()

@@ -748,14 +748,14 @@ pub fn slugify_title(title: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    
+
     // Split on dashes and filter empty parts, then rejoin
     let cleaned: String = slug
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    
+
     if cleaned.is_empty() {
         "untitled.md".to_string()
     } else {

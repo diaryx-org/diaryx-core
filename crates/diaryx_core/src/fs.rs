@@ -378,7 +378,7 @@ impl FileSystem for InMemoryFileSystem {
 
         // Check if this is a directory move
         let is_dir = self.is_dir(&from_norm);
-        
+
         if is_dir {
             // Moving a directory: relocate all files within it
             let files_to_move: Vec<(PathBuf, String)>;
@@ -390,14 +390,14 @@ impl FileSystem for InMemoryFileSystem {
                     .map(|(path, content)| (path.clone(), content.clone()))
                     .collect();
             }
-            
+
             if files_to_move.is_empty() && !self.is_dir(&from_norm) {
                 return Err(Error::new(
                     ErrorKind::NotFound,
                     format!("Source directory not found or empty: {:?}", from),
                 ));
             }
-            
+
             // Check destination doesn't already exist as a file or directory
             {
                 let files = self.files.read().unwrap();
@@ -409,7 +409,7 @@ impl FileSystem for InMemoryFileSystem {
                     ));
                 }
             }
-            
+
             // Move all files to new location
             {
                 let mut files = self.files.write().unwrap();
@@ -421,7 +421,7 @@ impl FileSystem for InMemoryFileSystem {
                     files.insert(new_path, content);
                 }
             }
-            
+
             // Update directories: remove old, add new
             {
                 let mut dirs = self.directories.write().unwrap();
@@ -440,7 +440,7 @@ impl FileSystem for InMemoryFileSystem {
                         dirs.insert(to_norm.join(relative));
                     }
                 }
-                
+
                 // Ensure parent directories of destination exist
                 let mut current = to_norm.as_path();
                 loop {
@@ -453,7 +453,7 @@ impl FileSystem for InMemoryFileSystem {
                     }
                 }
             }
-            
+
             Ok(())
         } else {
             // Moving a single file (original behavior)
