@@ -634,6 +634,230 @@ impl<FS: FileSystem> Workspace<FS> {
 
         Ok(())
     }
+
+    /// Generate a unique filename for a new child entry in the given directory.
+    ///
+    /// Returns filenames like "new-entry.md", "new-entry-1.md", "new-entry-2.md", etc.
+    pub fn generate_unique_child_name(&self, parent_dir: &Path) -> String {
+        let base = "new-entry";
+        let ext = ".md";
+
+        // First try without a number
+        let first = format!("{}{}", base, ext);
+        if !self.fs.exists(&parent_dir.join(&first)) {
+            return first;
+        }
+
+        // Try with incrementing numbers
+        let mut counter = 1u32;
+        loop {
+            let name = format!("{}-{}{}", base, counter, ext);
+            if !self.fs.exists(&parent_dir.join(&name)) {
+                return name;
+            }
+            counter += 1;
+            // Safety valve
+            if counter > 10000 {
+                return format!("{}-{}{}", base, chrono::Utc::now().timestamp(), ext);
+            }
+        }
+    }
+
+    /// Convert a leaf file into an index file with a directory.
+    ///
+    /// This method:
+    /// - Creates a directory with the same name as the file (without .md)
+    /// - Moves the file into the directory as `index.md`
+    /// - Adds `contents: []` to the frontmatter
+    /// - Adjusts `part_of` path to account for the new nesting level (e.g., `index.md` → `../index.md`)
+    ///
+    /// Example: `journal/my-note.md` → `journal/my-note/index.md`
+    ///
+    /// Returns the new path to the index file.
+    pub fn convert_to_index(&self, path: &Path) -> Result<PathBuf> {
+        use crate::entry::DiaryxApp;
+
+        // Validate file exists and is a markdown file
+        if !self.fs.exists(path) {
+            return Err(DiaryxError::FileRead {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "File does not exist"),
+            });
+        }
+
+        // If already an index file, return error
+        if self.is_index_file(path) {
+            return Err(DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "File is already an index file (has contents property)".to_string(),
+            });
+        }
+
+        // Get the file stem (name without .md extension)
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Invalid file name".to_string(),
+            })?;
+
+        // Calculate new paths
+        let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
+        let new_dir = parent_dir.join(file_stem);
+        let new_index_path = new_dir.join("index.md");
+
+        // Create the new directory
+        self.fs.create_dir_all(&new_dir).map_err(|e| DiaryxError::FileWrite {
+            path: new_dir.clone(),
+            source: e,
+        })?;
+
+        // Read the current file content to preserve frontmatter
+        let app = DiaryxApp::new(&self.fs);
+        let path_str = path.to_string_lossy();
+
+        // Get existing frontmatter
+        let frontmatter = app.get_all_frontmatter(&path_str)?;
+
+        // Move the file to the new location
+        self.fs
+            .move_file(path, &new_index_path)
+            .map_err(|e| DiaryxError::FileWrite {
+                path: new_index_path.clone(),
+                source: e,
+            })?;
+
+        let new_index_str = new_index_path.to_string_lossy();
+
+        // Add contents: [] property to make it an index
+        app.set_frontmatter_property(
+            &new_index_str,
+            "contents",
+            Value::Sequence(vec![]),
+        )?;
+
+        // Adjust part_of path if it exists (add ../ prefix since we're one level deeper)
+        if let Some(Value::String(old_part_of)) = frontmatter.get("part_of") {
+            let new_part_of = format!("../{}", old_part_of);
+            app.set_frontmatter_property(
+                &new_index_str,
+                "part_of",
+                Value::String(new_part_of),
+            )?;
+        }
+
+        // Update parent index if it exists (change the reference from file.md to file/index.md)
+        let parent_index = parent_dir.join("index.md");
+        if self.fs.exists(&parent_index) {
+            let old_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let new_reference = format!("{}/index.md", file_stem);
+
+            let _ = app.remove_from_index_contents(&parent_index, old_filename);
+            let _ = app.add_to_index_contents(&parent_index, &new_reference);
+        }
+
+        Ok(new_index_path)
+    }
+
+    /// Convert an empty index file back to a leaf file.
+    ///
+    /// This method:
+    /// - Fails if the index has non-empty `contents`
+    /// - Moves `dir/index.md` → `parent/dir.md`
+    /// - Removes the now-empty directory
+    /// - Removes the `contents` property
+    /// - Adjusts `part_of` path to account for the reduced nesting level (e.g., `../index.md` → `index.md`)
+    ///
+    /// Example: `journal/my-note/index.md` → `journal/my-note.md`
+    ///
+    /// Returns the new path to the leaf file.
+    pub fn convert_to_leaf(&self, path: &Path) -> Result<PathBuf> {
+        use crate::entry::DiaryxApp;
+
+        // Validate file exists
+        if !self.fs.exists(path) {
+            return Err(DiaryxError::FileRead {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "File does not exist"),
+            });
+        }
+
+        // Parse as index and check if it has empty contents
+        let index = self.parse_index(path)?;
+        if !index.frontmatter.is_index() {
+            return Err(DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "File is not an index file (no contents property)".to_string(),
+            });
+        }
+
+        if !index.frontmatter.contents_list().is_empty() {
+            return Err(DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Cannot convert to leaf: contents is not empty".to_string(),
+            });
+        }
+
+        // Get the directory name to use as the new filename
+        let index_dir = path.parent().ok_or_else(|| DiaryxError::InvalidPath {
+            path: path.to_path_buf(),
+            message: "Index file has no parent directory".to_string(),
+        })?;
+
+        let dir_name = index_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Invalid directory name".to_string(),
+            })?;
+
+        // Calculate new path
+        let grandparent = index_dir.parent().unwrap_or_else(|| Path::new(""));
+        let new_leaf_path = grandparent.join(format!("{}.md", dir_name));
+
+        // Move the file
+        self.fs
+            .move_file(path, &new_leaf_path)
+            .map_err(|e| DiaryxError::FileWrite {
+                path: new_leaf_path.clone(),
+                source: e,
+            })?;
+
+        let app = DiaryxApp::new(&self.fs);
+        let new_leaf_str = new_leaf_path.to_string_lossy();
+
+        // Remove the contents property
+        app.remove_frontmatter_property(&new_leaf_str, "contents")?;
+
+        // Adjust part_of path if it exists (remove ../ prefix since we're one level shallower)
+        let frontmatter = app.get_all_frontmatter(&new_leaf_str)?;
+        if let Some(Value::String(old_part_of)) = frontmatter.get("part_of") {
+            if let Some(new_part_of) = old_part_of.strip_prefix("../") {
+                app.set_frontmatter_property(
+                    &new_leaf_str,
+                    "part_of",
+                    Value::String(new_part_of.to_string()),
+                )?;
+            }
+        }
+
+        // Update parent index if it exists (change the reference from dir/index.md to dir.md)
+        let parent_index = grandparent.join("index.md");
+        if self.fs.exists(&parent_index) {
+            let old_reference = format!("{}/index.md", dir_name);
+            let new_filename = format!("{}.md", dir_name);
+
+            let _ = app.remove_from_index_contents(&parent_index, &old_reference);
+            let _ = app.add_to_index_contents(&parent_index, &new_filename);
+        }
+
+        // Note: We don't delete the empty directory here because some filesystems
+        // don't support delete_dir and it's not critical. The directory will be empty.
+
+        Ok(new_leaf_path)
+    }
 }
 
 /// Format a child node and its descendants (standalone helper function)

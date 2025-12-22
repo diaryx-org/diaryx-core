@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { TreeNode, SearchResults, EntryData, ValidationResult } from "./backend";
   import { Button } from "$lib/components/ui/button";
+  import * as ContextMenu from "$lib/components/ui/context-menu";
   import {
-    Plus,
     Search,
     X,
     ChevronRight,
@@ -11,6 +11,9 @@
     Loader2,
     PanelLeftClose,
     AlertCircle,
+    Plus,
+    Trash2,
+    Clipboard,
   } from "@lucide/svelte";
 
   interface Props {
@@ -28,9 +31,10 @@
     onSearch: () => void;
     onClearSearch: () => void;
     onToggleNode: (path: string) => void;
-    onNewEntry: () => void;
     onToggleCollapse: () => void;
     onMoveEntry: (fromPath: string, toParentPath: string) => void;
+    onCreateChildEntry: (parentPath: string) => void;
+    onDeleteEntry: (path: string) => void;
   }
 
   let {
@@ -48,9 +52,10 @@
     onSearch,
     onClearSearch,
     onToggleNode,
-    onNewEntry,
     onToggleCollapse,
     onMoveEntry,
+    onCreateChildEntry,
+    onDeleteEntry,
   }: Props = $props();
 
   // Drag state
@@ -121,6 +126,15 @@
       (err) => err.file === path || err.index === path
     );
   }
+
+  // Copy path to clipboard
+  async function copyPathToClipboard(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch (e) {
+      console.error("Failed to copy path:", e);
+    }
+  }
 </script>
 
 <!-- Mobile overlay backdrop -->
@@ -156,14 +170,6 @@
       aria-label="Collapse sidebar"
     >
       <PanelLeftClose class="size-4" />
-    </Button>
-  </div>
-
-  <!-- New Entry Button -->
-  <div class="p-3 shrink-0">
-    <Button onclick={onNewEntry} class="w-full justify-center gap-2">
-      <Plus class="size-4" />
-      New Entry
     </Button>
   </div>
 
@@ -240,9 +246,9 @@
       </div>
     {:else if tree}
       <!-- Tree View -->
-      <nav class="space-y-0.5">
+      <div class="space-y-0.5" role="tree" aria-label="Workspace entries">
         {@render treeNode(tree, 0)}
-      </nav>
+      </div>
     {:else}
       <!-- Empty State -->
       <div class="flex flex-col items-center justify-center py-8 text-center">
@@ -254,71 +260,97 @@
 </aside>
 
 {#snippet treeNode(node: TreeNode, depth: number)}
-  <div
-    class="select-none"
-    draggable="true"
-    ondragstart={(e) => handleDragStart(e, node.path)}
-    ondragend={handleDragEnd}
-  >
-    <div
-      class="group flex items-center gap-1 rounded-md hover:bg-sidebar-accent transition-colors
-        {dropTargetPath === node.path ? 'bg-primary/20 ring-2 ring-primary' : ''}"
-      style="padding-left: {depth * 12}px"
-      ondragover={(e) => handleDragOver(e, node.path)}
-      ondragleave={handleDragLeave}
-      ondrop={(e) => handleDrop(e, node.path)}
-    >
-      {#if node.children.length > 0}
-        <button
-          type="button"
-          class="p-1 rounded-sm hover:bg-sidebar-accent-foreground/10 transition-colors"
-          onclick={(e) => {
-            e.stopPropagation();
-            onToggleNode(node.path);
-          }}
-          aria-expanded={expandedNodes.has(node.path)}
-          aria-label="Toggle folder"
-        >
-          <ChevronRight
-            class="size-4 text-muted-foreground transition-transform duration-200 {expandedNodes.has(
-              node.path,
-            )
-              ? 'rotate-90'
-              : ''}"
-          />
-        </button>
-      {:else}
-        <span class="w-6"></span>
-      {/if}
-      <button
-        type="button"
-        class="flex-1 flex items-center gap-2 py-1.5 pr-2 text-sm text-left rounded-md transition-colors {currentEntry?.path ===
-        node.path
-          ? 'text-sidebar-primary font-medium'
-          : 'text-sidebar-foreground'}"
-        onclick={() => handleEntryClick(node.path)}
+  <ContextMenu.Root>
+    <ContextMenu.Trigger>
+      <div
+        class="select-none"
+        role="treeitem"
+        tabindex={0}
+        aria-selected={currentEntry?.path === node.path}
+        aria-expanded={node.children.length > 0 ? expandedNodes.has(node.path) : undefined}
+        aria-level={depth + 1}
+        draggable="true"
+        ondragstart={(e) => handleDragStart(e, node.path)}
+        ondragend={handleDragEnd}
       >
-        {#if node.children.length > 0}
-          <Folder class="size-4 shrink-0 text-muted-foreground" />
-        {:else}
-          <FileText class="size-4 shrink-0 text-muted-foreground" />
-        {/if}
-        <span class="truncate flex-1">{node.name.replace(".md", "")}</span>
-        {#if hasValidationError(node.path)}
-          <span title="Broken reference">
-            <AlertCircle class="size-4 shrink-0 text-destructive" />
-          </span>
-        {/if}
-      </button>
-    </div>
+        <div
+          class="group flex items-center gap-1 rounded-md hover:bg-sidebar-accent transition-colors
+            {dropTargetPath === node.path ? 'bg-primary/20 ring-2 ring-primary' : ''}"
+          style="padding-left: {depth * 12}px"
+          role="presentation"
+          ondragover={(e) => handleDragOver(e, node.path)}
+          ondragleave={handleDragLeave}
+          ondrop={(e) => handleDrop(e, node.path)}
+        >
+          {#if node.children.length > 0}
+            <button
+              type="button"
+              class="p-1 rounded-sm hover:bg-sidebar-accent-foreground/10 transition-colors"
+              onclick={(e) => {
+                e.stopPropagation();
+                onToggleNode(node.path);
+              }}
+              aria-label="Toggle folder"
+              tabindex={-1}
+            >
+              <ChevronRight
+                class="size-4 text-muted-foreground transition-transform duration-200 {expandedNodes.has(
+                  node.path,
+                )
+                  ? 'rotate-90'
+                  : ''}"
+              />
+            </button>
+          {:else}
+            <span class="w-6"></span>
+          {/if}
+          <button
+            type="button"
+            class="flex-1 flex items-center gap-2 py-1.5 pr-2 text-sm text-left rounded-md transition-colors {currentEntry?.path ===
+            node.path
+              ? 'text-sidebar-primary font-medium'
+              : 'text-sidebar-foreground'}"
+            onclick={() => handleEntryClick(node.path)}
+          >
+            {#if node.children.length > 0}
+              <Folder class="size-4 shrink-0 text-muted-foreground" />
+            {:else}
+              <FileText class="size-4 shrink-0 text-muted-foreground" />
+            {/if}
+            <span class="truncate flex-1">{node.name.replace(".md", "")}</span>
+            {#if hasValidationError(node.path)}
+              <span title="Broken reference">
+                <AlertCircle class="size-4 shrink-0 text-destructive" />
+              </span>
+            {/if}
+          </button>
+        </div>
 
-    {#if node.children.length > 0 && expandedNodes.has(node.path)}
-      <div class="mt-0.5">
-        {#each node.children as child}
-          {@render treeNode(child, depth + 1)}
-        {/each}
+        {#if node.children.length > 0 && expandedNodes.has(node.path)}
+          <div class="mt-0.5" role="group">
+            {#each node.children as child}
+              {@render treeNode(child, depth + 1)}
+            {/each}
+          </div>
+        {/if}
       </div>
-    {/if}
-  </div>
+    </ContextMenu.Trigger>
+
+    <ContextMenu.Content class="w-48">
+      <ContextMenu.Item onclick={() => onCreateChildEntry(node.path)}>
+        <Plus class="size-4 mr-2" />
+        New Entry Here
+      </ContextMenu.Item>
+      <ContextMenu.Item onclick={() => copyPathToClipboard(node.path)}>
+        <Clipboard class="size-4 mr-2" />
+        Copy Path
+      </ContextMenu.Item>
+      <ContextMenu.Separator />
+      <ContextMenu.Item variant="destructive" onclick={() => onDeleteEntry(node.path)}>
+        <Trash2 class="size-4 mr-2" />
+        Delete
+      </ContextMenu.Item>
+    </ContextMenu.Content>
+  </ContextMenu.Root>
 {/snippet}
 

@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use diaryx_core::{
     entry::DiaryxApp,
@@ -582,6 +582,121 @@ pub fn move_entry(from_path: &str, to_path: &str) -> Result<String, JsValue> {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         Ok(to_path.to_string())
+    })
+}
+
+/// Convert a leaf file to an index file with a directory.
+///
+/// Example: `journal/my-note.md` → `journal/my-note/index.md`
+///
+/// Uses core `Workspace::convert_to_index` which:
+/// - Creates a directory with the same name as the file (without .md)
+/// - Moves the file into the directory as `index.md`
+/// - Adds `contents: []` frontmatter
+/// - Adjusts `part_of` path (adds `../` prefix)
+#[wasm_bindgen]
+pub fn convert_to_index(path: &str) -> Result<String, JsValue> {
+    with_fs_mut(|fs| {
+        let ws = Workspace::new(fs);
+        let path_buf = PathBuf::from(path);
+
+        let new_path = ws
+            .convert_to_index(&path_buf)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        Ok(new_path.to_string_lossy().to_string())
+    })
+}
+
+/// Convert an empty index file back to a leaf file.
+///
+/// Example: `journal/my-note/index.md` → `journal/my-note.md`
+///
+/// Uses core `Workspace::convert_to_leaf` which:
+/// - Fails if `contents` is not empty
+/// - Moves `dir/index.md` → `parent/dir.md`
+/// - Removes `contents` property
+/// - Adjusts `part_of` path (removes `../` prefix)
+#[wasm_bindgen]
+pub fn convert_to_leaf(path: &str) -> Result<String, JsValue> {
+    with_fs_mut(|fs| {
+        let ws = Workspace::new(fs);
+        let path_buf = PathBuf::from(path);
+
+        let new_path = ws
+            .convert_to_leaf(&path_buf)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        Ok(new_path.to_string_lossy().to_string())
+    })
+}
+
+/// Create a new child entry under a parent.
+///
+/// If the parent is a leaf file, it will be automatically converted to an index first.
+/// Generates a unique filename like "new-entry.md", "new-entry-1.md", etc.
+///
+/// Returns the path to the newly created entry.
+#[wasm_bindgen]
+pub fn create_child_entry(parent_path: &str) -> Result<String, JsValue> {
+    with_fs_mut(|fs| {
+        let ws = Workspace::new(fs);
+        let mut parent = PathBuf::from(parent_path);
+
+        // If parent is a leaf file, convert it to an index first
+        if !ws.is_index_file(&parent) {
+            parent = ws
+                .convert_to_index(&parent)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        }
+
+        // The parent index is now at parent/index.md, so the directory is parent.parent()
+        let parent_dir = parent.parent().unwrap_or_else(|| Path::new(""));
+
+        // Generate unique filename
+        let filename = ws.generate_unique_child_name(parent_dir);
+        let child_path = parent_dir.join(&filename);
+
+        // Create the entry
+        let app = DiaryxApp::new(fs);
+        let child_path_str = child_path.to_string_lossy().to_string();
+
+        app.create_entry(&child_path_str)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Set title from filename
+        let title = filename.trim_end_matches(".md").replace('-', " ");
+        let title = title
+            .split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        app.set_frontmatter_property(&child_path_str, "title", serde_yaml::Value::String(title))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Set timestamps
+        let now = chrono::Utc::now().to_rfc3339();
+        app.set_frontmatter_property(
+            &child_path_str,
+            "created",
+            serde_yaml::Value::String(now.clone()),
+        )
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        app.set_frontmatter_property(&child_path_str, "updated", serde_yaml::Value::String(now))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Attach to parent index
+        ws.attach_entry_to_parent(&child_path, &parent)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        Ok(child_path_str)
     })
 }
 

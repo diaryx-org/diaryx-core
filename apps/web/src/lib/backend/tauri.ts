@@ -381,6 +381,33 @@ export class TauriBackend implements Backend {
     }
   }
 
+  async convertToIndex(path: string): Promise<string> {
+    // TODO: Implement Tauri command for convert_to_index
+    throw new BackendError(
+      "convertToIndex not yet implemented for Tauri backend",
+      "NotImplemented",
+      path,
+    );
+  }
+
+  async convertToLeaf(path: string): Promise<string> {
+    // TODO: Implement Tauri command for convert_to_leaf
+    throw new BackendError(
+      "convertToLeaf not yet implemented for Tauri backend",
+      "NotImplemented",
+      path,
+    );
+  }
+
+  async createChildEntry(parentPath: string): Promise<string> {
+    // TODO: Implement Tauri command for create_child_entry
+    throw new BackendError(
+      "createChildEntry not yet implemented for Tauri backend",
+      "NotImplemented",
+      parentPath,
+    );
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

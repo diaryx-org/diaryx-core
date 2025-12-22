@@ -315,6 +315,21 @@ export class WasmBackend implements Backend {
     wasm.attach_entry_to_parent(normalizedEntryPath, normalizedParentIndexPath);
   }
 
+  async convertToIndex(path: string): Promise<string> {
+    const wasm = this.requireWasm();
+    return wasm.convert_to_index(path);
+  }
+
+  async convertToLeaf(path: string): Promise<string> {
+    const wasm = this.requireWasm();
+    return wasm.convert_to_leaf(path);
+  }
+
+  async createChildEntry(parentPath: string): Promise<string> {
+    const wasm = this.requireWasm();
+    return wasm.create_child_entry(parentPath);
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

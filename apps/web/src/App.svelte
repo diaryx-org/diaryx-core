@@ -196,21 +196,52 @@
     }
   }
 
-  function handleNewEntry() {
-    showNewEntryModal = true;
+  async function handleCreateChildEntry(parentPath: string) {
+    if (!backend) return;
+    try {
+      const newPath = await backend.createChildEntry(parentPath);
+      await persistNow();
+      tree = await backend.getWorkspaceTree();
+      await openEntry(newPath);
+      await runValidation();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
   }
 
   async function createNewEntry(path: string, title: string) {
     if (!backend) return;
     try {
       const newPath = await backend.createEntry(path, { title });
-      // Backend automatically adds entry to parent index's contents
-      tree = await backend.getWorkspaceTree(); // Refresh tree
+      tree = await backend.getWorkspaceTree();
       await openEntry(newPath);
+      await runValidation();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       showNewEntryModal = false;
+    }
+  }
+
+  async function handleDeleteEntry(path: string) {
+    if (!backend) return;
+    const confirm = window.confirm(
+      `Are you sure you want to delete "${path.split('/').pop()?.replace('.md', '')}"?`
+    );
+    if (!confirm) return;
+
+    try {
+      await backend.deleteEntry(path);
+      await persistNow();
+      tree = await backend.getWorkspaceTree();
+      await runValidation();
+      // If we deleted the currently open entry, clear it
+      if (currentEntry?.path === path) {
+        currentEntry = null;
+        isDirty = false;
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -368,9 +399,10 @@
     onSearch={handleSearch}
     onClearSearch={clearSearch}
     onToggleNode={toggleNode}
-    onNewEntry={handleNewEntry}
     onToggleCollapse={toggleLeftSidebar}
     onMoveEntry={handleMoveEntry}
+    onCreateChildEntry={handleCreateChildEntry}
+    onDeleteEntry={handleDeleteEntry}
   />
 
   <!-- Main Content Area -->

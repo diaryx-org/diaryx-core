@@ -192,6 +192,35 @@ export interface Backend {
     parentIndexPath: string,
   ): Promise<void>;
 
+  /**
+   * Convert a leaf file to an index file with a directory.
+   * Example: `journal/my-note.md` → `journal/my-note/index.md`
+   *
+   * @param path Path to the leaf file to convert.
+   * @returns The new path to the index file.
+   */
+  convertToIndex(path: string): Promise<string>;
+
+  /**
+   * Convert an empty index file back to a leaf file.
+   * Example: `journal/my-note/index.md` → `journal/my-note.md`
+   * Fails if the index has non-empty contents.
+   *
+   * @param path Path to the index file to convert.
+   * @returns The new path to the leaf file.
+   */
+  convertToLeaf(path: string): Promise<string>;
+
+  /**
+   * Create a new child entry under a parent.
+   * If the parent is a leaf file, it will be automatically converted to an index first.
+   * Generates a unique filename like "new-entry.md", "new-entry-1.md", etc.
+   *
+   * @param parentPath Path to the parent entry (can be leaf or index).
+   * @returns The path to the newly created child entry.
+   */
+  createChildEntry(parentPath: string): Promise<string>;
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------
