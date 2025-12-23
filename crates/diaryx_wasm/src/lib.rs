@@ -1114,6 +1114,348 @@ pub fn today_formatted(format: &str) -> String {
 }
 
 // ============================================================================
+// Export Operations
+// ============================================================================
+
+/// Get all available audience tags from the workspace.
+/// Scans all files and collects unique audience values.
+#[wasm_bindgen]
+pub fn get_available_audiences(root_path: &str) -> Result<JsValue, JsValue> {
+    use std::collections::HashSet;
+
+    with_fs(|fs| {
+        let ws = Workspace::new(fs);
+        let mut audiences: HashSet<String> = HashSet::new();
+        
+        // Parse the root index and traverse
+        fn collect_audiences<FS: FileSystem>(
+            ws: &Workspace<FS>,
+            path: &Path,
+            audiences: &mut HashSet<String>,
+            visited: &mut HashSet<PathBuf>,
+        ) {
+            if visited.contains(path) {
+                return;
+            }
+            visited.insert(path.to_path_buf());
+            
+            if let Ok(index) = ws.parse_index(path) {
+                // Collect audience tags from this file
+                if let Some(file_audiences) = &index.frontmatter.audience {
+                    for a in file_audiences {
+                        if a.to_lowercase() != "private" {
+                            audiences.insert(a.clone());
+                        }
+                    }
+                }
+                
+                // Recurse into children
+                if index.frontmatter.is_index() {
+                    for child_rel in index.frontmatter.contents_list() {
+                        let child_path = index.resolve_path(child_rel);
+                        if ws.fs_ref().exists(&child_path) {
+                            collect_audiences(ws, &child_path, audiences, visited);
+                        }
+                    }
+                }
+            }
+        }
+        
+        let mut visited = HashSet::new();
+        collect_audiences(&ws, Path::new(root_path), &mut audiences, &mut visited);
+        
+        let mut result: Vec<String> = audiences.into_iter().collect();
+        result.sort();
+        
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Plan an export operation, showing which files would be included/excluded.
+/// Returns { included: [{path, relativePath}], excluded: [{path, reason}], audience }
+/// If audience is "*", all files are included without filtering.
+#[wasm_bindgen]
+pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
+    use std::collections::HashSet;
+
+    with_fs(|fs| {
+        #[derive(serde::Serialize)]
+        struct ExportPlanJs {
+            included: Vec<IncludedFileJs>,
+            excluded: Vec<ExcludedFileJs>,
+            audience: String,
+        }
+        
+        #[derive(serde::Serialize)]
+        struct IncludedFileJs {
+            path: String,
+            relative_path: String,
+        }
+        
+        #[derive(serde::Serialize)]
+        struct ExcludedFileJs {
+            path: String,
+            reason: String,
+        }
+
+        // Special case: "*" means export all without audience filtering
+        if audience == "*" {
+            let ws = Workspace::new(fs);
+            let mut included = Vec::new();
+            let root = Path::new(root_path);
+            let root_dir = root.parent().unwrap_or(root);
+            
+            fn collect_all<FS: FileSystem>(
+                ws: &Workspace<FS>,
+                path: &Path,
+                root_dir: &Path,
+                included: &mut Vec<IncludedFileJs>,
+                visited: &mut HashSet<PathBuf>,
+            ) {
+                if visited.contains(path) {
+                    return;
+                }
+                visited.insert(path.to_path_buf());
+                
+                if let Ok(index) = ws.parse_index(path) {
+                    let relative_path = pathdiff::diff_paths(path, root_dir)
+                        .unwrap_or_else(|| path.to_path_buf());
+                    
+                    included.push(IncludedFileJs {
+                        path: path.to_string_lossy().to_string(),
+                        relative_path: relative_path.to_string_lossy().to_string(),
+                    });
+                    
+                    // Recurse into children
+                    if index.frontmatter.is_index() {
+                        for child_rel in index.frontmatter.contents_list() {
+                            let child_path = index.resolve_path(child_rel);
+                            if ws.fs_ref().exists(&child_path) {
+                                collect_all(ws, &child_path, root_dir, included, visited);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            let mut visited = HashSet::new();
+            collect_all(&ws, root, root_dir, &mut included, &mut visited);
+            
+            let result = ExportPlanJs {
+                included,
+                excluded: vec![],
+                audience: "*".to_string(),
+            };
+            
+            return serde_wasm_bindgen::to_value(&result)
+                .map_err(|e| JsValue::from_str(&e.to_string()));
+        }
+
+        // Normal audience-filtered export
+        use diaryx_core::export::Exporter;
+        let exporter = Exporter::new(fs);
+        
+        // Use a virtual destination since we're just planning
+        let plan = exporter
+            .plan_export(
+                Path::new(root_path),
+                audience,
+                Path::new("/export"),
+            )
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        let result = ExportPlanJs {
+            included: plan.included.iter().map(|f| IncludedFileJs {
+                path: f.source_path.to_string_lossy().to_string(),
+                relative_path: f.relative_path.to_string_lossy().to_string(),
+            }).collect(),
+            excluded: plan.excluded.iter().map(|f| ExcludedFileJs {
+                path: f.path.to_string_lossy().to_string(),
+                reason: f.reason.to_string(),
+            }).collect(),
+            audience: plan.audience,
+        };
+        
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Export files to memory (returns array of {path, content} for zip creation in JS).
+/// Files are processed to remove filtered contents and audience properties.
+/// If audience is "*", all files are exported without filtering.
+#[wasm_bindgen]
+pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
+    use std::collections::HashSet;
+
+    with_fs(|fs| {
+        #[derive(serde::Serialize)]
+        struct ExportedFile {
+            path: String,
+            content: String,
+        }
+
+        // Special case: "*" means export all without audience filtering
+        if audience == "*" {
+            let ws = Workspace::new(fs);
+            let mut files: Vec<ExportedFile> = Vec::new();
+            let root = Path::new(root_path);
+            let root_dir = root.parent().unwrap_or(root);
+            
+            fn collect_all<FS: FileSystem>(
+                ws: &Workspace<FS>,
+                path: &Path,
+                root_dir: &Path,
+                files: &mut Vec<ExportedFile>,
+                visited: &mut HashSet<PathBuf>,
+            ) {
+                if visited.contains(path) {
+                    return;
+                }
+                visited.insert(path.to_path_buf());
+                
+                if let Ok(index) = ws.parse_index(path) {
+                    let relative_path = pathdiff::diff_paths(path, root_dir)
+                        .unwrap_or_else(|| path.to_path_buf());
+                    
+                    // Read and include file content
+                    if let Ok(content) = ws.fs_ref().read_to_string(path) {
+                        // Remove audience property from content
+                        let processed = remove_audience_from_content(&content);
+                        files.push(ExportedFile {
+                            path: relative_path.to_string_lossy().to_string(),
+                            content: processed,
+                        });
+                    }
+                    
+                    // Recurse into children
+                    if index.frontmatter.is_index() {
+                        for child_rel in index.frontmatter.contents_list() {
+                            let child_path = index.resolve_path(child_rel);
+                            if ws.fs_ref().exists(&child_path) {
+                                collect_all(ws, &child_path, root_dir, files, visited);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            let mut visited = HashSet::new();
+            collect_all(&ws, root, root_dir, &mut files, &mut visited);
+            
+            return serde_wasm_bindgen::to_value(&files)
+                .map_err(|e| JsValue::from_str(&e.to_string()));
+        }
+
+        // Normal audience-filtered export
+        use diaryx_core::export::Exporter;
+        let exporter = Exporter::new(fs);
+        
+        let plan = exporter
+            .plan_export(
+                Path::new(root_path),
+                audience,
+                Path::new("/export"),
+            )
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        let _ws = Workspace::new(fs);
+        let mut files: Vec<ExportedFile> = Vec::new();
+        
+        for export_file in &plan.included {
+            // Read original content
+            let content = fs.read_to_string(&export_file.source_path)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            
+            // Process content: remove audience property and filter contents
+            let processed = if !export_file.filtered_contents.is_empty() {
+                filter_contents_and_audience(&content, &export_file.filtered_contents)
+            } else {
+                remove_audience_from_content(&content)
+            };
+            
+            files.push(ExportedFile {
+                path: export_file.relative_path.to_string_lossy().to_string(),
+                content: processed,
+            });
+        }
+        
+        serde_wasm_bindgen::to_value(&files)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Helper to remove audience property from content
+fn remove_audience_from_content(content: &str) -> String {
+    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+        return content.to_string();
+    }
+    
+    let rest = &content[4..];
+    let Some(end_idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) else {
+        return content.to_string();
+    };
+    
+    let frontmatter_str = &rest[..end_idx];
+    let body = &rest[end_idx + 5..];
+    
+    // Parse and remove audience
+    if let Ok(mut frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_str) {
+        if let Some(map) = frontmatter.as_mapping_mut() {
+            if map.remove(serde_yaml::Value::String("audience".to_string())).is_some() {
+                if let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {
+                    return format!("---\n{}---\n{}", new_fm, body);
+                }
+            }
+        }
+    }
+    
+    content.to_string()
+}
+
+/// Helper to filter contents array and remove audience
+fn filter_contents_and_audience(content: &str, filtered: &[String]) -> String {
+    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+        return content.to_string();
+    }
+    
+    let rest = &content[4..];
+    let Some(end_idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) else {
+        return content.to_string();
+    };
+    
+    let frontmatter_str = &rest[..end_idx];
+    let body = &rest[end_idx + 5..];
+    
+    if let Ok(mut frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_str) {
+        if let Some(map) = frontmatter.as_mapping_mut() {
+            // Remove audience
+            map.remove(serde_yaml::Value::String("audience".to_string()));
+            
+            // Filter contents
+            if let Some(contents) = map.get_mut(&serde_yaml::Value::String("contents".to_string())) {
+                if let Some(arr) = contents.as_sequence_mut() {
+                    arr.retain(|item| {
+                        if let Some(s) = item.as_str() {
+                            !filtered.iter().any(|f| f == s)
+                        } else {
+                            true
+                        }
+                    });
+                }
+            }
+        }
+        
+        if let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {
+            return format!("---\n{}---\n{}", new_fm, body);
+        }
+    }
+    
+    content.to_string()
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

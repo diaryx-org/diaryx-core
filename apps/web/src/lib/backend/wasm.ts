@@ -346,6 +346,25 @@ export class WasmBackend implements Backend {
   }
 
   // --------------------------------------------------------------------------
+  // Export
+  // --------------------------------------------------------------------------
+
+  async getAvailableAudiences(rootPath: string): Promise<string[]> {
+    const wasm = this.requireWasm();
+    return wasm.get_available_audiences(rootPath);
+  }
+
+  async planExport(rootPath: string, audience: string): Promise<import("./interface").ExportPlan> {
+    const wasm = this.requireWasm();
+    return wasm.plan_export(rootPath, audience);
+  }
+
+  async exportToMemory(rootPath: string, audience: string): Promise<import("./interface").ExportedFile[]> {
+    const wasm = this.requireWasm();
+    return wasm.export_to_memory(rootPath, audience);
+  }
+
+  // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------
 

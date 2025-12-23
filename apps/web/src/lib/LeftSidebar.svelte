@@ -12,6 +12,7 @@
     Plus,
     Trash2,
     Clipboard,
+    Download,
   } from "@lucide/svelte";
 
   interface Props {
@@ -28,6 +29,7 @@
     onMoveEntry: (fromPath: string, toParentPath: string) => void;
     onCreateChildEntry: (parentPath: string) => void;
     onDeleteEntry: (path: string) => void;
+    onExport: (path: string) => void;
   }
 
   let {
@@ -44,6 +46,7 @@
     onMoveEntry,
     onCreateChildEntry,
     onDeleteEntry,
+    onExport,
   }: Props = $props();
 
   // Drag state
@@ -263,6 +266,10 @@
       <ContextMenu.Item onclick={() => copyPathToClipboard(node.path)}>
         <Clipboard class="size-4 mr-2" />
         Copy Path
+      </ContextMenu.Item>
+      <ContextMenu.Item onclick={() => onExport(node.path)}>
+        <Download class="size-4 mr-2" />
+        Export...
       </ContextMenu.Item>
       <ContextMenu.Separator />
       <ContextMenu.Item variant="destructive" onclick={() => onDeleteEntry(node.path)}>

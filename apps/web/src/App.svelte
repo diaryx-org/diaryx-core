@@ -15,6 +15,7 @@
   import NewEntryModal from "./lib/NewEntryModal.svelte";
   import CommandPalette from "./lib/CommandPalette.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
+  import ExportDialog from "./lib/ExportDialog.svelte";
   import { Button } from "$lib/components/ui/button";
   import { Save, Download, PanelLeft, PanelRight, Menu } from "@lucide/svelte";
 
@@ -44,6 +45,8 @@
   // Modal states
   let showCommandPalette = $state(false);
   let showSettingsDialog = $state(false);
+  let showExportDialog = $state(false);
+  let exportPath = $state("");
 
   // Check if we're on desktop and expand sidebars by default
   onMount(async () => {
@@ -446,10 +449,22 @@
   onNewEntry={() => showNewEntryModal = true}
   onDailyEntry={handleDailyEntry}
   onSettings={() => showSettingsDialog = true}
+  onExport={() => {
+    exportPath = currentEntry?.path ?? tree?.path ?? "";
+    if (exportPath) showExportDialog = true;
+  }}
 />
 
 <!-- Settings Dialog -->
 <SettingsDialog bind:open={showSettingsDialog} />
+
+<!-- Export Dialog -->
+<ExportDialog
+  bind:open={showExportDialog}
+  rootPath={exportPath}
+  {backend}
+  onOpenChange={(open) => showExportDialog = open}
+/>
 
 <div class="flex h-screen bg-background overflow-hidden">
   <!-- Left Sidebar -->
@@ -467,6 +482,10 @@
     onMoveEntry={handleMoveEntry}
     onCreateChildEntry={handleCreateChildEntry}
     onDeleteEntry={handleDeleteEntry}
+    onExport={(path) => {
+      exportPath = path;
+      showExportDialog = true;
+    }}
   />
 
   <!-- Main Content Area -->

@@ -7,6 +7,7 @@
     Settings,
     FilePlus,
     FileText,
+    Download,
   } from "@lucide/svelte";
 
   interface Props {
@@ -17,6 +18,7 @@
     onNewEntry: () => void;
     onDailyEntry: () => void;
     onSettings: () => void;
+    onExport: () => void;
   }
 
   let {
@@ -27,6 +29,7 @@
     onNewEntry,
     onDailyEntry,
     onSettings,
+    onExport,
   }: Props = $props();
 
   let searchValue = $state("");
@@ -116,6 +119,11 @@
         <Settings class="mr-2 size-4" />
         <span>Settings</span>
         <Command.Shortcut>Open settings</Command.Shortcut>
+      </Command.Item>
+      <Command.Item onSelect={() => handleCommand(onExport)}>
+        <Download class="mr-2 size-4" />
+        <span>Export...</span>
+        <Command.Shortcut>Export workspace</Command.Shortcut>
       </Command.Item>
     </Command.Group>
 

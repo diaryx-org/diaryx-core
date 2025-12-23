@@ -436,6 +436,31 @@ export class TauriBackend implements Backend {
   }
 
   // --------------------------------------------------------------------------
+  // Export
+  // --------------------------------------------------------------------------
+
+  async getAvailableAudiences(_rootPath: string): Promise<string[]> {
+    throw new BackendError(
+      "getAvailableAudiences not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async planExport(_rootPath: string, _audience: string): Promise<import("./interface").ExportPlan> {
+    throw new BackendError(
+      "planExport not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async exportToMemory(_rootPath: string, _audience: string): Promise<import("./interface").ExportedFile[]> {
+    throw new BackendError(
+      "exportToMemory not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------
 

@@ -64,6 +64,18 @@ export interface ValidationResult {
   files_checked: number;
 }
 
+// Export types
+export interface ExportPlan {
+  included: { path: string; relative_path: string }[];
+  excluded: { path: string; reason: string }[];
+  audience: string;
+}
+
+export interface ExportedFile {
+  path: string;
+  content: string;
+}
+
 export interface SearchOptions {
   workspacePath?: string;
   searchFrontmatter?: boolean;
@@ -246,6 +258,33 @@ export interface Backend {
    * @returns The path to today's daily entry.
    */
   ensureDailyEntry(): Promise<string>;
+
+  // --------------------------------------------------------------------------
+  // Export
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get all available audience tags from files in the workspace.
+   * @param rootPath Path to start scanning from.
+   * @returns Array of unique audience tag strings.
+   */
+  getAvailableAudiences(rootPath: string): Promise<string[]>;
+
+  /**
+   * Plan an export operation (preview what files would be included/excluded).
+   * @param rootPath Path to the entry to export from.
+   * @param audience Target audience to filter by.
+   * @returns Export plan with included and excluded files.
+   */
+  planExport(rootPath: string, audience: string): Promise<ExportPlan>;
+
+  /**
+   * Export files to memory for download.
+   * @param rootPath Path to the entry to export from.
+   * @param audience Target audience to filter by.
+   * @returns Array of files with path and content.
+   */
+  exportToMemory(rootPath: string, audience: string): Promise<ExportedFile[]>;
 
   // --------------------------------------------------------------------------
   // Frontmatter
