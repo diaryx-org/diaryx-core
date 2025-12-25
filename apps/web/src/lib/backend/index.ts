@@ -20,6 +20,8 @@ export type {
   ValidationWarning,
   ExportPlan,
   ExportedFile,
+  BinaryExportFile,
+  StorageInfo,
 } from "./interface";
 
 export { BackendError, isTauri, isBrowser } from "./interface";

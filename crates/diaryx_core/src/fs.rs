@@ -34,6 +34,27 @@ pub trait FileSystem {
     /// Implementations should treat this as an atomic-ish move when possible,
     /// and should error if the source does not exist or if the destination already exists.
     fn move_file(&self, from: &Path, to: &Path) -> Result<()>;
+
+    // ==================== Binary File Methods ====================
+    // These methods support binary files (attachments) without base64 overhead
+
+    /// Read binary file content
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>> {
+        // Default implementation: read as string and convert to bytes
+        self.read_to_string(path).map(|s| s.into_bytes())
+    }
+
+    /// Write binary content to a file
+    fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
+        // Default implementation: not supported
+        Err(Error::new(ErrorKind::Unsupported, "Binary write not supported"))
+    }
+
+    /// List all files in a directory (not recursive)
+    fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        // Default: return empty
+        Ok(vec![])
+    }
 }
 
 // Blanket implementation for references to FileSystem
@@ -72,6 +93,18 @@ impl<T: FileSystem> FileSystem for &T {
 
     fn move_file(&self, from: &Path, to: &Path) -> Result<()> {
         (*self).move_file(from, to)
+    }
+
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>> {
+        (*self).read_binary(path)
+    }
+
+    fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
+        (*self).write_binary(path, content)
+    }
+
+    fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        (*self).list_files(dir)
     }
 }
 
@@ -169,8 +202,10 @@ use std::sync::{Arc, RwLock};
 /// Also useful for testing
 #[derive(Clone, Default)]
 pub struct InMemoryFileSystem {
-    /// Files stored as path -> content
+    /// Files stored as path -> content (text files)
     files: Arc<RwLock<HashMap<PathBuf, String>>>,
+    /// Binary files stored as path -> bytes (attachments)
+    binary_files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
     /// Directories that exist (implicitly created when files are added)
     directories: Arc<RwLock<HashSet<PathBuf>>>,
 }
@@ -180,6 +215,7 @@ impl InMemoryFileSystem {
     pub fn new() -> Self {
         Self {
             files: Arc::new(RwLock::new(HashMap::new())),
+            binary_files: Arc::new(RwLock::new(HashMap::new())),
             directories: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -225,6 +261,35 @@ impl InMemoryFileSystem {
             .iter()
             .map(|(path, content)| (path.to_string_lossy().to_string(), content.clone()))
             .collect()
+    }
+
+    /// Export all binary files as (path_string, content_bytes) tuples
+    /// For persisting attachments to IndexedDB
+    pub fn export_binary_entries(&self) -> Vec<(String, Vec<u8>)> {
+        let binary_files = self.binary_files.read().unwrap();
+        binary_files
+            .iter()
+            .map(|(path, content)| (path.to_string_lossy().to_string(), content.clone()))
+            .collect()
+    }
+
+    /// Load binary files from a list of (path_string, content_bytes) tuples
+    pub fn load_binary_entries(&self, entries: Vec<(String, Vec<u8>)>) {
+        let mut binary_files = self.binary_files.write().unwrap();
+        let mut dirs = self.directories.write().unwrap();
+
+        for (path_str, content) in entries {
+            let path = PathBuf::from(&path_str);
+            // Add all parent directories
+            let mut current = path.as_path();
+            while let Some(parent) = current.parent() {
+                if !parent.as_os_str().is_empty() {
+                    dirs.insert(parent.to_path_buf());
+                }
+                current = parent;
+            }
+            binary_files.insert(path, content);
+        }
     }
 
     /// Get a list of all file paths in the filesystem
@@ -310,11 +375,24 @@ impl FileSystem for InMemoryFileSystem {
 
     fn delete_file(&self, path: &Path) -> Result<()> {
         let normalized = Self::normalize_path(path);
-        let mut files = self.files.write().unwrap();
-        files
-            .remove(&normalized)
-            .map(|_| ())
-            .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("File not found: {:?}", path)))
+        
+        // Try text files first
+        {
+            let mut files = self.files.write().unwrap();
+            if files.remove(&normalized).is_some() {
+                return Ok(());
+            }
+        }
+        
+        // Try binary files
+        {
+            let mut binary_files = self.binary_files.write().unwrap();
+            if binary_files.remove(&normalized).is_some() {
+                return Ok(());
+            }
+        }
+        
+        Err(Error::new(ErrorKind::NotFound, format!("File not found: {:?}", path)))
     }
 
     fn list_md_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
@@ -337,8 +415,11 @@ impl FileSystem for InMemoryFileSystem {
     fn exists(&self, path: &Path) -> bool {
         let normalized = Self::normalize_path(path);
         let files = self.files.read().unwrap();
+        let binary_files = self.binary_files.read().unwrap();
         let dirs = self.directories.read().unwrap();
-        files.contains_key(&normalized) || dirs.contains(&normalized)
+        files.contains_key(&normalized) 
+            || binary_files.contains_key(&normalized) 
+            || dirs.contains(&normalized)
     }
 
     fn create_dir_all(&self, path: &Path) -> Result<()> {
@@ -493,6 +574,66 @@ impl FileSystem for InMemoryFileSystem {
 
             Ok(())
         }
+    }
+
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>> {
+        let normalized = Self::normalize_path(path);
+        
+        // First check binary files
+        {
+            let binary_files = self.binary_files.read().unwrap();
+            if let Some(data) = binary_files.get(&normalized) {
+                return Ok(data.clone());
+            }
+        }
+        
+        // Fall back to text files (convert to bytes)
+        let files = self.files.read().unwrap();
+        files
+            .get(&normalized)
+            .map(|s| s.as_bytes().to_vec())
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("File not found: {:?}", path)))
+    }
+
+    fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
+        let normalized = Self::normalize_path(path);
+
+        // Ensure parent directories exist
+        if let Some(parent) = normalized.parent() {
+            self.create_dir_all(parent)?;
+        }
+
+        let mut binary_files = self.binary_files.write().unwrap();
+        binary_files.insert(normalized, content.to_vec());
+        Ok(())
+    }
+
+    fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let normalized = Self::normalize_path(dir);
+        let files = self.files.read().unwrap();
+        let binary_files = self.binary_files.read().unwrap();
+
+        let mut result = Vec::new();
+        
+        // Check text files
+        for path in files.keys() {
+            if let Some(parent) = path.parent() {
+                if parent == normalized {
+                    result.push(path.clone());
+                }
+            }
+        }
+        
+        // Check binary files
+        for path in binary_files.keys() {
+            if let Some(parent) = path.parent() {
+                if parent == normalized {
+                    result.push(path.clone());
+                }
+            }
+        }
+        
+        Ok(result)
     }
 }
 

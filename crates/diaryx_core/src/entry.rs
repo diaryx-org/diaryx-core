@@ -333,6 +333,118 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         self.reconstruct_file(path, &frontmatter, &new_body)
     }
 
+    // ==================== Attachment Methods ====================
+
+    /// Add an attachment path to the entry's attachments list.
+    /// Creates the attachments property if it doesn't exist.
+    pub fn add_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let (mut frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
+        
+        let attachments = frontmatter
+            .entry("attachments".to_string())
+            .or_insert(Value::Sequence(vec![]));
+        
+        if let Value::Sequence(list) = attachments {
+            let new_attachment = Value::String(attachment_path.to_string());
+            if !list.contains(&new_attachment) {
+                list.push(new_attachment);
+            }
+        }
+        
+        self.reconstruct_file(path, &frontmatter, &body)
+    }
+
+    /// Remove an attachment path from the entry's attachments list.
+    /// Does nothing if the attachment isn't found.
+    pub fn remove_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let (mut frontmatter, body) = match self.parse_file(path) {
+            Ok(result) => result,
+            Err(DiaryxError::NoFrontmatter(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        
+        if let Some(Value::Sequence(list)) = frontmatter.get_mut("attachments") {
+            list.retain(|item| {
+                if let Value::String(s) = item {
+                    s != attachment_path
+                } else {
+                    true
+                }
+            });
+            
+            // Remove empty attachments array
+            if list.is_empty() {
+                frontmatter.shift_remove("attachments");
+            }
+        }
+        
+        self.reconstruct_file(path, &frontmatter, &body)
+    }
+
+    /// Get the list of attachments directly declared in this entry.
+    pub fn get_attachments(&self, path: &str) -> Result<Vec<String>> {
+        let (frontmatter, _) = match self.parse_file(path) {
+            Ok(result) => result,
+            Err(DiaryxError::NoFrontmatter(_)) => return Ok(vec![]),
+            Err(e) => return Err(e),
+        };
+        
+        match frontmatter.get("attachments") {
+            Some(Value::Sequence(list)) => {
+                Ok(list
+                    .iter()
+                    .filter_map(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect())
+            }
+            _ => Ok(vec![]),
+        }
+    }
+
+    /// Resolve an attachment by traversing up the index hierarchy via part_of.
+    /// Returns the absolute path to the attachment if found, or None.
+    pub fn resolve_attachment(&self, entry_path: &str, attachment_name: &str) -> Result<Option<PathBuf>> {
+        use crate::workspace::Workspace;
+        
+        let ws = Workspace::new(&self.fs);
+        let entry_path = Path::new(entry_path);
+        let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
+        
+        // First, check attachments directly on this entry
+        if let Ok(index) = ws.parse_index(entry_path) {
+            for att_path in index.frontmatter.attachments_list() {
+                let resolved = entry_dir.join(att_path);
+                if resolved.file_name().map(|n| n.to_string_lossy()) == Some(attachment_name.into()) {
+                    if self.fs.exists(&resolved) {
+                        return Ok(Some(resolved));
+                    }
+                }
+                // Also check if the path itself matches
+                if att_path == attachment_name || att_path.ends_with(&format!("/{}", attachment_name)) {
+                    let resolved = entry_dir.join(att_path);
+                    if self.fs.exists(&resolved) {
+                        return Ok(Some(resolved));
+                    }
+                }
+            }
+            
+            // Traverse up via part_of
+            if let Some(ref parent_rel) = index.frontmatter.part_of {
+                let parent_path = entry_dir.join(parent_rel);
+                if self.fs.exists(&parent_path) {
+                    return self.resolve_attachment(&parent_path.to_string_lossy(), attachment_name);
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+
     // ==================== Frontmatter Sorting ====================
 
     /// Sort frontmatter keys according to a pattern.

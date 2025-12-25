@@ -42,13 +42,20 @@ function normalizeIndexPathToWorkspaceRoot(
 // ============================================================================
 
 const DB_NAME = "diaryx";
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Upgraded for binary file support
 const STORE_FILES = "files";
+const STORE_BINARY_FILES = "binary_files";
 const STORE_CONFIG = "config";
 
 interface FileEntry {
   path: string;
   content: string;
+  updatedAt: number;
+}
+
+interface BinaryFileEntry {
+  path: string;
+  data: Uint8Array;
   updatedAt: number;
 }
 
@@ -71,6 +78,10 @@ class IndexedDBStorage {
 
         if (!db.objectStoreNames.contains(STORE_FILES)) {
           db.createObjectStore(STORE_FILES, { keyPath: "path" });
+        }
+
+        if (!db.objectStoreNames.contains(STORE_BINARY_FILES)) {
+          db.createObjectStore(STORE_BINARY_FILES, { keyPath: "path" });
         }
 
         if (!db.objectStoreNames.contains(STORE_CONFIG)) {
@@ -140,6 +151,38 @@ class IndexedDBStorage {
       request.onerror = () => reject(new Error("Failed to save config"));
     });
   }
+
+  async loadBinaryFiles(): Promise<BinaryFileEntry[]> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction(STORE_BINARY_FILES, "readonly");
+      const store = transaction.objectStore(STORE_BINARY_FILES);
+      const request = store.getAll();
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(new Error("Failed to load binary files"));
+    });
+  }
+
+  async saveBinaryFiles(entries: { path: string; data: number[] }[]): Promise<void> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction(STORE_BINARY_FILES, "readwrite");
+      const store = transaction.objectStore(STORE_BINARY_FILES);
+
+      // Clear existing and save new ones 
+      store.clear();
+      const now = Date.now();
+      for (const { path, data } of entries) {
+        store.put({ path, data: new Uint8Array(data), updatedAt: now });
+      }
+
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(new Error("Failed to save binary files"));
+    });
+  }
 }
 
 // ============================================================================
@@ -183,11 +226,27 @@ export class WasmBackend implements Backend {
     // Open IndexedDB
     await this.storage.open();
 
-    // Load files from IndexedDB into WASM's in-memory filesystem
+    // Load text files from IndexedDB into WASM's in-memory filesystem
     const files = await this.storage.loadAllFiles();
     const entries: [string, string][] = files.map((f) => [f.path, f.content]);
     this.wasm.load_files(entries);
-    console.log(`[WasmBackend] Loaded ${files.length} files from IndexedDB`);
+    console.log(`[WasmBackend] Loaded ${files.length} text files from IndexedDB`);
+
+    // Load binary files (attachments) from IndexedDB
+    try {
+      const binaryFiles = await this.storage.loadBinaryFiles();
+      if (binaryFiles.length > 0) {
+        const binaryEntries = binaryFiles.map((f) => ({
+          path: f.path,
+          data: Array.from(f.data),
+        }));
+        this.wasm.load_binary_files(binaryEntries);
+        console.log(`[WasmBackend] Loaded ${binaryFiles.length} binary files from IndexedDB`);
+      }
+    } catch (e) {
+      // Binary store might not exist in older databases
+      console.warn("[WasmBackend] Could not load binary files:", e);
+    }
 
     // Load config
     this.config = await this.storage.loadConfig();
@@ -369,6 +428,40 @@ export class WasmBackend implements Backend {
     return wasm.export_to_html(rootPath, audience);
   }
 
+  async exportBinaryAttachments(rootPath: string, audience: string): Promise<import("./interface").BinaryExportFile[]> {
+    const wasm = this.requireWasm();
+    return wasm.export_binary_attachments(rootPath, audience);
+  }
+
+  // --------------------------------------------------------------------------
+  // Attachments
+  // --------------------------------------------------------------------------
+
+  async getAttachments(entryPath: string): Promise<string[]> {
+    const wasm = this.requireWasm();
+    return wasm.get_attachments(entryPath);
+  }
+
+  async uploadAttachment(entryPath: string, filename: string, dataBase64: string): Promise<string> {
+    const wasm = this.requireWasm();
+    return wasm.upload_attachment(entryPath, filename, dataBase64);
+  }
+
+  async deleteAttachment(entryPath: string, attachmentPath: string): Promise<void> {
+    const wasm = this.requireWasm();
+    return wasm.delete_attachment(entryPath, attachmentPath);
+  }
+
+  async getStorageUsage(): Promise<import("./interface").StorageInfo> {
+    const wasm = this.requireWasm();
+    return wasm.get_storage_usage();
+  }
+
+  async getAttachmentData(entryPath: string, attachmentPath: string): Promise<Uint8Array> {
+    const wasm = this.requireWasm();
+    return wasm.read_attachment_data(entryPath, attachmentPath);
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------
@@ -460,12 +553,23 @@ export class WasmBackend implements Backend {
   async persist(): Promise<void> {
     const wasm = this.requireWasm();
 
-    // Export all files from WASM's in-memory filesystem
+    // Export all text files from WASM's in-memory filesystem
     const entries: [string, string][] = wasm.export_files();
 
     if (entries.length > 0) {
-      console.log(`[WasmBackend] Persisting ${entries.length} files...`);
+      console.log(`[WasmBackend] Persisting ${entries.length} text files...`);
       await this.storage.saveAllFiles(entries);
+    }
+
+    // Export all binary files (attachments)
+    try {
+      const binaryEntries: { path: string; data: number[] }[] = wasm.export_binary_files();
+      if (binaryEntries.length > 0) {
+        console.log(`[WasmBackend] Persisting ${binaryEntries.length} binary files...`);
+        await this.storage.saveBinaryFiles(binaryEntries);
+      }
+    } catch (e) {
+      console.warn("[WasmBackend] Could not persist binary files:", e);
     }
   }
 }

@@ -47,6 +47,102 @@
   let showSettingsDialog = $state(false);
   let showExportDialog = $state(false);
   let exportPath = $state("");
+  
+  // Attachment state
+  let pendingAttachmentPath = $state("");
+  let attachmentError: string | null = $state(null);
+  let attachmentFileInput: HTMLInputElement | null = $state(null);
+  
+  // Blob URL tracking for attachments
+  let blobUrlMap = $state(new Map<string, string>()); // originalPath -> blobUrl
+  let displayContent = $state(""); // Content with blob URLs for editor
+
+  // Revoke all blob URLs (cleanup)
+  function revokeBlobUrls() {
+    for (const url of blobUrlMap.values()) {
+      URL.revokeObjectURL(url);
+    }
+    blobUrlMap.clear();
+  }
+
+  // Transform attachment paths in content to blob URLs
+  async function transformAttachmentPaths(content: string, entryPath: string): Promise<string> {
+    if (!backend) return content;
+    
+    // Find all image references: ![alt](...)
+    const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    let match;
+    const replacements: { original: string; replacement: string }[] = [];
+    
+    while ((match = imageRegex.exec(content)) !== null) {
+      const [fullMatch, alt, imagePath] = match;
+      
+      // Skip external URLs
+      if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+        continue;
+      }
+      
+      // Skip already-transformed blob URLs
+      if (imagePath.startsWith('blob:')) {
+        continue;
+      }
+      
+      try {
+        // Try to read the attachment data
+        const data = await backend.getAttachmentData(entryPath, imagePath);
+        
+        // Determine MIME type from extension
+        const ext = imagePath.split('.').pop()?.toLowerCase() || '';
+        const mimeTypes: Record<string, string> = {
+          'png': 'image/png',
+          'jpg': 'image/jpeg',
+          'jpeg': 'image/jpeg',
+          'gif': 'image/gif',
+          'webp': 'image/webp',
+          'svg': 'image/svg+xml',
+          'pdf': 'application/pdf',
+        };
+        const mimeType = mimeTypes[ext] || 'application/octet-stream';
+        
+        // Create blob and URL
+        const blob = new Blob([new Uint8Array(data)], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        
+        // Track for cleanup
+        blobUrlMap.set(imagePath, blobUrl);
+        
+        // Queue replacement
+        replacements.push({
+          original: fullMatch,
+          replacement: `![${alt}](${blobUrl})`,
+        });
+      } catch (e) {
+        // Attachment not found or error - leave original path
+        console.warn(`[App] Could not load attachment: ${imagePath}`, e);
+      }
+    }
+    
+    // Apply replacements
+    let result = content;
+    for (const { original, replacement } of replacements) {
+      result = result.replace(original, replacement);
+    }
+    
+    return result;
+  }
+
+  // Reverse-transform blob URLs back to attachment paths (for saving)
+  function reverseBlobUrlsToAttachmentPaths(content: string): string {
+    let result = content;
+    
+    // Iterate through blobUrlMap (originalPath -> blobUrl) and replace blob URLs with original paths
+    for (const [originalPath, blobUrl] of blobUrlMap.entries()) {
+      // Replace all occurrences of the blob URL with the original path
+      result = result.replaceAll(blobUrl, originalPath);
+    }
+    
+    return result;
+  }
 
   // Check if we're on desktop and expand sidebars by default
   onMount(async () => {
@@ -88,6 +184,8 @@
     // Stop auto-persist and do a final persist
     stopAutoPersist();
     persistNow();
+    // Cleanup blob URLs
+    revokeBlobUrls();
   });
 
   // Open an entry
@@ -103,6 +201,10 @@
 
     try {
       isLoading = true;
+      
+      // Cleanup previous blob URLs
+      revokeBlobUrls();
+      
       currentEntry = await backend.getEntry(path);
       titleError = null; // Clear any title error when switching files
       console.log("[App] Loaded entry:", currentEntry);
@@ -111,6 +213,14 @@
         "[App] Frontmatter keys:",
         Object.keys(currentEntry?.frontmatter ?? {}),
       );
+      
+      // Transform attachment paths to blob URLs for display
+      if (currentEntry) {
+        displayContent = await transformAttachmentPaths(currentEntry.content, currentEntry.path);
+      } else {
+        displayContent = "";
+      }
+      
       isDirty = false;
       error = null;
     } catch (e) {
@@ -125,7 +235,9 @@
     if (!backend || !currentEntry || !editorRef) return;
 
     try {
-      const markdown = editorRef.getMarkdown();
+      const markdownWithBlobUrls = editorRef.getMarkdown();
+      // Reverse-transform blob URLs back to attachment paths
+      const markdown = reverseBlobUrlsToAttachmentPaths(markdownWithBlobUrls || '');
       await backend.saveEntry(currentEntry.path, markdown);
       isDirty = false;
       // Trigger persist for WASM backend
@@ -253,6 +365,147 @@
       validationResult = await backend.validateWorkspace();
     } catch (e) {
       console.error("[App] Validation error:", e);
+    }
+  }
+
+  // Handle add attachment from context menu
+  function handleAddAttachment(entryPath: string) {
+    pendingAttachmentPath = entryPath;
+    attachmentError = null;
+    attachmentFileInput?.click();
+  }
+
+  // Handle file selection for attachment
+  async function handleAttachmentFileSelect(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file || !backend || !pendingAttachmentPath) return;
+
+    // Check size limit (5MB)
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.`;
+      input.value = "";
+      return;
+    }
+
+    try {
+      // Convert file to base64
+      const dataBase64 = await fileToBase64(file);
+      
+      // Upload attachment
+      const attachmentPath = await backend.uploadAttachment(pendingAttachmentPath, file.name, dataBase64);
+      await persistNow();
+      
+      // Refresh the entry if it's currently open
+      if (currentEntry?.path === pendingAttachmentPath) {
+        currentEntry = await backend.getEntry(pendingAttachmentPath);
+        
+        // If it's an image, also insert it into the editor at cursor
+        if (file.type.startsWith('image/') && editorRef) {
+          // Get the binary data and create blob URL
+          const data = await backend.getAttachmentData(currentEntry.path, attachmentPath);
+          const blob = new Blob([new Uint8Array(data)], { type: file.type });
+          const blobUrl = URL.createObjectURL(blob);
+          
+          // Track for cleanup
+          blobUrlMap.set(attachmentPath, blobUrl);
+          
+          // Insert image at cursor using Editor's insertImage method
+          editorRef.insertImage(blobUrl, file.name);
+        }
+      }
+      
+      attachmentError = null;
+    } catch (e) {
+      attachmentError = e instanceof Error ? e.message : String(e);
+    }
+    
+    input.value = "";
+    pendingAttachmentPath = "";
+  }
+
+  // Convert file to base64
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Extract base64 part from data URL
+        const base64 = result.split(",")[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Handle image insert from Editor toolbar
+  function handleEditorImageInsert() {
+    if (!currentEntry) return;
+    pendingAttachmentPath = currentEntry.path;
+    attachmentFileInput?.click();
+  }
+
+  // Handle file drop in Editor - upload and return blob URL
+  async function handleEditorFileDrop(file: File): Promise<{ blobUrl: string; attachmentPath: string } | null> {
+    if (!backend || !currentEntry) return null;
+
+    // Check size limit (5MB)
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.`;
+      return null;
+    }
+
+    try {
+      // Convert file to base64
+      const dataBase64 = await fileToBase64(file);
+      
+      // Upload attachment
+      const attachmentPath = await backend.uploadAttachment(currentEntry.path, file.name, dataBase64);
+      await persistNow();
+      
+      // Refresh the entry to update attachments list
+      currentEntry = await backend.getEntry(currentEntry.path);
+      
+      // Get the binary data back and create blob URL
+      const data = await backend.getAttachmentData(currentEntry.path, attachmentPath);
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const mimeTypes: Record<string, string> = {
+        'png': 'image/png',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'gif': 'image/gif',
+        'webp': 'image/webp',
+        'svg': 'image/svg+xml',
+      };
+      const mimeType = mimeTypes[ext] || 'image/png';
+      const blob = new Blob([new Uint8Array(data)], { type: mimeType });
+      const blobUrl = URL.createObjectURL(blob);
+      
+      // Track for cleanup
+      blobUrlMap.set(attachmentPath, blobUrl);
+      
+      return { blobUrl, attachmentPath };
+    } catch (e) {
+      attachmentError = e instanceof Error ? e.message : String(e);
+      return null;
+    }
+  }
+
+  // Handle delete attachment from RightSidebar
+  async function handleDeleteAttachment(attachmentPath: string) {
+    if (!backend || !currentEntry) return;
+    
+    try {
+      await backend.deleteAttachment(currentEntry.path, attachmentPath);
+      await persistNow();
+      // Refresh current entry to update attachments list
+      currentEntry = await backend.getEntry(currentEntry.path);
+      attachmentError = null;
+    } catch (e) {
+      attachmentError = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -453,6 +706,7 @@
     exportPath = currentEntry?.path ?? tree?.path ?? "";
     if (exportPath) showExportDialog = true;
   }}
+  onAddAttachment={() => currentEntry && handleAddAttachment(currentEntry.path)}
 />
 
 <!-- Settings Dialog -->
@@ -486,6 +740,16 @@
       exportPath = path;
       showExportDialog = true;
     }}
+    onAddAttachment={handleAddAttachment}
+  />
+
+  <!-- Hidden file input for attachments -->
+  <input
+    type="file"
+    bind:this={attachmentFileInput}
+    onchange={handleAttachmentFileSelect}
+    class="hidden"
+    accept="image/*,.pdf,.doc,.docx,.txt,.md"
   />
 
   <!-- Main Content Area -->
@@ -577,9 +841,11 @@
         {#if Editor}
           <Editor
             bind:this={editorRef}
-            content={currentEntry.content}
+            content={displayContent}
             onchange={handleContentChange}
             placeholder="Start writing..."
+            onInsertImage={handleEditorImageInsert}
+            onFileDrop={handleEditorFileDrop}
           />
         {:else}
           <div class="flex items-center justify-center h-full">
@@ -645,5 +911,9 @@
     onPropertyAdd={handlePropertyAdd}
     {titleError}
     onTitleErrorClear={() => titleError = null}
+    onAddAttachment={() => currentEntry && handleAddAttachment(currentEntry.path)}
+    onDeleteAttachment={handleDeleteAttachment}
+    {attachmentError}
+    onAttachmentErrorClear={() => attachmentError = null}
   />
 </div>

@@ -30,6 +30,7 @@
   let audiences: string[] = $state([]);
   let selectedAudience = $state("all");
   let exportPlan = $state<ExportPlan | null>(null);
+  let binaryFiles = $state<{ path: string }[]>([]);
   let isLoading = $state(false);
   let isExporting = $state(false);
   let error: string | null = $state(null);
@@ -64,19 +65,26 @@
     if (!backend) return;
     isLoading = true;
     error = null;
+    binaryFiles = [];
     try {
       // For "all" audience, we'll pass a special value
       // The backend treats empty audience differently - for now use "all" which won't match any audience
       // This means no files are included. We need a different approach for "export all"
+      const audience = selectedAudience === "all" ? "*" : selectedAudience;
       if (selectedAudience === "all") {
         // For "all" export, we'll skip audience filtering by using a special marker
         exportPlan = await backend.planExport(rootPath, "*");
       } else {
         exportPlan = await backend.planExport(rootPath, selectedAudience);
       }
+      
+      // Also fetch binary attachments for preview
+      const attachments = await backend.exportBinaryAttachments(rootPath, audience);
+      binaryFiles = attachments.map(f => ({ path: f.path }));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       exportPlan = null;
+      binaryFiles = [];
     } finally {
       isLoading = false;
     }
@@ -92,7 +100,11 @@
       const files = exportAsHtml 
         ? await backend.exportToHtml(rootPath, audience)
         : await backend.exportToMemory(rootPath, audience);
-      await downloadAsZip(files);
+      
+      // Also get binary attachments
+      const binaryFiles = await backend.exportBinaryAttachments(rootPath, audience);
+      
+      await downloadAsZip(files, binaryFiles);
       open = false;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -101,13 +113,19 @@
     }
   }
 
-  async function downloadAsZip(files: ExportedFile[]) {
+  async function downloadAsZip(files: ExportedFile[], binaryFiles: import("./backend").BinaryExportFile[] = []) {
     // Use JSZip library - dynamically import since it's optional
     const JSZip = (await import("jszip")).default;
     const zip = new JSZip();
     
+    // Add text files
     for (const file of files) {
       zip.file(file.path, file.content);
+    }
+    
+    // Add binary files (attachments)
+    for (const file of binaryFiles) {
+      zip.file(file.path, new Uint8Array(file.data), { binary: true });
     }
     
     const blob = await zip.generateAsync({ type: "blob" });
@@ -137,12 +155,14 @@
     path: string;
     children: TreeNode[];
     isFile: boolean;
+    isBinary?: boolean;
   }
 
   // Build a tree structure from flat paths
-  function buildTree(files: { path: string; relative_path: string }[]): TreeNode[] {
+  function buildTree(files: { path: string; relative_path: string }[], binaries: { path: string }[] = []): TreeNode[] {
     const root: TreeNode[] = [];
     
+    // Add markdown files
     for (const file of files) {
       const parts = file.relative_path.split("/");
       let current = root;
@@ -161,10 +181,29 @@
       }
     }
     
+    // Add binary files (attachments)
+    for (const file of binaries) {
+      const parts = file.path.split("/");
+      let current = root;
+      
+      for (let i = 0; i < parts.length; i++) {
+        const name = parts[i];
+        const isFile = i === parts.length - 1;
+        const partPath = parts.slice(0, i + 1).join("/");
+        
+        let existing = current.find(n => n.name === name);
+        if (!existing) {
+          existing = { name, path: partPath, children: [], isFile, isBinary: isFile };
+          current.push(existing);
+        }
+        current = existing.children;
+      }
+    }
+    
     return root;
   }
 
-  const fileTree = $derived(exportPlan ? buildTree(exportPlan.included) : []);
+  const fileTree = $derived(exportPlan ? buildTree(exportPlan.included, binaryFiles) : []);
 </script>
 
 <Dialog.Root bind:open onOpenChange={onOpenChange}>
@@ -200,7 +239,7 @@
       <!-- Preview Tree -->
       <div class="flex-1 overflow-y-auto border rounded-md p-2 min-h-[200px]">
         <div class="text-xs text-muted-foreground mb-2">
-          Files to export ({exportPlan?.included.length ?? 0}):
+          Files to export ({(exportPlan?.included.length ?? 0) + binaryFiles.length}):
         </div>
         
         {#if isLoading}

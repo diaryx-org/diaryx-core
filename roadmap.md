@@ -17,6 +17,7 @@ part_of: README.md
   New `attachments` property to declare attachments. Include in validate command below.
 - Link validation
   A command to validate that all `part_of`/`contents` references are still valid, and that exported workspaces have no broken internal links. Maybe consolidate `diaryx normalize` into a validate command?
+- Update Diaryx CLI to support attachments/other features added to apps/web
 
 ## Future considerations
 
@@ -24,9 +25,14 @@ part_of: README.md
 
 We have just one README file right now.
 
-### Sync
+### Sync/Backup
 
-Via git? When to fetch? Update on edit?
+Probably add a trait similar to Filesystem trait.
+
+A similar system already exists in apps/web for the WebAssembly/IndexedDB backend. It uses an InMemoryFilesystem and regularly "persists" to IndexedDB. Similarly, the user could set up multiple "backends" and have Diaryx persist to certain ones at certain intervals.
+
+Questions:
+- Should we have separate traits for syncing and backup?
 
 ### Undo/redo
 

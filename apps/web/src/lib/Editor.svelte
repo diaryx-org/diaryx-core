@@ -10,6 +10,7 @@
   import CodeBlock from "@tiptap/extension-code-block";
   import Highlight from "@tiptap/extension-highlight";
   import Typography from "@tiptap/extension-typography";
+  import Image from "@tiptap/extension-image";
   import {
     Bold,
     Italic,
@@ -24,6 +25,7 @@
     Quote,
     Braces,
     Link as LinkIcon,
+    ImageIcon,
   } from "@lucide/svelte";
 
   interface Props {
@@ -31,6 +33,8 @@
     placeholder?: string;
     onchange?: (markdown: string) => void;
     readonly?: boolean;
+    onInsertImage?: () => void;
+    onFileDrop?: (file: File) => Promise<{ blobUrl: string; attachmentPath: string } | null>;
   }
 
   let {
@@ -38,7 +42,11 @@
     placeholder = "Start writing...",
     onchange,
     readonly = false,
+    onInsertImage,
+    onFileDrop,
   }: Props = $props();
+
+  let imageFileInput: HTMLInputElement | null = $state(null);
 
   let element: HTMLDivElement;
   let editor: Editor | null = $state(null);
@@ -67,6 +75,14 @@
    */
   export function isEmpty(): boolean {
     return editor?.isEmpty ?? true;
+  }
+
+  /**
+   * Insert an image at cursor position
+   */
+  export function insertImage(src: string, alt?: string): void {
+    if (!editor) return;
+    editor.chain().focus().setImage({ src, alt: alt || '' }).run();
   }
 
   onMount(() => {
@@ -100,6 +116,13 @@
         }),
         Highlight,
         Typography,
+        Image.configure({
+          inline: true,
+          allowBase64: true,
+          HTMLAttributes: {
+            class: "editor-image",
+          },
+        }),
       ],
       content: content,
       contentType: "markdown",
@@ -384,11 +407,42 @@
         >
           <LinkIcon class="size-4" />
         </button>
+        <button
+          type="button"
+          class="p-1.5 rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground text-muted-foreground"
+          onclick={() => onInsertImage?.()}
+          title="Insert Image"
+        >
+          <ImageIcon class="size-4" />
+        </button>
       </div>
     </div>
   {/if}
 
-  <div class="flex-1 overflow-y-auto p-4" bind:this={element}></div>
+  <!-- Hidden file input for images -->
+  <input
+    type="file"
+    bind:this={imageFileInput}
+    class="hidden"
+    accept="image/*"
+  />
+
+  <div 
+    class="flex-1 overflow-y-auto p-4" 
+    bind:this={element}
+    ondragover={(e) => { e.preventDefault(); e.dataTransfer && (e.dataTransfer.dropEffect = 'copy'); }}
+    ondrop={async (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (file && file.type.startsWith('image/') && onFileDrop) {
+        const result = await onFileDrop(file);
+        if (result && editor) {
+          // Insert image at cursor position
+          editor.chain().focus().setImage({ src: result.blobUrl, alt: file.name }).run();
+        }
+      }
+    }}
+  ></div>
 </div>
 
 <style global>
@@ -521,5 +575,12 @@
 
   :global(.editor-content a:hover) {
     opacity: 0.8;
+  }
+
+  :global(.editor-image) {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 0.5em 0;
   }
 </style>

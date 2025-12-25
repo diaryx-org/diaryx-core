@@ -76,6 +76,17 @@ export interface ExportedFile {
   content: string;
 }
 
+export interface BinaryExportFile {
+  path: string;
+  data: number[];
+}
+
+export interface StorageInfo {
+  used: number;
+  limit: number;
+  attachment_limit: number;
+}
+
 export interface SearchOptions {
   workspacePath?: string;
   searchFrontmatter?: boolean;
@@ -293,6 +304,55 @@ export interface Backend {
    * @returns Array of HTML files with path and content.
    */
   exportToHtml(rootPath: string, audience: string): Promise<ExportedFile[]>;
+
+  /**
+   * Export binary attachment files.
+   * @param rootPath Path to the entry to export from.
+   * @param audience Target audience to filter by.
+   * @returns Array of binary files with path and data.
+   */
+  exportBinaryAttachments(rootPath: string, audience: string): Promise<BinaryExportFile[]>;
+
+  // --------------------------------------------------------------------------
+  // Attachments
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get the list of attachments for an entry.
+   * @param entryPath Path to the entry file.
+   * @returns Array of attachment relative paths.
+   */
+  getAttachments(entryPath: string): Promise<string[]>;
+
+  /**
+   * Upload an attachment file.
+   * @param entryPath Path to the entry file.
+   * @param filename Name of the attachment file.
+   * @param dataBase64 Base64 encoded file data.
+   * @returns The relative path where the attachment was stored.
+   */
+  uploadAttachment(entryPath: string, filename: string, dataBase64: string): Promise<string>;
+
+  /**
+   * Delete an attachment file.
+   * @param entryPath Path to the entry file.
+   * @param attachmentPath Relative path to the attachment.
+   */
+  deleteAttachment(entryPath: string, attachmentPath: string): Promise<void>;
+
+  /**
+   * Get storage usage information.
+   * @returns Storage usage stats including limits.
+   */
+  getStorageUsage(): Promise<StorageInfo>;
+
+  /**
+   * Get binary data for an attachment.
+   * @param entryPath Path to the entry file.
+   * @param attachmentPath Relative path to the attachment.
+   * @returns Uint8Array of the attachment data.
+   */
+  getAttachmentData(entryPath: string, attachmentPath: string): Promise<Uint8Array>;
 
   // --------------------------------------------------------------------------
   // Frontmatter

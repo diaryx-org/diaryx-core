@@ -467,6 +467,52 @@ export class TauriBackend implements Backend {
     );
   }
 
+  async exportBinaryAttachments(_rootPath: string, _audience: string): Promise<import("./interface").BinaryExportFile[]> {
+    throw new BackendError(
+      "exportBinaryAttachments not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Attachments
+  // --------------------------------------------------------------------------
+
+  async getAttachments(_entryPath: string): Promise<string[]> {
+    throw new BackendError(
+      "getAttachments not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async uploadAttachment(_entryPath: string, _filename: string, _dataBase64: string): Promise<string> {
+    throw new BackendError(
+      "uploadAttachment not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async deleteAttachment(_entryPath: string, _attachmentPath: string): Promise<void> {
+    throw new BackendError(
+      "deleteAttachment not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async getStorageUsage(): Promise<import("./interface").StorageInfo> {
+    throw new BackendError(
+      "getStorageUsage not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
+  async getAttachmentData(_entryPath: string, _attachmentPath: string): Promise<Uint8Array> {
+    throw new BackendError(
+      "getAttachmentData not yet implemented for Tauri backend",
+      "NotImplemented",
+    );
+  }
+
   // --------------------------------------------------------------------------
   // Frontmatter
   // --------------------------------------------------------------------------

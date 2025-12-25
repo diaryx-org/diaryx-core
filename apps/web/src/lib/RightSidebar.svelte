@@ -18,6 +18,8 @@
     X,
     Check,
     AlertCircle,
+    Paperclip,
+    Trash2,
   } from "@lucide/svelte";
 
   interface Props {
@@ -29,6 +31,10 @@
     onPropertyAdd?: (key: string, value: unknown) => void;
     titleError?: string | null;
     onTitleErrorClear?: () => void;
+    onAddAttachment?: () => void;
+    onDeleteAttachment?: (attachmentPath: string) => void;
+    attachmentError?: string | null;
+    onAttachmentErrorClear?: () => void;
   }
 
   let {
@@ -40,7 +46,34 @@
     onPropertyAdd,
     titleError = null,
     onTitleErrorClear,
+    onAddAttachment,
+    onDeleteAttachment,
+    attachmentError = null,
+    onAttachmentErrorClear,
   }: Props = $props();
+
+  // Get attachments from frontmatter
+  $effect(() => {
+    if (attachmentError && entry) {
+      // Auto-clear error after 5 seconds
+      const timeout = setTimeout(() => onAttachmentErrorClear?.(), 5000);
+      return () => clearTimeout(timeout);
+    }
+  });
+
+  // Get attachments list from frontmatter
+  function getAttachments(): string[] {
+    if (!entry?.frontmatter?.attachments) return [];
+    const attachments = entry.frontmatter.attachments;
+    if (Array.isArray(attachments)) {
+      return attachments.filter((a): a is string => typeof a === "string");
+    }
+    return [];
+  }
+
+  function getFilename(path: string): string {
+    return path.split("/").pop() ?? path;
+  }
 
   // State for adding new properties
   let showAddProperty = $state(false);
@@ -424,6 +457,58 @@
             Add Property
           </Button>
         {/if}
+      </div>
+
+      <!-- Attachments Section -->
+      <div class="p-3 border-t border-sidebar-border">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2 text-xs text-muted-foreground">
+            <Paperclip class="size-3.5" />
+            <span class="font-medium">Attachments</span>
+          </div>
+        </div>
+
+        {#if attachmentError}
+          <Alert.Root variant="destructive" class="mb-2 py-2">
+            <AlertCircle class="size-4" />
+            <Alert.Description class="text-xs">
+              {attachmentError}
+            </Alert.Description>
+          </Alert.Root>
+        {/if}
+
+        {#if getAttachments().length > 0}
+          <div class="space-y-1 mb-2">
+            {#each getAttachments() as attachment}
+              <div class="flex items-center justify-between gap-2 px-2 py-1 rounded-md bg-secondary/50 group">
+                <span class="text-xs text-foreground truncate" title={attachment}>
+                  {getFilename(attachment)}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onclick={() => onDeleteAttachment?.(attachment)}
+                  aria-label="Remove attachment"
+                >
+                  <Trash2 class="size-3" />
+                </Button>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="text-xs text-muted-foreground mb-2">No attachments</p>
+        {/if}
+
+        <Button
+          variant="outline"
+          size="sm"
+          class="w-full h-8 text-xs"
+          onclick={() => onAddAttachment?.()}
+        >
+          <Plus class="size-3 mr-1" />
+          Add Attachment
+        </Button>
       </div>
     {:else}
       <div

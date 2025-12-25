@@ -80,6 +80,42 @@ pub fn export_files() -> Result<JsValue, JsValue> {
     Ok(serde_wasm_bindgen::to_value(&entries)?)
 }
 
+/// Export all binary files from the in-memory filesystem.
+/// Returns an array of objects with path and data for persistence to IndexedDB.
+#[wasm_bindgen]
+pub fn export_binary_files() -> Result<JsValue, JsValue> {
+    let entries = with_fs(|fs| fs.export_binary_entries());
+    // Convert to a serializable format
+    let serializable: Vec<BinaryEntry> = entries
+        .into_iter()
+        .map(|(path, data)| BinaryEntry { path, data })
+        .collect();
+    Ok(serde_wasm_bindgen::to_value(&serializable)?)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BinaryEntry {
+    path: String,
+    data: Vec<u8>,
+}
+
+/// Load binary files into the in-memory filesystem.
+/// Takes an array of objects with path and data.
+#[wasm_bindgen]
+pub fn load_binary_files(entries: JsValue) -> Result<(), JsValue> {
+    let binary_entries: Vec<BinaryEntry> = serde_wasm_bindgen::from_value(entries)?;
+    let entries: Vec<(String, Vec<u8>)> = binary_entries
+        .into_iter()
+        .map(|e| (e.path, e.data))
+        .collect();
+    
+    with_fs(|fs| {
+        fs.load_binary_entries(entries);
+    });
+    
+    Ok(())
+}
+
 /// Check if a file exists.
 #[wasm_bindgen]
 pub fn file_exists(path: &str) -> bool {
@@ -1114,6 +1150,215 @@ pub fn today_formatted(format: &str) -> String {
 }
 
 // ============================================================================
+// Attachment Operations
+// ============================================================================
+
+/// Add an attachment path to an entry's attachments list.
+#[wasm_bindgen]
+pub fn add_attachment(entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
+    with_fs(|fs| {
+        let app = DiaryxApp::new(fs);
+        app.add_attachment(entry_path, attachment_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Remove an attachment path from an entry's attachments list.
+#[wasm_bindgen]
+pub fn remove_attachment(entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
+    with_fs(|fs| {
+        let app = DiaryxApp::new(fs);
+        app.remove_attachment(entry_path, attachment_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Get the list of attachments declared in an entry.
+#[wasm_bindgen]
+pub fn get_attachments(entry_path: &str) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let app = DiaryxApp::new(fs);
+        let attachments = app.get_attachments(entry_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_wasm_bindgen::to_value(&attachments)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Upload an attachment file (base64 encoded data).
+/// Stores the file and adds it to the entry's attachments list.
+#[wasm_bindgen]
+pub fn upload_attachment(
+    entry_path: &str,
+    filename: &str,
+    data_base64: &str,
+) -> Result<String, JsValue> {
+    with_fs_mut(|fs| {
+        // Decode base64 data
+        let data = base64_decode(data_base64)
+            .map_err(|e| JsValue::from_str(&format!("Base64 decode error: {}", e)))?;
+        
+        // Determine attachment path relative to entry
+        let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
+        let attachments_dir = entry_dir.join("_attachments");
+        let attachment_path = attachments_dir.join(filename);
+        
+        // Create directory if needed
+        fs.create_dir_all(&attachments_dir)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        // Write the binary file
+        fs.write_binary(&attachment_path, &data)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        // Calculate relative path for frontmatter
+        let relative_path = format!("_attachments/{}", filename);
+        
+        // Add to entry's attachments list
+        let app = DiaryxApp::new(fs);
+        app.add_attachment(entry_path, &relative_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        Ok(relative_path)
+    })
+}
+
+/// Delete an attachment file and remove it from the entry's attachments list.
+#[wasm_bindgen]
+pub fn delete_attachment(entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
+    with_fs_mut(|fs| {
+        // Remove from frontmatter
+        let app = DiaryxApp::new(fs);
+        app.remove_attachment(entry_path, attachment_path)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        // Delete the file
+        let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
+        let full_path = entry_dir.join(attachment_path);
+        if fs.exists(&full_path) {
+            fs.delete_file(&full_path)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        }
+        
+        Ok(())
+    })
+}
+
+/// Read attachment binary data for blob URL creation.
+/// Returns the raw bytes as a Uint8Array.
+#[wasm_bindgen]
+pub fn read_attachment_data(entry_path: &str, attachment_path: &str) -> Result<js_sys::Uint8Array, JsValue> {
+    with_fs(|fs| {
+        let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
+        let full_path = entry_dir.join(attachment_path);
+        
+        let data = fs.read_binary(&full_path)
+            .map_err(|e| JsValue::from_str(&format!("Failed to read attachment: {}", e)))?;
+        
+        Ok(js_sys::Uint8Array::from(data.as_slice()))
+    })
+}
+
+/// Get storage usage information.
+/// Returns { used: number, limit: number } in bytes.
+/// TODO: enforce limits at browser/IndexedDB backend level
+#[wasm_bindgen]
+pub fn get_storage_usage() -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        // Calculate total size of all files
+        let mut total_size: u64 = 0;
+        
+        fn count_size<FS: FileSystem>(fs: &FS, dir: &Path, total: &mut u64) {
+            if let Ok(entries) = fs.list_files(dir) {
+                for path in entries {
+                    if fs.is_dir(&path) {
+                        count_size(fs, &path, total);
+                    } else if let Ok(data) = fs.read_binary(&path) {
+                        *total += data.len() as u64;
+                    }
+                }
+            }
+        }
+        
+        count_size(fs, Path::new("/"), &mut total_size);
+        
+        #[derive(serde::Serialize)]
+        struct StorageInfo {
+            used: u64,
+            limit: u64,
+            attachment_limit: u64,
+        }
+        
+        let info = StorageInfo {
+            used: total_size,
+            limit: 100 * 1024 * 1024, // 100MB
+            attachment_limit: 5 * 1024 * 1024, // 5MB
+        };
+        
+        serde_wasm_bindgen::to_value(&info)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Simple base64 decoder
+fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
+    // Remove data URL prefix if present
+    let data = if let Some(pos) = input.find(",") {
+        &input[pos + 1..]
+    } else {
+        input
+    };
+    
+    // Standard base64 decoding
+    const DECODE_TABLE: [i8; 256] = {
+        let mut table = [-1i8; 256];
+        let mut i = 0u8;
+        while i < 26 {
+            table[(b'A' + i) as usize] = i as i8;
+            table[(b'a' + i) as usize] = (i + 26) as i8;
+            i += 1;
+        }
+        let mut i = 0u8;
+        while i < 10 {
+            table[(b'0' + i) as usize] = (i + 52) as i8;
+            i += 1;
+        }
+        table[b'+' as usize] = 62;
+        table[b'/' as usize] = 63;
+        table[b'=' as usize] = 0;
+        table
+    };
+    
+    let bytes: Vec<u8> = data.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
+    let mut output = Vec::with_capacity(bytes.len() * 3 / 4);
+    
+    for chunk in bytes.chunks(4) {
+        if chunk.len() < 4 {
+            break;
+        }
+        
+        let a = DECODE_TABLE[chunk[0] as usize];
+        let b = DECODE_TABLE[chunk[1] as usize];
+        let c = DECODE_TABLE[chunk[2] as usize];
+        let d = DECODE_TABLE[chunk[3] as usize];
+        
+        if a < 0 || b < 0 {
+            return Err("Invalid base64 character".to_string());
+        }
+        
+        output.push(((a as u8) << 2) | ((b as u8) >> 4));
+        if chunk[2] != b'=' {
+            output.push(((b as u8) << 4) | ((c as u8) >> 2));
+        }
+        if chunk[3] != b'=' {
+            output.push(((c as u8) << 6) | (d as u8));
+        }
+    }
+    
+    Ok(output)
+}
+
+// ============================================================================
 // Export Operations
 // ============================================================================
 
@@ -1523,6 +1768,87 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
         }
         
         serde_wasm_bindgen::to_value(&files)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Export binary attachment files for entries in the export.
+/// Returns array of {path, data: number[]} for zip creation in JS.
+/// Collects all files in _attachments folders for exported entries.
+#[wasm_bindgen]
+pub fn export_binary_attachments(root_path: &str, _audience: &str) -> Result<JsValue, JsValue> {
+    use std::collections::HashSet;
+
+    with_fs(|fs| {
+        #[derive(serde::Serialize)]
+        struct BinaryExportFile {
+            path: String,
+            data: Vec<u8>,
+        }
+
+        let ws = Workspace::new(fs);
+        let root = Path::new(root_path);
+        let root_dir = root.parent().unwrap_or(root);
+        let mut binary_files: Vec<BinaryExportFile> = Vec::new();
+        let mut visited_entries: HashSet<PathBuf> = HashSet::new();
+        let mut visited_attachment_dirs: HashSet<PathBuf> = HashSet::new();
+
+        // Collect _attachments folders from all entries in the export
+        fn collect_attachments<FS: FileSystem>(
+            ws: &Workspace<FS>,
+            entry_path: &Path,
+            root_dir: &Path,
+            binary_files: &mut Vec<BinaryExportFile>,
+            visited_entries: &mut HashSet<PathBuf>,
+            visited_attachment_dirs: &mut HashSet<PathBuf>,
+        ) {
+            if visited_entries.contains(entry_path) {
+                return;
+            }
+            visited_entries.insert(entry_path.to_path_buf());
+
+            if let Ok(index) = ws.parse_index(entry_path) {
+                // Check for _attachments folder next to this entry
+                let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
+                let attachments_dir = entry_dir.join("_attachments");
+                
+                if ws.fs_ref().is_dir(&attachments_dir) && !visited_attachment_dirs.contains(&attachments_dir) {
+                    visited_attachment_dirs.insert(attachments_dir.clone());
+                    
+                    // List all files in _attachments directory
+                    if let Ok(files) = ws.fs_ref().list_files(&attachments_dir) {
+                        for file_path in files {
+                            if !ws.fs_ref().is_dir(&file_path) {
+                                // Read binary content
+                                if let Ok(data) = ws.fs_ref().read_binary(&file_path) {
+                                    let relative_path = pathdiff::diff_paths(&file_path, root_dir)
+                                        .unwrap_or_else(|| file_path.clone());
+                                    
+                                    binary_files.push(BinaryExportFile {
+                                        path: relative_path.to_string_lossy().to_string(),
+                                        data,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Recurse into children
+                if index.frontmatter.is_index() {
+                    for child_rel in index.frontmatter.contents_list() {
+                        let child_path = index.resolve_path(child_rel);
+                        if ws.fs_ref().exists(&child_path) {
+                            collect_attachments(ws, &child_path, root_dir, binary_files, visited_entries, visited_attachment_dirs);
+                        }
+                    }
+                }
+            }
+        }
+
+        collect_attachments(&ws, root, root_dir, &mut binary_files, &mut visited_entries, &mut visited_attachment_dirs);
+
+        serde_wasm_bindgen::to_value(&binary_files)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }

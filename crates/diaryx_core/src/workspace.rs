@@ -31,6 +31,11 @@ pub struct IndexFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Vec<String>>,
 
+    /// List of paths to attachment files (images, documents, etc.) relative to this file
+    /// Attachments declared here are available to this entry and all children
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<String>>,
+
     /// Additional frontmatter properties
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, Value>,
@@ -55,6 +60,16 @@ impl IndexFrontmatter {
     /// Get display name
     pub fn display_name(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// Get attachments as a slice, or empty slice if absent
+    pub fn attachments_list(&self) -> &[String] {
+        self.attachments.as_deref().unwrap_or(&[])
+    }
+
+    /// Returns true if this file has attachments
+    pub fn has_attachments(&self) -> bool {
+        self.attachments.as_ref().is_some_and(|a| !a.is_empty())
     }
 
     /// Returns true if this file is marked as private (has "private" in audience)
