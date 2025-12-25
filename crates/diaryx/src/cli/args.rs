@@ -246,6 +246,13 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Manage attachments for entries
+    #[command(alias = "att")]
+    Attachment {
+        #[command(subcommand)]
+        command: AttachmentCommands,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -741,4 +748,52 @@ pub enum TemplateCommands {
 
     /// List available template variables
     Variables,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AttachmentCommands {
+    /// Add an attachment to an entry
+    /// Adds the attachment path to the entry's `attachments` frontmatter property
+    Add {
+        /// Path to the entry file (supports fuzzy matching)
+        entry: String,
+
+        /// Path to the attachment file to add
+        attachment: String,
+
+        /// Copy the file to the entry's _attachments folder instead of referencing the literal path
+        /// The copied file path will be added to the attachments list
+        #[arg(short, long)]
+        copy: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Remove an attachment from an entry
+    /// Removes the attachment path from the entry's `attachments` frontmatter property
+    #[command(alias = "rm")]
+    Remove {
+        /// Path to the entry file (supports fuzzy matching)
+        entry: String,
+
+        /// Path or name of the attachment to remove
+        attachment: String,
+
+        /// Also delete the attachment file from disk
+        #[arg(short, long)]
+        delete: bool,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// List attachments for an entry
+    #[command(alias = "ls")]
+    List {
+        /// Path to the entry file (supports fuzzy matching)
+        entry: String,
+    },
 }

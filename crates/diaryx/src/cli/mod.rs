@@ -3,6 +3,9 @@
 /// Clap argument definitions
 mod args;
 
+/// Attachment management
+mod attachment;
+
 /// Body content manipulation
 mod content;
 
@@ -196,6 +199,11 @@ pub fn run_cli() {
                 force,
                 dry_run,
             );
+        }
+
+        Commands::Attachment { command } => {
+            let current_dir = std::env::current_dir().unwrap_or_default();
+            attachment::handle_attachment_command(command, &ws, &app, &current_dir);
         }
     }
 }
