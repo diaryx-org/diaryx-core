@@ -208,12 +208,13 @@ export interface Backend {
    * and sets the entry's `part_of` to point back to the parent index (both as relative paths).
    *
    * @param entryPath Path to the entry to attach.
-   * @param parentIndexPath Path to the parent index file (typically ".../index.md").
+   * @param parentIndexPath Path to the parent index file (or leaf to convert).
+   * @returns The new path to the entry after any moves.
    */
   attachEntryToParent(
     entryPath: string,
     parentIndexPath: string,
-  ): Promise<void>;
+  ): Promise<string>;
 
   /**
    * Convert a leaf file to an index file with a directory.

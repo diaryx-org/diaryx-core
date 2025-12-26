@@ -37,11 +37,29 @@ pub fn run() {
             commands::delete_entry,
             commands::move_entry,
             commands::attach_entry_to_parent,
+            commands::convert_to_index,
+            commands::convert_to_leaf,
+            commands::create_child_entry,
+            commands::rename_entry,
+            commands::ensure_daily_entry,
             // Search
             commands::search_workspace,
             // Frontmatter
             commands::get_frontmatter,
             commands::set_frontmatter_property,
+            commands::remove_frontmatter_property,
+            // Attachments
+            commands::get_attachments,
+            commands::upload_attachment,
+            commands::delete_attachment,
+            commands::get_attachment_data,
+            commands::get_storage_usage,
+            // Export
+            commands::get_available_audiences,
+            commands::plan_export,
+            commands::export_to_memory,
+            commands::export_to_html,
+            commands::export_binary_attachments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -594,6 +594,14 @@ pub fn set_frontmatter_property(
         .map_err(|e| e.to_serializable())
 }
 
+/// Remove a frontmatter property
+#[tauri::command]
+pub fn remove_frontmatter_property(path: String, key: String) -> Result<(), SerializableError> {
+    let app = DiaryxApp::new(RealFileSystem);
+    app.remove_frontmatter_property(&path, &key)
+        .map_err(|e| e.to_serializable())
+}
+
 /// Delete an entry
 #[tauri::command]
 pub fn delete_entry(path: String) -> Result<(), SerializableError> {
@@ -864,77 +872,685 @@ fn add_to_index_contents_tauri(
     Ok(())
 }
 
-/// Attach an existing entry to a parent index ("workspace add" behavior).
-/// - Adds the entry to the parent's `contents` using a path relative to the parent index directory
-/// - Sets the entry's `part_of` to point back to the parent index (relative to the entry)
+/// Attach an existing entry to a parent, moving it into the parent's directory.
+///
+/// Uses Workspace::attach_and_move_entry_to_parent from diaryx_core which:
+/// - Converts parent to index if it's a leaf file (creates directory)
+/// - Moves entry into the parent's directory if not already there
+/// - Creates bidirectional links (contents and part_of)
+///
+/// Returns the new path to the entry after any moves.
 #[tauri::command]
 pub fn attach_entry_to_parent(
     request: AttachEntryToParentRequest,
-) -> Result<(), SerializableError> {
-    let app = DiaryxApp::new(RealFileSystem);
+) -> Result<PathBuf, SerializableError> {
+    let ws = Workspace::new(RealFileSystem);
 
     let entry = PathBuf::from(&request.entry_path);
-    let parent_index = PathBuf::from(&request.parent_index_path);
+    let parent = PathBuf::from(&request.parent_index_path);
 
-    if !RealFileSystem.exists(&entry) {
-        return Err(SerializableError {
-            kind: "FileNotFound".to_string(),
-            message: format!("Entry does not exist: {}", request.entry_path),
-            path: Some(entry),
-        });
+    ws.attach_and_move_entry_to_parent(&entry, &parent)
+        .map_err(|e| e.to_serializable())
+}
+
+// ============================================================================
+// Attachment Commands
+// ============================================================================
+
+/// Get attachments list from an entry's frontmatter
+#[tauri::command]
+pub fn get_attachments(entry_path: String) -> Result<Vec<String>, SerializableError> {
+    let app = DiaryxApp::new(RealFileSystem);
+
+    let frontmatter = app
+        .get_all_frontmatter(&entry_path)
+        .map_err(|e| e.to_serializable())?;
+
+    let attachments: Vec<String> = frontmatter
+        .get("attachments")
+        .and_then(|v| {
+            if let serde_yaml::Value::Sequence(seq) = v {
+                Some(
+                    seq.iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    Ok(attachments)
+}
+
+/// Upload an attachment file (base64 encoded) to the entry's _attachments folder
+#[tauri::command]
+pub fn upload_attachment(
+    entry_path: String,
+    filename: String,
+    data_base64: String,
+) -> Result<String, SerializableError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let entry = PathBuf::from(&entry_path);
+    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
+    let attachments_dir = entry_dir.join("_attachments");
+
+    // Create _attachments directory if needed
+    if !attachments_dir.exists() {
+        std::fs::create_dir_all(&attachments_dir).map_err(|e| SerializableError {
+            kind: "IoError".to_string(),
+            message: format!("Failed to create attachments directory: {}", e),
+            path: Some(attachments_dir.clone()),
+        })?;
     }
 
-    if !RealFileSystem.exists(&parent_index) {
-        return Err(SerializableError {
-            kind: "FileNotFound".to_string(),
-            message: format!("Parent index does not exist: {}", request.parent_index_path),
-            path: Some(parent_index),
-        });
+    // Decode base64 data
+    let data = STANDARD
+        .decode(&data_base64)
+        .map_err(|e| SerializableError {
+            kind: "DecodeError".to_string(),
+            message: format!("Failed to decode base64 data: {}", e),
+            path: None,
+        })?;
+
+    // Write file
+    let dest_path = attachments_dir.join(&filename);
+    std::fs::write(&dest_path, &data).map_err(|e| SerializableError {
+        kind: "IoError".to_string(),
+        message: format!("Failed to write attachment: {}", e),
+        path: Some(dest_path.clone()),
+    })?;
+
+    // Add to frontmatter attachments
+    let attachment_rel_path = format!("_attachments/{}", filename);
+    let app = DiaryxApp::new(RealFileSystem);
+    app.add_attachment(&entry_path, &attachment_rel_path)
+        .map_err(|e| e.to_serializable())?;
+
+    Ok(attachment_rel_path)
+}
+
+/// Delete an attachment file and remove from entry's frontmatter
+#[tauri::command]
+pub fn delete_attachment(
+    entry_path: String,
+    attachment_path: String,
+) -> Result<(), SerializableError> {
+    let entry = PathBuf::from(&entry_path);
+    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
+    let full_path = entry_dir.join(&attachment_path);
+
+    // Delete the file if it exists
+    if full_path.exists() {
+        std::fs::remove_file(&full_path).map_err(|e| SerializableError {
+            kind: "IoError".to_string(),
+            message: format!("Failed to delete attachment file: {}", e),
+            path: Some(full_path.clone()),
+        })?;
     }
 
-    // Add child link to parent's contents (relative to the parent index directory)
-    let parent_dir = parent_index.parent().unwrap_or_else(|| Path::new(""));
-    let child_rel = relative_path_from_dir_to_target(parent_dir, &entry);
-    add_to_index_contents_tauri(&app, &parent_index, &child_rel)?;
-
-    // Set child's part_of (relative to the entry directory)
-    let parent_rel = relative_path_from_entry_to_target(&entry, &parent_index);
-    app.set_frontmatter_property(
-        &request.entry_path,
-        "part_of",
-        serde_yaml::Value::String(parent_rel),
-    )
-    .map_err(|e| e.to_serializable())?;
+    // Remove from frontmatter
+    let app = DiaryxApp::new(RealFileSystem);
+    app.remove_attachment(&entry_path, &attachment_path)
+        .map_err(|e| e.to_serializable())?;
 
     Ok(())
 }
 
-/// Compute a relative path from a base directory to a target file.
-/// Example: base_dir `workspace`, target `workspace/Daily/daily_index.md` => `Daily/daily_index.md`
-fn relative_path_from_dir_to_target(base_dir: &Path, target_path: &Path) -> String {
-    let base_components: Vec<_> = base_dir.components().collect();
-    let target_components: Vec<_> = target_path.components().collect();
+/// Read binary attachment data
+#[tauri::command]
+pub fn get_attachment_data(
+    entry_path: String,
+    attachment_path: String,
+) -> Result<Vec<u8>, SerializableError> {
+    let entry = PathBuf::from(&entry_path);
+    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
+    let full_path = entry_dir.join(&attachment_path);
 
-    let mut common = 0usize;
-    while common < base_components.len()
-        && common < target_components.len()
-        && base_components[common] == target_components[common]
-    {
-        common += 1;
-    }
+    std::fs::read(&full_path).map_err(|e| SerializableError {
+        kind: "IoError".to_string(),
+        message: format!("Failed to read attachment: {}", e),
+        path: Some(full_path),
+    })
+}
 
-    let mut parts: Vec<String> = Vec::new();
-    for _ in common..base_components.len() {
-        parts.push("..".to_string());
-    }
+/// Storage info returned to frontend
+#[derive(Debug, Serialize)]
+pub struct StorageInfo {
+    pub used: u64,
+    pub total: u64,
+    pub percentage: f64,
+}
 
-    for comp in target_components.iter().skip(common) {
-        parts.push(comp.as_os_str().to_string_lossy().to_string());
-    }
+/// Get storage usage for the workspace
+#[tauri::command]
+pub fn get_storage_usage<R: Runtime>(app: AppHandle<R>) -> Result<StorageInfo, SerializableError> {
+    let paths = get_platform_paths(&app)?;
 
-    if parts.is_empty() {
-        ".".to_string()
+    // Calculate used space in workspace
+    let used = calculate_dir_size(&paths.default_workspace);
+
+    // For total, use a reasonable default (can't easily get disk space on mobile)
+    // On desktop, this could be enhanced to get actual disk space
+    let total = 10 * 1024 * 1024 * 1024; // 10 GB placeholder
+    let percentage = if total > 0 {
+        (used as f64 / total as f64) * 100.0
     } else {
-        parts.join("/")
+        0.0
+    };
+
+    Ok(StorageInfo {
+        used,
+        total,
+        percentage,
+    })
+}
+
+/// Recursively calculate directory size
+fn calculate_dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_file() {
+                if let Ok(metadata) = entry_path.metadata() {
+                    total += metadata.len();
+                }
+            } else if entry_path.is_dir() {
+                total += calculate_dir_size(&entry_path);
+            }
+        }
     }
+
+    total
+}
+
+// ============================================================================
+// Entry Operation Commands
+// ============================================================================
+
+/// Convert a leaf entry to an index by adding empty `contents` property
+#[tauri::command]
+pub fn convert_to_index(path: String) -> Result<PathBuf, SerializableError> {
+    let app = DiaryxApp::new(RealFileSystem);
+    let path_buf = PathBuf::from(&path);
+
+    // Check if already has contents
+    let frontmatter = app
+        .get_all_frontmatter(&path)
+        .map_err(|e| e.to_serializable())?;
+
+    if frontmatter.contains_key("contents") {
+        // Already an index, return as-is
+        return Ok(path_buf);
+    }
+
+    // Add empty contents array
+    app.set_frontmatter_property(&path, "contents", serde_yaml::Value::Sequence(vec![]))
+        .map_err(|e| e.to_serializable())?;
+
+    Ok(path_buf)
+}
+
+/// Convert an index entry to a leaf by removing `contents` property
+#[tauri::command]
+pub fn convert_to_leaf(path: String) -> Result<PathBuf, SerializableError> {
+    let app = DiaryxApp::new(RealFileSystem);
+    let path_buf = PathBuf::from(&path);
+
+    // Remove contents property if it exists
+    app.remove_frontmatter_property(&path, "contents")
+        .map_err(|e| e.to_serializable())?;
+
+    Ok(path_buf)
+}
+
+/// Create a new child entry under a parent.
+///
+/// Uses Workspace::create_child_entry from diaryx_core which:
+/// - Converts parent to index if it's a leaf file (creates directory)
+/// - Generates a unique filename
+/// - Creates the entry with title, created, and updated frontmatter
+/// - Attaches the new entry to the parent
+///
+/// Returns the path to the newly created entry.
+#[tauri::command]
+pub fn create_child_entry(
+    parent_path: String,
+    title: Option<String>,
+) -> Result<PathBuf, SerializableError> {
+    let ws = Workspace::new(RealFileSystem);
+    let parent = PathBuf::from(&parent_path);
+
+    ws.create_child_entry(&parent, title.as_deref())
+        .map_err(|e| e.to_serializable())
+}
+
+/// Rename an entry file while updating references
+#[tauri::command]
+pub fn rename_entry(path: String, new_filename: String) -> Result<PathBuf, SerializableError> {
+    let from = PathBuf::from(&path);
+    let parent_dir = from.parent().unwrap_or_else(|| Path::new("."));
+    let to = parent_dir.join(&new_filename);
+
+    if from == to {
+        return Ok(to);
+    }
+
+    // Use move_entry logic for consistency
+    let request = MoveEntryRequest {
+        from_path: path,
+        to_path: to.to_string_lossy().to_string(),
+    };
+
+    move_entry(request)
+}
+
+/// Ensure today's daily entry exists, creating if needed
+#[tauri::command]
+pub fn ensure_daily_entry<R: Runtime>(app: AppHandle<R>) -> Result<PathBuf, SerializableError> {
+    use chrono::Local;
+
+    let paths = get_platform_paths(&app)?;
+    let config = if paths.config_path.exists() && !paths.is_mobile {
+        Config::load_from(&RealFileSystem, &paths.config_path)
+            .unwrap_or_else(|_| Config::new(paths.default_workspace.clone()))
+    } else {
+        Config::new(paths.default_workspace.clone())
+    };
+
+    // Get daily folder from config or use "Daily" default
+    let daily_folder = config
+        .daily_entry_folder
+        .clone()
+        .unwrap_or_else(|| "Daily".to_string());
+    let daily_dir = paths.default_workspace.join(&daily_folder);
+
+    // Create daily directory if needed
+    if !daily_dir.exists() {
+        std::fs::create_dir_all(&daily_dir).map_err(|e| SerializableError {
+            kind: "IoError".to_string(),
+            message: format!("Failed to create daily folder: {}", e),
+            path: Some(daily_dir.clone()),
+        })?;
+    }
+
+    // Generate today's filename
+    let today = Local::now();
+    let filename = format!("{}.md", today.format("%Y-%m-%d"));
+    let entry_path = daily_dir.join(&filename);
+
+    // If file exists, return it
+    if entry_path.exists() {
+        return Ok(entry_path);
+    }
+
+    // Create new daily entry
+    let entry_path_str = entry_path.to_string_lossy().to_string();
+    let diary_app = DiaryxApp::new(RealFileSystem);
+
+    diary_app
+        .create_entry(&entry_path_str)
+        .map_err(|e| e.to_serializable())?;
+
+    // Set title to today's date
+    let title = today.format("%B %d, %Y").to_string(); // e.g., "December 24, 2024"
+    diary_app
+        .set_frontmatter_property(&entry_path_str, "title", serde_yaml::Value::String(title))
+        .map_err(|e| e.to_serializable())?;
+
+    Ok(entry_path)
+}
+
+// ============================================================================
+// Export Commands
+// ============================================================================
+
+/// Get all available audience tags from the workspace
+#[tauri::command]
+pub fn get_available_audiences<R: Runtime>(
+    app: AppHandle<R>,
+    root_path: String,
+) -> Result<Vec<String>, SerializableError> {
+    let paths = get_platform_paths(&app)?;
+    let ws = Workspace::new(RealFileSystem);
+
+    // Use provided root_path or default workspace
+    let root = if root_path.is_empty() {
+        paths.default_workspace.clone()
+    } else {
+        PathBuf::from(&root_path)
+    };
+
+    // Determine if root is already a file (index) or a directory
+    let root_index = if root.is_file() {
+        // It's already an index file, use it directly
+        root.clone()
+    } else {
+        // It's a directory, find the root index inside
+        ws.find_root_index_in_dir(&root)
+            .map_err(|e| e.to_serializable())?
+            .ok_or_else(|| SerializableError {
+                kind: "WorkspaceNotFound".to_string(),
+                message: format!("No workspace found at '{}'", root.display()),
+                path: Some(root.clone()),
+            })?
+    };
+
+    let mut audiences: HashSet<String> = HashSet::new();
+
+    fn collect_audiences(
+        ws: &Workspace<RealFileSystem>,
+        path: &Path,
+        audiences: &mut HashSet<String>,
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        if visited.contains(path) {
+            return;
+        }
+        visited.insert(path.to_path_buf());
+
+        if let Ok(index) = ws.parse_index(path) {
+            if let Some(file_audiences) = &index.frontmatter.audience {
+                for a in file_audiences {
+                    if a.to_lowercase() != "private" {
+                        audiences.insert(a.clone());
+                    }
+                }
+            }
+
+            if index.frontmatter.is_index() {
+                for child_rel in index.frontmatter.contents_list() {
+                    let child_path = index.resolve_path(child_rel);
+                    if RealFileSystem.exists(&child_path) {
+                        collect_audiences(ws, &child_path, audiences, visited);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut visited = HashSet::new();
+    collect_audiences(&ws, &root_index, &mut audiences, &mut visited);
+
+    let mut result: Vec<String> = audiences.into_iter().collect();
+    result.sort();
+
+    Ok(result)
+}
+
+/// Export plan structures for serialization
+#[derive(Debug, Serialize)]
+pub struct ExportPlanResult {
+    pub included: Vec<IncludedFile>,
+    pub excluded: Vec<ExcludedFile>,
+    pub audience: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IncludedFile {
+    pub path: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExcludedFile {
+    pub path: String,
+    pub reason: String,
+}
+
+/// Plan an export operation
+#[tauri::command]
+pub fn plan_export<R: Runtime>(
+    app: AppHandle<R>,
+    root_path: String,
+    audience: String,
+) -> Result<ExportPlanResult, SerializableError> {
+    use diaryx_core::export::Exporter;
+
+    let paths = get_platform_paths(&app)?;
+    let ws = Workspace::new(RealFileSystem);
+
+    let root = if root_path.is_empty() {
+        paths.default_workspace.clone()
+    } else {
+        PathBuf::from(&root_path)
+    };
+
+    // Determine if root is already a file (index) or a directory
+    let root_index = if root.is_file() {
+        root.clone()
+    } else {
+        ws.find_root_index_in_dir(&root)
+            .map_err(|e| e.to_serializable())?
+            .ok_or_else(|| SerializableError {
+                kind: "WorkspaceNotFound".to_string(),
+                message: format!("No workspace found at '{}'", root.display()),
+                path: Some(root.clone()),
+            })?
+    };
+
+    let root_dir = root_index.parent().unwrap_or(&root_index);
+
+    // Special case: "*" means export all without audience filtering
+    if audience == "*" {
+        let mut included = Vec::new();
+
+        fn collect_all(
+            ws: &Workspace<RealFileSystem>,
+            path: &Path,
+            root_dir: &Path,
+            included: &mut Vec<IncludedFile>,
+            visited: &mut HashSet<PathBuf>,
+        ) {
+            if visited.contains(path) {
+                return;
+            }
+            visited.insert(path.to_path_buf());
+
+            if let Ok(index) = ws.parse_index(path) {
+                let relative_path =
+                    pathdiff::diff_paths(path, root_dir).unwrap_or_else(|| path.to_path_buf());
+
+                included.push(IncludedFile {
+                    path: path.to_string_lossy().to_string(),
+                    relative_path: relative_path.to_string_lossy().to_string(),
+                });
+
+                if index.frontmatter.is_index() {
+                    for child_rel in index.frontmatter.contents_list() {
+                        let child_path = index.resolve_path(child_rel);
+                        if RealFileSystem.exists(&child_path) {
+                            collect_all(ws, &child_path, root_dir, included, visited);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut visited = HashSet::new();
+        collect_all(&ws, &root_index, root_dir, &mut included, &mut visited);
+
+        return Ok(ExportPlanResult {
+            included,
+            excluded: vec![],
+            audience: "*".to_string(),
+        });
+    }
+
+    // Normal audience-filtered export
+    let exporter = Exporter::new(RealFileSystem);
+    let plan = exporter
+        .plan_export(&root_index, &audience, Path::new("/export"))
+        .map_err(|e| e.to_serializable())?;
+
+    Ok(ExportPlanResult {
+        included: plan
+            .included
+            .iter()
+            .map(|f| IncludedFile {
+                path: f.source_path.to_string_lossy().to_string(),
+                relative_path: f.relative_path.to_string_lossy().to_string(),
+            })
+            .collect(),
+        excluded: plan
+            .excluded
+            .iter()
+            .map(|f| ExcludedFile {
+                path: f.path.to_string_lossy().to_string(),
+                reason: f.reason.to_string(),
+            })
+            .collect(),
+        audience,
+    })
+}
+
+/// Exported file with content
+#[derive(Debug, Serialize)]
+pub struct ExportedFileResult {
+    pub path: String,
+    pub content: String,
+}
+
+/// Export files to memory (as markdown strings)
+#[tauri::command]
+pub fn export_to_memory<R: Runtime>(
+    app: AppHandle<R>,
+    root_path: String,
+    audience: String,
+) -> Result<Vec<ExportedFileResult>, SerializableError> {
+    let plan = plan_export(app, root_path, audience)?;
+
+    let mut files = Vec::new();
+    for included in plan.included {
+        let path = PathBuf::from(&included.path);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            files.push(ExportedFileResult {
+                path: included.relative_path,
+                content,
+            });
+        }
+    }
+
+    Ok(files)
+}
+
+/// Export files as HTML
+#[tauri::command]
+pub fn export_to_html<R: Runtime>(
+    app: AppHandle<R>,
+    root_path: String,
+    audience: String,
+) -> Result<Vec<ExportedFileResult>, SerializableError> {
+    let plan = plan_export(app, root_path, audience)?;
+
+    let mut files = Vec::new();
+    for included in plan.included {
+        let path = PathBuf::from(&included.path);
+        if let Ok(markdown) = std::fs::read_to_string(&path) {
+            // Convert markdown to HTML using pulldown_cmark if available
+            // For now, just return markdown as-is (HTML conversion can be added)
+            files.push(ExportedFileResult {
+                path: included.relative_path.replace(".md", ".html"),
+                content: markdown, // TODO: Add markdown-to-HTML conversion
+            });
+        }
+    }
+
+    Ok(files)
+}
+
+/// Binary attachment data for export
+#[derive(Debug, Serialize)]
+pub struct BinaryExportResult {
+    pub path: String,
+    pub data: Vec<u8>,
+}
+
+/// Export binary attachments
+#[tauri::command]
+pub fn export_binary_attachments<R: Runtime>(
+    app: AppHandle<R>,
+    root_path: String,
+    _audience: String,
+) -> Result<Vec<BinaryExportResult>, SerializableError> {
+    let paths = get_platform_paths(&app)?;
+    let ws = Workspace::new(RealFileSystem);
+
+    let root = if root_path.is_empty() {
+        paths.default_workspace.clone()
+    } else {
+        PathBuf::from(&root_path)
+    };
+
+    // Determine if root is already a file (index) or a directory
+    let root_index = if root.is_file() {
+        root.clone()
+    } else {
+        ws.find_root_index_in_dir(&root)
+            .map_err(|e| e.to_serializable())?
+            .ok_or_else(|| SerializableError {
+                kind: "WorkspaceNotFound".to_string(),
+                message: format!("No workspace found at '{}'", root.display()),
+                path: Some(root.clone()),
+            })?
+    };
+
+    let root_dir = root_index.parent().unwrap_or(&root_index);
+    let mut attachments = Vec::new();
+
+    fn collect_attachments(
+        ws: &Workspace<RealFileSystem>,
+        path: &Path,
+        root_dir: &Path,
+        attachments: &mut Vec<BinaryExportResult>,
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        if visited.contains(path) {
+            return;
+        }
+        visited.insert(path.to_path_buf());
+
+        if let Ok(index) = ws.parse_index(path) {
+            // Check for _attachments folder
+            if let Some(entry_dir) = path.parent() {
+                let attachments_dir = entry_dir.join("_attachments");
+                if attachments_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&attachments_dir) {
+                        for entry in entries.flatten() {
+                            let entry_path = entry.path();
+                            if entry_path.is_file() {
+                                if let Ok(data) = std::fs::read(&entry_path) {
+                                    let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
+                                        .unwrap_or_else(|| entry_path.clone());
+                                    attachments.push(BinaryExportResult {
+                                        path: relative_path.to_string_lossy().to_string(),
+                                        data,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Recurse into children
+            if index.frontmatter.is_index() {
+                for child_rel in index.frontmatter.contents_list() {
+                    let child_path = index.resolve_path(child_rel);
+                    if RealFileSystem.exists(&child_path) {
+                        collect_attachments(ws, &child_path, root_dir, attachments, visited);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut visited = HashSet::new();
+    collect_attachments(&ws, &root_index, root_dir, &mut attachments, &mut visited);
+
+    Ok(attachments)
 }

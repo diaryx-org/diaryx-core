@@ -47,7 +47,10 @@ pub trait FileSystem {
     /// Write binary content to a file
     fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
         // Default implementation: not supported
-        Err(Error::new(ErrorKind::Unsupported, "Binary write not supported"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "Binary write not supported",
+        ))
     }
 
     /// List all files in a directory (not recursive)
@@ -375,7 +378,7 @@ impl FileSystem for InMemoryFileSystem {
 
     fn delete_file(&self, path: &Path) -> Result<()> {
         let normalized = Self::normalize_path(path);
-        
+
         // Try text files first
         {
             let mut files = self.files.write().unwrap();
@@ -383,7 +386,7 @@ impl FileSystem for InMemoryFileSystem {
                 return Ok(());
             }
         }
-        
+
         // Try binary files
         {
             let mut binary_files = self.binary_files.write().unwrap();
@@ -391,8 +394,11 @@ impl FileSystem for InMemoryFileSystem {
                 return Ok(());
             }
         }
-        
-        Err(Error::new(ErrorKind::NotFound, format!("File not found: {:?}", path)))
+
+        Err(Error::new(
+            ErrorKind::NotFound,
+            format!("File not found: {:?}", path),
+        ))
     }
 
     fn list_md_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
@@ -417,8 +423,8 @@ impl FileSystem for InMemoryFileSystem {
         let files = self.files.read().unwrap();
         let binary_files = self.binary_files.read().unwrap();
         let dirs = self.directories.read().unwrap();
-        files.contains_key(&normalized) 
-            || binary_files.contains_key(&normalized) 
+        files.contains_key(&normalized)
+            || binary_files.contains_key(&normalized)
             || dirs.contains(&normalized)
     }
 
@@ -578,7 +584,7 @@ impl FileSystem for InMemoryFileSystem {
 
     fn read_binary(&self, path: &Path) -> Result<Vec<u8>> {
         let normalized = Self::normalize_path(path);
-        
+
         // First check binary files
         {
             let binary_files = self.binary_files.read().unwrap();
@@ -586,7 +592,7 @@ impl FileSystem for InMemoryFileSystem {
                 return Ok(data.clone());
             }
         }
-        
+
         // Fall back to text files (convert to bytes)
         let files = self.files.read().unwrap();
         files
@@ -614,7 +620,7 @@ impl FileSystem for InMemoryFileSystem {
         let binary_files = self.binary_files.read().unwrap();
 
         let mut result = Vec::new();
-        
+
         // Check text files
         for path in files.keys() {
             if let Some(parent) = path.parent() {
@@ -623,7 +629,7 @@ impl FileSystem for InMemoryFileSystem {
                 }
             }
         }
-        
+
         // Check binary files
         for path in binary_files.keys() {
             if let Some(parent) = path.parent() {
@@ -632,7 +638,7 @@ impl FileSystem for InMemoryFileSystem {
                 }
             }
         }
-        
+
         Ok(result)
     }
 }

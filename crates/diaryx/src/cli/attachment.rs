@@ -21,7 +21,10 @@ pub fn handle_attachment_command(
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error: Failed to load config: {}. Run 'diaryx init' first.", e);
+            eprintln!(
+                "Error: Failed to load config: {}. Run 'diaryx init' first.",
+                e
+            );
             return;
         }
     };
@@ -33,7 +36,16 @@ pub fn handle_attachment_command(
             copy,
             dry_run,
         } => {
-            handle_add(ws, app, &config, current_dir, &entry, &attachment, copy, dry_run);
+            handle_add(
+                ws,
+                app,
+                &config,
+                current_dir,
+                &entry,
+                &attachment,
+                copy,
+                dry_run,
+            );
         }
         AttachmentCommands::Remove {
             entry,
@@ -41,7 +53,16 @@ pub fn handle_attachment_command(
             delete,
             dry_run,
         } => {
-            handle_remove(ws, app, &config, current_dir, &entry, &attachment, delete, dry_run);
+            handle_remove(
+                ws,
+                app,
+                &config,
+                current_dir,
+                &entry,
+                &attachment,
+                delete,
+                dry_run,
+            );
         }
         AttachmentCommands::List { entry } => {
             handle_list(ws, app, &config, &entry);
@@ -67,7 +88,10 @@ fn handle_add(
         return;
     }
     if entry_paths.len() > 1 {
-        eprintln!("Error: Multiple entries match '{}'. Please be more specific.", entry_arg);
+        eprintln!(
+            "Error: Multiple entries match '{}'. Please be more specific.",
+            entry_arg
+        );
         for p in &entry_paths {
             eprintln!("  - {}", p.display());
         }
@@ -83,7 +107,10 @@ fn handle_add(
     };
 
     if !attachment_source.exists() {
-        eprintln!("Error: Attachment file not found: {}", attachment_source.display());
+        eprintln!(
+            "Error: Attachment file not found: {}",
+            attachment_source.display()
+        );
         return;
     }
 
@@ -93,7 +120,8 @@ fn handle_add(
         // Get _attachments folder for this entry
         let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
         let attachments_dir = entry_dir.join("_attachments");
-        let filename = attachment_source.file_name()
+        let filename = attachment_source
+            .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "attachment".to_string());
         let dest_path = attachments_dir.join(&filename);
@@ -102,9 +130,20 @@ fn handle_add(
         attachment_path = format!("_attachments/{}", filename);
 
         if dry_run {
-            println!("[dry-run] Would create directory: {}", attachments_dir.display());
-            println!("[dry-run] Would copy {} to {}", attachment_source.display(), dest_path.display());
-            println!("[dry-run] Would add '{}' to attachments in {}", attachment_path, entry_path.display());
+            println!(
+                "[dry-run] Would create directory: {}",
+                attachments_dir.display()
+            );
+            println!(
+                "[dry-run] Would copy {} to {}",
+                attachment_source.display(),
+                dest_path.display()
+            );
+            println!(
+                "[dry-run] Would add '{}' to attachments in {}",
+                attachment_path,
+                entry_path.display()
+            );
             return;
         }
 
@@ -119,13 +158,21 @@ fn handle_add(
             eprintln!("Error: Failed to copy attachment: {}", e);
             return;
         }
-        println!("Copied {} -> {}", attachment_source.display(), dest_path.display());
+        println!(
+            "Copied {} -> {}",
+            attachment_source.display(),
+            dest_path.display()
+        );
     } else {
         // Use the literal path provided
         attachment_path = attachment_arg.to_string();
-        
+
         if dry_run {
-            println!("[dry-run] Would add '{}' to attachments in {}", attachment_path, entry_path.display());
+            println!(
+                "[dry-run] Would add '{}' to attachments in {}",
+                attachment_path,
+                entry_path.display()
+            );
             return;
         }
     }
@@ -134,7 +181,11 @@ fn handle_add(
     let entry_path_str = entry_path.to_string_lossy();
     match app.add_attachment(&entry_path_str, &attachment_path) {
         Ok(_) => {
-            println!("Added attachment '{}' to {}", attachment_path, entry_path.display());
+            println!(
+                "Added attachment '{}' to {}",
+                attachment_path,
+                entry_path.display()
+            );
         }
         Err(e) => {
             eprintln!("Error: Failed to add attachment: {}", e);
@@ -160,13 +211,20 @@ fn handle_remove(
         return;
     }
     if entry_paths.len() > 1 {
-        eprintln!("Error: Multiple entries match '{}'. Please be more specific.", entry_arg);
+        eprintln!(
+            "Error: Multiple entries match '{}'. Please be more specific.",
+            entry_arg
+        );
         return;
     }
     let entry_path = &entry_paths[0];
 
     if dry_run {
-        println!("[dry-run] Would remove '{}' from attachments in {}", attachment_arg, entry_path.display());
+        println!(
+            "[dry-run] Would remove '{}' from attachments in {}",
+            attachment_arg,
+            entry_path.display()
+        );
         if delete {
             let entry_dir = entry_path.parent().unwrap_or(current_dir);
             let full_path = entry_dir.join(attachment_arg);
@@ -179,7 +237,11 @@ fn handle_remove(
     let entry_path_str = entry_path.to_string_lossy();
     match app.remove_attachment(&entry_path_str, attachment_arg) {
         Ok(_) => {
-            println!("Removed attachment '{}' from {}", attachment_arg, entry_path.display());
+            println!(
+                "Removed attachment '{}' from {}",
+                attachment_arg,
+                entry_path.display()
+            );
         }
         Err(e) => {
             eprintln!("Error: Failed to remove attachment: {}", e);
@@ -215,7 +277,10 @@ fn handle_list(
         return;
     }
     if entry_paths.len() > 1 {
-        eprintln!("Error: Multiple entries match '{}'. Please be more specific.", entry_arg);
+        eprintln!(
+            "Error: Multiple entries match '{}'. Please be more specific.",
+            entry_arg
+        );
         return;
     }
     let entry_path = &entry_paths[0];

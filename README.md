@@ -2,7 +2,8 @@
 title: Diaryx
 description: Repository for the Diaryx project
 author: adammharris
-version: v0.4.5
+version: v0.5.0
+updated: 2025-12-25T16:43:14-07:00
 contents:
   - LICENSE.md
   - roadmap.md

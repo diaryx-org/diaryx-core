@@ -15,16 +15,6 @@ import type {
   ValidationResult,
 } from "./interface";
 
-interface MoveEntryRequest {
-  fromPath: string;
-  toPath: string;
-}
-
-interface AttachEntryToParentRequest {
-  entryPath: string;
-  parentIndexPath: string;
-}
-
 import { BackendError } from "./interface";
 
 function normalizeEntryPathToWorkspaceRoot(
@@ -346,7 +336,8 @@ export class TauriBackend implements Backend {
 
   async moveEntry(fromPath: string, toPath: string): Promise<string> {
     try {
-      const request: MoveEntryRequest = { fromPath, toPath };
+      // Use snake_case keys to match Rust struct field names
+      const request = { from_path: fromPath, to_path: toPath };
       return await this.getInvoke()<string>("move_entry", { request });
     } catch (e) {
       handleError(e);
@@ -356,7 +347,7 @@ export class TauriBackend implements Backend {
   async attachEntryToParent(
     entryPath: string,
     parentIndexPath: string,
-  ): Promise<void> {
+  ): Promise<string> {
     try {
       const config = await this.getConfig();
       const workspaceRoot = config?.default_workspace ?? "workspace";
@@ -370,42 +361,40 @@ export class TauriBackend implements Backend {
         workspaceRoot,
       );
 
-      const request: AttachEntryToParentRequest = {
-        entryPath: normalizedEntryPath,
-        parentIndexPath: normalizedParentIndexPath,
-      };
-
-      await this.getInvoke()("attach_entry_to_parent", { request });
+      // Use snake_case keys to match Rust struct field names
+      return await this.getInvoke()<string>("attach_entry_to_parent", { 
+        request: {
+          entry_path: normalizedEntryPath,
+          parent_index_path: normalizedParentIndexPath,
+        }
+      });
     } catch (e) {
       handleError(e);
     }
   }
 
   async convertToIndex(path: string): Promise<string> {
-    // TODO: Implement Tauri command for convert_to_index
-    throw new BackendError(
-      "convertToIndex not yet implemented for Tauri backend",
-      "NotImplemented",
-      path,
-    );
+    try {
+      return await this.getInvoke()("convert_to_index", { path });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   async convertToLeaf(path: string): Promise<string> {
-    // TODO: Implement Tauri command for convert_to_leaf
-    throw new BackendError(
-      "convertToLeaf not yet implemented for Tauri backend",
-      "NotImplemented",
-      path,
-    );
+    try {
+      return await this.getInvoke()("convert_to_leaf", { path });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   async createChildEntry(parentPath: string): Promise<string> {
-    // TODO: Implement Tauri command for create_child_entry
-    throw new BackendError(
-      "createChildEntry not yet implemented for Tauri backend",
-      "NotImplemented",
-      parentPath,
-    );
+    try {
+      return await this.getInvoke()("create_child_entry", { parentPath });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   slugifyTitle(title: string): string {
@@ -418,100 +407,111 @@ export class TauriBackend implements Backend {
     return slug ? `${slug}.md` : "untitled.md";
   }
 
-  async renameEntry(path: string, _newFilename: string): Promise<string> {
-    // TODO: Implement Tauri command for rename_entry
-    throw new BackendError(
-      "renameEntry not yet implemented for Tauri backend",
-      "NotImplemented",
-      path,
-    );
+  async renameEntry(path: string, newFilename: string): Promise<string> {
+    try {
+      return await this.getInvoke()("rename_entry", { path, newFilename });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   async ensureDailyEntry(): Promise<string> {
-    // TODO: Implement Tauri command for ensure_daily_entry
-    throw new BackendError(
-      "ensureDailyEntry not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+    try {
+      return await this.getInvoke()("ensure_daily_entry", {});
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   // --------------------------------------------------------------------------
   // Export
   // --------------------------------------------------------------------------
 
-  async getAvailableAudiences(_rootPath: string): Promise<string[]> {
-    throw new BackendError(
-      "getAvailableAudiences not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async getAvailableAudiences(rootPath: string): Promise<string[]> {
+    try {
+      return await this.getInvoke()("get_available_audiences", { rootPath });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async planExport(_rootPath: string, _audience: string): Promise<import("./interface").ExportPlan> {
-    throw new BackendError(
-      "planExport not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async planExport(rootPath: string, audience: string): Promise<import("./interface").ExportPlan> {
+    try {
+      return await this.getInvoke()("plan_export", { rootPath, audience });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async exportToMemory(_rootPath: string, _audience: string): Promise<import("./interface").ExportedFile[]> {
-    throw new BackendError(
-      "exportToMemory not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async exportToMemory(rootPath: string, audience: string): Promise<import("./interface").ExportedFile[]> {
+    try {
+      return await this.getInvoke()("export_to_memory", { rootPath, audience });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async exportToHtml(_rootPath: string, _audience: string): Promise<import("./interface").ExportedFile[]> {
-    throw new BackendError(
-      "exportToHtml not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async exportToHtml(rootPath: string, audience: string): Promise<import("./interface").ExportedFile[]> {
+    try {
+      return await this.getInvoke()("export_to_html", { rootPath, audience });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async exportBinaryAttachments(_rootPath: string, _audience: string): Promise<import("./interface").BinaryExportFile[]> {
-    throw new BackendError(
-      "exportBinaryAttachments not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async exportBinaryAttachments(rootPath: string, audience: string): Promise<import("./interface").BinaryExportFile[]> {
+    try {
+      return await this.getInvoke()("export_binary_attachments", { rootPath, audience });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   // --------------------------------------------------------------------------
   // Attachments
   // --------------------------------------------------------------------------
 
-  async getAttachments(_entryPath: string): Promise<string[]> {
-    throw new BackendError(
-      "getAttachments not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async getAttachments(entryPath: string): Promise<string[]> {
+    try {
+      return await this.getInvoke()("get_attachments", { entryPath });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async uploadAttachment(_entryPath: string, _filename: string, _dataBase64: string): Promise<string> {
-    throw new BackendError(
-      "uploadAttachment not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async uploadAttachment(entryPath: string, filename: string, dataBase64: string): Promise<string> {
+    try {
+      return await this.getInvoke()("upload_attachment", { entryPath, filename, dataBase64 });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async deleteAttachment(_entryPath: string, _attachmentPath: string): Promise<void> {
-    throw new BackendError(
-      "deleteAttachment not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async deleteAttachment(entryPath: string, attachmentPath: string): Promise<void> {
+    try {
+      await this.getInvoke()("delete_attachment", { entryPath, attachmentPath });
+    } catch (e) {
+      handleError(e);
+    }
   }
 
   async getStorageUsage(): Promise<import("./interface").StorageInfo> {
-    throw new BackendError(
-      "getStorageUsage not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+    try {
+      return await this.getInvoke()("get_storage_usage", {});
+    } catch (e) {
+      handleError(e);
+    }
   }
 
-  async getAttachmentData(_entryPath: string, _attachmentPath: string): Promise<Uint8Array> {
-    throw new BackendError(
-      "getAttachmentData not yet implemented for Tauri backend",
-      "NotImplemented",
-    );
+  async getAttachmentData(entryPath: string, attachmentPath: string): Promise<Uint8Array> {
+    try {
+      const data: number[] = await this.getInvoke()("get_attachment_data", { entryPath, attachmentPath });
+      return new Uint8Array(data);
+    } catch (e) {
+      handleError(e);
+    }
   }
+
 
   // --------------------------------------------------------------------------
   // Frontmatter

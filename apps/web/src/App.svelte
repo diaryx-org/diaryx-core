@@ -16,6 +16,7 @@
   import CommandPalette from "./lib/CommandPalette.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import ExportDialog from "./lib/ExportDialog.svelte";
+  import { Toaster } from "$lib/components/ui/sonner";
   import { Button } from "$lib/components/ui/button";
   import { Save, Download, PanelLeft, PanelRight, Menu } from "@lucide/svelte";
 
@@ -69,13 +70,15 @@
   async function transformAttachmentPaths(content: string, entryPath: string): Promise<string> {
     if (!backend) return content;
     
-    // Find all image references: ![alt](...)
-    const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    // Find all image references: ![alt](...) or ![alt](<...>) for paths with spaces
+    const imageRegex = /!\[([^\]]*)\]\((?:<([^>]+)>|([^)]+))\)/g;
     let match;
     const replacements: { original: string; replacement: string }[] = [];
     
     while ((match = imageRegex.exec(content)) !== null) {
-      const [fullMatch, alt, imagePath] = match;
+      const [fullMatch, alt] = match;
+      // Angle bracket path is in group 2, regular path is in group 3
+      const imagePath = match[2] || match[3];
       
       // Skip external URLs
       if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
@@ -132,13 +135,16 @@
   }
 
   // Reverse-transform blob URLs back to attachment paths (for saving)
+  // Wraps paths with spaces in angle brackets for CommonMark compatibility
   function reverseBlobUrlsToAttachmentPaths(content: string): string {
     let result = content;
     
     // Iterate through blobUrlMap (originalPath -> blobUrl) and replace blob URLs with original paths
     for (const [originalPath, blobUrl] of blobUrlMap.entries()) {
+      // Wrap path in angle brackets if it contains spaces (CommonMark spec)
+      const pathToUse = originalPath.includes(' ') ? `<${originalPath}>` : originalPath;
       // Replace all occurrences of the blob URL with the original path
-      result = result.replaceAll(blobUrl, originalPath);
+      result = result.replaceAll(blobUrl, pathToUse);
     }
     
     return result;
@@ -172,6 +178,26 @@
 
       // Run initial validation
       await runValidation();
+      
+      // Add swipe-down gesture for command palette on mobile
+      let touchStartY = 0;
+      let touchStartX = 0;
+      const handleTouchStart = (e: TouchEvent) => {
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+      };
+      const handleTouchEnd = (e: TouchEvent) => {
+        const touchEndY = e.changedTouches[0].clientY;
+        const touchEndX = e.changedTouches[0].clientX;
+        const deltaY = touchEndY - touchStartY;
+        const deltaX = Math.abs(touchEndX - touchStartX);
+        // Swipe down from top 100px of screen, mostly vertical
+        if (touchStartY < 100 && deltaY > 80 && deltaX < 50) {
+          showCommandPalette = true;
+        }
+      };
+      document.addEventListener('touchstart', handleTouchStart);
+      document.addEventListener('touchend', handleTouchEnd);
     } catch (e) {
       console.error("[App] Initialization error:", e);
       error = e instanceof Error ? e.message : String(e);
@@ -346,12 +372,28 @@
     try {
       await backend.deleteEntry(path);
       await persistNow();
-      tree = await backend.getWorkspaceTree();
-      await runValidation();
+      
       // If we deleted the currently open entry, clear it
       if (currentEntry?.path === path) {
         currentEntry = null;
         isDirty = false;
+      }
+      
+      // Try to refresh the tree - this might fail if workspace state is temporarily inconsistent
+      try {
+        tree = await backend.getWorkspaceTree();
+        await runValidation();
+      } catch (refreshError) {
+        console.warn("[App] Error refreshing tree after delete:", refreshError);
+        // Try again after a short delay
+        setTimeout(async () => {
+          try {
+            tree = await backend.getWorkspaceTree();
+            await runValidation();
+          } catch (e) {
+            console.error("[App] Retry tree refresh failed:", e);
+          }
+        }, 500);
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -719,6 +761,9 @@
   {backend}
   onOpenChange={(open) => showExportDialog = open}
 />
+
+<!-- Toast Notifications -->
+<Toaster />
 
 <div class="flex h-screen bg-background overflow-hidden">
   <!-- Left Sidebar -->

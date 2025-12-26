@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_core"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "chrono-english",
@@ -818,11 +818,14 @@ dependencies = [
 
 [[package]]
 name = "diaryx_tauri"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "diaryx_core",
  "env_logger",
  "log",
+ "pathdiff",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -836,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_wasm"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "comrak",

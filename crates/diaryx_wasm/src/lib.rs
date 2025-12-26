@@ -108,11 +108,11 @@ pub fn load_binary_files(entries: JsValue) -> Result<(), JsValue> {
         .into_iter()
         .map(|e| (e.path, e.data))
         .collect();
-    
+
     with_fs(|fs| {
         fs.load_binary_entries(entries);
     });
-    
+
     Ok(())
 }
 
@@ -572,19 +572,24 @@ fn add_to_parent_index(fs: &InMemoryFileSystem, entry_path: &str) -> Result<(), 
     Ok(())
 }
 
-/// Attach an existing entry to a parent index.
+/// Attach an existing entry to a parent, moving it into the parent's directory.
 ///
-/// Uses core `Workspace::attach_entry_to_parent` which:
-/// - Adds the entry to the parent index's `contents` (using a relative child path)
-/// - Sets the entry's `part_of` to point back to the parent index (relative to the entry)
+/// Uses core `Workspace::attach_and_move_entry_to_parent` which:
+/// - Converts parent to index if it's a leaf file (creates directory)
+/// - Moves entry into the parent's directory if not already there
+/// - Adds the entry to the parent index's `contents`
+/// - Sets the entry's `part_of` to point back to the parent index
+///
+/// Returns the new path to the entry after any moves.
 #[wasm_bindgen]
-pub fn attach_entry_to_parent(entry_path: &str, parent_index_path: &str) -> Result<(), JsValue> {
+pub fn attach_entry_to_parent(entry_path: &str, parent_path: &str) -> Result<String, JsValue> {
     with_fs_mut(|fs| {
         let ws = Workspace::new(fs);
         let entry = PathBuf::from(entry_path);
-        let parent_index = PathBuf::from(parent_index_path);
+        let parent = PathBuf::from(parent_path);
 
-        ws.attach_entry_to_parent(&entry, &parent_index)
+        ws.attach_and_move_entry_to_parent(&entry, &parent)
+            .map(|p| p.to_string_lossy().to_string())
             .map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
@@ -675,70 +680,22 @@ pub fn convert_to_leaf(path: &str) -> Result<String, JsValue> {
 
 /// Create a new child entry under a parent.
 ///
-/// If the parent is a leaf file, it will be automatically converted to an index first.
-/// Generates a unique filename like "new-entry.md", "new-entry-1.md", etc.
+/// Uses core `Workspace::create_child_entry` which:
+/// - Converts parent to index if it's a leaf file (creates directory)
+/// - Generates a unique filename
+/// - Creates the entry with title, created, and updated frontmatter
+/// - Attaches the new entry to the parent
 ///
 /// Returns the path to the newly created entry.
 #[wasm_bindgen]
 pub fn create_child_entry(parent_path: &str) -> Result<String, JsValue> {
     with_fs_mut(|fs| {
         let ws = Workspace::new(fs);
-        let mut parent = PathBuf::from(parent_path);
+        let parent = PathBuf::from(parent_path);
 
-        // If parent is a leaf file, convert it to an index first
-        if !ws.is_index_file(&parent) {
-            parent = ws
-                .convert_to_index(&parent)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        }
-
-        // The parent index is now at parent/index.md, so the directory is parent.parent()
-        let parent_dir = parent.parent().unwrap_or_else(|| Path::new(""));
-
-        // Generate unique filename
-        let filename = ws.generate_unique_child_name(parent_dir);
-        let child_path = parent_dir.join(&filename);
-
-        // Create the entry
-        let app = DiaryxApp::new(fs);
-        let child_path_str = child_path.to_string_lossy().to_string();
-
-        app.create_entry(&child_path_str)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        // Set title from filename
-        let title = filename.trim_end_matches(".md").replace('-', " ");
-        let title = title
-            .split_whitespace()
-            .map(|word| {
-                let mut chars = word.chars();
-                match chars.next() {
-                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        app.set_frontmatter_property(&child_path_str, "title", serde_yaml::Value::String(title))
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        // Set timestamps
-        let now = chrono::Utc::now().to_rfc3339();
-        app.set_frontmatter_property(
-            &child_path_str,
-            "created",
-            serde_yaml::Value::String(now.clone()),
-        )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        app.set_frontmatter_property(&child_path_str, "updated", serde_yaml::Value::String(now))
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        // Attach to parent index
-        ws.attach_entry_to_parent(&child_path, &parent)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        Ok(child_path_str)
+        ws.create_child_entry(&parent, None)
+            .map(|p| p.to_string_lossy().to_string())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -789,15 +746,15 @@ pub fn ensure_daily_entry() -> Result<String, JsValue> {
     with_fs_mut(|fs| {
         let app = DiaryxApp::new(fs);
         let today = Local::now().date_naive();
-        
+
         // Use config with "Daily" folder so entries go to workspace/Daily/
         // This also triggers automatic part_of/contents linking to root
         let config = Config::with_options(
             PathBuf::from("workspace"),
-            Some("Daily".to_string()),  // daily_entry_folder
-            None,                        // editor
-            None,                        // default_template
-            None,                        // daily_template
+            Some("Daily".to_string()), // daily_entry_folder
+            None,                      // editor
+            None,                      // default_template
+            None,                      // daily_template
         );
 
         let path = app
@@ -1178,10 +1135,10 @@ pub fn remove_attachment(entry_path: &str, attachment_path: &str) -> Result<(), 
 pub fn get_attachments(entry_path: &str) -> Result<JsValue, JsValue> {
     with_fs(|fs| {
         let app = DiaryxApp::new(fs);
-        let attachments = app.get_attachments(entry_path)
+        let attachments = app
+            .get_attachments(entry_path)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_wasm_bindgen::to_value(&attachments)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&attachments).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1197,28 +1154,28 @@ pub fn upload_attachment(
         // Decode base64 data
         let data = base64_decode(data_base64)
             .map_err(|e| JsValue::from_str(&format!("Base64 decode error: {}", e)))?;
-        
+
         // Determine attachment path relative to entry
         let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
         let attachments_dir = entry_dir.join("_attachments");
         let attachment_path = attachments_dir.join(filename);
-        
+
         // Create directory if needed
         fs.create_dir_all(&attachments_dir)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         // Write the binary file
         fs.write_binary(&attachment_path, &data)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         // Calculate relative path for frontmatter
         let relative_path = format!("_attachments/{}", filename);
-        
+
         // Add to entry's attachments list
         let app = DiaryxApp::new(fs);
         app.add_attachment(entry_path, &relative_path)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         Ok(relative_path)
     })
 }
@@ -1231,7 +1188,7 @@ pub fn delete_attachment(entry_path: &str, attachment_path: &str) -> Result<(), 
         let app = DiaryxApp::new(fs);
         app.remove_attachment(entry_path, attachment_path)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         // Delete the file
         let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
         let full_path = entry_dir.join(attachment_path);
@@ -1239,7 +1196,7 @@ pub fn delete_attachment(entry_path: &str, attachment_path: &str) -> Result<(), 
             fs.delete_file(&full_path)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
         }
-        
+
         Ok(())
     })
 }
@@ -1247,14 +1204,18 @@ pub fn delete_attachment(entry_path: &str, attachment_path: &str) -> Result<(), 
 /// Read attachment binary data for blob URL creation.
 /// Returns the raw bytes as a Uint8Array.
 #[wasm_bindgen]
-pub fn read_attachment_data(entry_path: &str, attachment_path: &str) -> Result<js_sys::Uint8Array, JsValue> {
+pub fn read_attachment_data(
+    entry_path: &str,
+    attachment_path: &str,
+) -> Result<js_sys::Uint8Array, JsValue> {
     with_fs(|fs| {
         let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
         let full_path = entry_dir.join(attachment_path);
-        
-        let data = fs.read_binary(&full_path)
+
+        let data = fs
+            .read_binary(&full_path)
             .map_err(|e| JsValue::from_str(&format!("Failed to read attachment: {}", e)))?;
-        
+
         Ok(js_sys::Uint8Array::from(data.as_slice()))
     })
 }
@@ -1267,7 +1228,7 @@ pub fn get_storage_usage() -> Result<JsValue, JsValue> {
     with_fs(|fs| {
         // Calculate total size of all files
         let mut total_size: u64 = 0;
-        
+
         fn count_size<FS: FileSystem>(fs: &FS, dir: &Path, total: &mut u64) {
             if let Ok(entries) = fs.list_files(dir) {
                 for path in entries {
@@ -1279,24 +1240,23 @@ pub fn get_storage_usage() -> Result<JsValue, JsValue> {
                 }
             }
         }
-        
+
         count_size(fs, Path::new("/"), &mut total_size);
-        
+
         #[derive(serde::Serialize)]
         struct StorageInfo {
             used: u64,
             limit: u64,
             attachment_limit: u64,
         }
-        
+
         let info = StorageInfo {
             used: total_size,
-            limit: 100 * 1024 * 1024, // 100MB
+            limit: 100 * 1024 * 1024,          // 100MB
             attachment_limit: 5 * 1024 * 1024, // 5MB
         };
-        
-        serde_wasm_bindgen::to_value(&info)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&info).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1308,7 +1268,7 @@ fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
     } else {
         input
     };
-    
+
     // Standard base64 decoding
     const DECODE_TABLE: [i8; 256] = {
         let mut table = [-1i8; 256];
@@ -1328,24 +1288,24 @@ fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
         table[b'=' as usize] = 0;
         table
     };
-    
+
     let bytes: Vec<u8> = data.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
     let mut output = Vec::with_capacity(bytes.len() * 3 / 4);
-    
+
     for chunk in bytes.chunks(4) {
         if chunk.len() < 4 {
             break;
         }
-        
+
         let a = DECODE_TABLE[chunk[0] as usize];
         let b = DECODE_TABLE[chunk[1] as usize];
         let c = DECODE_TABLE[chunk[2] as usize];
         let d = DECODE_TABLE[chunk[3] as usize];
-        
+
         if a < 0 || b < 0 {
             return Err("Invalid base64 character".to_string());
         }
-        
+
         output.push(((a as u8) << 2) | ((b as u8) >> 4));
         if chunk[2] != b'=' {
             output.push(((b as u8) << 4) | ((c as u8) >> 2));
@@ -1354,7 +1314,7 @@ fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
             output.push(((c as u8) << 6) | (d as u8));
         }
     }
-    
+
     Ok(output)
 }
 
@@ -1371,7 +1331,7 @@ pub fn get_available_audiences(root_path: &str) -> Result<JsValue, JsValue> {
     with_fs(|fs| {
         let ws = Workspace::new(fs);
         let mut audiences: HashSet<String> = HashSet::new();
-        
+
         // Parse the root index and traverse
         fn collect_audiences<FS: FileSystem>(
             ws: &Workspace<FS>,
@@ -1383,7 +1343,7 @@ pub fn get_available_audiences(root_path: &str) -> Result<JsValue, JsValue> {
                 return;
             }
             visited.insert(path.to_path_buf());
-            
+
             if let Ok(index) = ws.parse_index(path) {
                 // Collect audience tags from this file
                 if let Some(file_audiences) = &index.frontmatter.audience {
@@ -1393,7 +1353,7 @@ pub fn get_available_audiences(root_path: &str) -> Result<JsValue, JsValue> {
                         }
                     }
                 }
-                
+
                 // Recurse into children
                 if index.frontmatter.is_index() {
                     for child_rel in index.frontmatter.contents_list() {
@@ -1405,15 +1365,14 @@ pub fn get_available_audiences(root_path: &str) -> Result<JsValue, JsValue> {
                 }
             }
         }
-        
+
         let mut visited = HashSet::new();
         collect_audiences(&ws, Path::new(root_path), &mut audiences, &mut visited);
-        
+
         let mut result: Vec<String> = audiences.into_iter().collect();
         result.sort();
-        
-        serde_wasm_bindgen::to_value(&result)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1431,13 +1390,13 @@ pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> 
             excluded: Vec<ExcludedFileJs>,
             audience: String,
         }
-        
+
         #[derive(serde::Serialize)]
         struct IncludedFileJs {
             path: String,
             relative_path: String,
         }
-        
+
         #[derive(serde::Serialize)]
         struct ExcludedFileJs {
             path: String,
@@ -1450,7 +1409,7 @@ pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> 
             let mut included = Vec::new();
             let root = Path::new(root_path);
             let root_dir = root.parent().unwrap_or(root);
-            
+
             fn collect_all<FS: FileSystem>(
                 ws: &Workspace<FS>,
                 path: &Path,
@@ -1462,16 +1421,16 @@ pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> 
                     return;
                 }
                 visited.insert(path.to_path_buf());
-                
+
                 if let Ok(index) = ws.parse_index(path) {
-                    let relative_path = pathdiff::diff_paths(path, root_dir)
-                        .unwrap_or_else(|| path.to_path_buf());
-                    
+                    let relative_path =
+                        pathdiff::diff_paths(path, root_dir).unwrap_or_else(|| path.to_path_buf());
+
                     included.push(IncludedFileJs {
                         path: path.to_string_lossy().to_string(),
                         relative_path: relative_path.to_string_lossy().to_string(),
                     });
-                    
+
                     // Recurse into children
                     if index.frontmatter.is_index() {
                         for child_rel in index.frontmatter.contents_list() {
@@ -1483,16 +1442,16 @@ pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> 
                     }
                 }
             }
-            
+
             let mut visited = HashSet::new();
             collect_all(&ws, root, root_dir, &mut included, &mut visited);
-            
+
             let result = ExportPlanJs {
                 included,
                 excluded: vec![],
                 audience: "*".to_string(),
             };
-            
+
             return serde_wasm_bindgen::to_value(&result)
                 .map_err(|e| JsValue::from_str(&e.to_string()));
         }
@@ -1500,30 +1459,33 @@ pub fn plan_export(root_path: &str, audience: &str) -> Result<JsValue, JsValue> 
         // Normal audience-filtered export
         use diaryx_core::export::Exporter;
         let exporter = Exporter::new(fs);
-        
+
         // Use a virtual destination since we're just planning
         let plan = exporter
-            .plan_export(
-                Path::new(root_path),
-                audience,
-                Path::new("/export"),
-            )
+            .plan_export(Path::new(root_path), audience, Path::new("/export"))
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         let result = ExportPlanJs {
-            included: plan.included.iter().map(|f| IncludedFileJs {
-                path: f.source_path.to_string_lossy().to_string(),
-                relative_path: f.relative_path.to_string_lossy().to_string(),
-            }).collect(),
-            excluded: plan.excluded.iter().map(|f| ExcludedFileJs {
-                path: f.path.to_string_lossy().to_string(),
-                reason: f.reason.to_string(),
-            }).collect(),
+            included: plan
+                .included
+                .iter()
+                .map(|f| IncludedFileJs {
+                    path: f.source_path.to_string_lossy().to_string(),
+                    relative_path: f.relative_path.to_string_lossy().to_string(),
+                })
+                .collect(),
+            excluded: plan
+                .excluded
+                .iter()
+                .map(|f| ExcludedFileJs {
+                    path: f.path.to_string_lossy().to_string(),
+                    reason: f.reason.to_string(),
+                })
+                .collect(),
             audience: plan.audience,
         };
-        
-        serde_wasm_bindgen::to_value(&result)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1547,7 +1509,7 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
             let mut files: Vec<ExportedFile> = Vec::new();
             let root = Path::new(root_path);
             let root_dir = root.parent().unwrap_or(root);
-            
+
             fn collect_all<FS: FileSystem>(
                 ws: &Workspace<FS>,
                 path: &Path,
@@ -1559,11 +1521,11 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
                     return;
                 }
                 visited.insert(path.to_path_buf());
-                
+
                 if let Ok(index) = ws.parse_index(path) {
-                    let relative_path = pathdiff::diff_paths(path, root_dir)
-                        .unwrap_or_else(|| path.to_path_buf());
-                    
+                    let relative_path =
+                        pathdiff::diff_paths(path, root_dir).unwrap_or_else(|| path.to_path_buf());
+
                     // Read and include file content
                     if let Ok(content) = ws.fs_ref().read_to_string(path) {
                         // Remove audience property from content
@@ -1573,7 +1535,7 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
                             content: processed,
                         });
                     }
-                    
+
                     // Recurse into children
                     if index.frontmatter.is_index() {
                         for child_rel in index.frontmatter.contents_list() {
@@ -1585,10 +1547,10 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
                     }
                 }
             }
-            
+
             let mut visited = HashSet::new();
             collect_all(&ws, root, root_dir, &mut files, &mut visited);
-            
+
             return serde_wasm_bindgen::to_value(&files)
                 .map_err(|e| JsValue::from_str(&e.to_string()));
         }
@@ -1596,38 +1558,34 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
         // Normal audience-filtered export
         use diaryx_core::export::Exporter;
         let exporter = Exporter::new(fs);
-        
+
         let plan = exporter
-            .plan_export(
-                Path::new(root_path),
-                audience,
-                Path::new("/export"),
-            )
+            .plan_export(Path::new(root_path), audience, Path::new("/export"))
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         let _ws = Workspace::new(fs);
         let mut files: Vec<ExportedFile> = Vec::new();
-        
+
         for export_file in &plan.included {
             // Read original content
-            let content = fs.read_to_string(&export_file.source_path)
+            let content = fs
+                .read_to_string(&export_file.source_path)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            
+
             // Process content: remove audience property and filter contents
             let processed = if !export_file.filtered_contents.is_empty() {
                 filter_contents_and_audience(&content, &export_file.filtered_contents)
             } else {
                 remove_audience_from_content(&content)
             };
-            
+
             files.push(ExportedFile {
                 path: export_file.relative_path.to_string_lossy().to_string(),
                 content: processed,
             });
         }
-        
-        serde_wasm_bindgen::to_value(&files)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&files).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1635,7 +1593,7 @@ pub fn export_to_memory(root_path: &str, audience: &str) -> Result<JsValue, JsVa
 /// Returns array of {path, content} with .html extensions for zip creation in JS.
 #[wasm_bindgen]
 pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
-    use comrak::{markdown_to_html, Options};
+    use comrak::{Options, markdown_to_html};
     use std::collections::HashSet;
 
     with_fs(|fs| {
@@ -1652,11 +1610,12 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
             options.extension.autolink = true;
             options.extension.tasklist = true;
             options.render.r#unsafe = true;
-            
+
             let html_body = markdown_to_html(markdown, &options);
-            
+
             // Wrap in a minimal HTML document
-            format!(r#"<!DOCTYPE html>
+            format!(
+                r#"<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -1673,7 +1632,9 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
 <body>
 {}
 </body>
-</html>"#, html_body)
+</html>"#,
+                html_body
+            )
         }
 
         // Special case: "*" means export all without audience filtering
@@ -1682,7 +1643,7 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
             let mut files: Vec<ExportedFile> = Vec::new();
             let root = Path::new(root_path);
             let root_dir = root.parent().unwrap_or(root);
-            
+
             fn collect_all<FS: FileSystem>(
                 ws: &Workspace<FS>,
                 path: &Path,
@@ -1695,27 +1656,25 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
                     return;
                 }
                 visited.insert(path.to_path_buf());
-                
+
                 if let Ok(index) = ws.parse_index(path) {
-                    let relative_path = pathdiff::diff_paths(path, root_dir)
-                        .unwrap_or_else(|| path.to_path_buf());
-                    
+                    let relative_path =
+                        pathdiff::diff_paths(path, root_dir).unwrap_or_else(|| path.to_path_buf());
+
                     if let Ok(content) = ws.fs_ref().read_to_string(path) {
                         // Extract body (without frontmatter)
                         let body = extract_body(&content);
                         let html = convert_fn(&body);
-                        
+
                         // Change extension to .html
-                        let html_path = relative_path
-                            .to_string_lossy()
-                            .replace(".md", ".html");
-                        
+                        let html_path = relative_path.to_string_lossy().replace(".md", ".html");
+
                         files.push(ExportedFile {
                             path: html_path,
                             content: html,
                         });
                     }
-                    
+
                     if index.frontmatter.is_index() {
                         for child_rel in index.frontmatter.contents_list() {
                             let child_path = index.resolve_path(child_rel);
@@ -1726,10 +1685,17 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
                     }
                 }
             }
-            
+
             let mut visited = HashSet::new();
-            collect_all(&ws, root, root_dir, &mut files, &mut visited, &convert_md_to_html);
-            
+            collect_all(
+                &ws,
+                root,
+                root_dir,
+                &mut files,
+                &mut visited,
+                &convert_md_to_html,
+            );
+
             return serde_wasm_bindgen::to_value(&files)
                 .map_err(|e| JsValue::from_str(&e.to_string()));
         }
@@ -1737,38 +1703,35 @@ pub fn export_to_html(root_path: &str, audience: &str) -> Result<JsValue, JsValu
         // Normal audience-filtered export
         use diaryx_core::export::Exporter;
         let exporter = Exporter::new(fs);
-        
+
         let plan = exporter
-            .plan_export(
-                Path::new(root_path),
-                audience,
-                Path::new("/export"),
-            )
+            .plan_export(Path::new(root_path), audience, Path::new("/export"))
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
+
         let mut files: Vec<ExportedFile> = Vec::new();
-        
+
         for export_file in &plan.included {
-            let content = fs.read_to_string(&export_file.source_path)
+            let content = fs
+                .read_to_string(&export_file.source_path)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            
+
             // Extract body and convert to HTML
             let body = extract_body(&content);
             let html = convert_md_to_html(&body);
-            
+
             // Change extension to .html
-            let html_path = export_file.relative_path
+            let html_path = export_file
+                .relative_path
                 .to_string_lossy()
                 .replace(".md", ".html");
-            
+
             files.push(ExportedFile {
                 path: html_path,
                 content: html,
             });
         }
-        
-        serde_wasm_bindgen::to_value(&files)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&files).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1811,10 +1774,12 @@ pub fn export_binary_attachments(root_path: &str, _audience: &str) -> Result<JsV
                 // Check for _attachments folder next to this entry
                 let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
                 let attachments_dir = entry_dir.join("_attachments");
-                
-                if ws.fs_ref().is_dir(&attachments_dir) && !visited_attachment_dirs.contains(&attachments_dir) {
+
+                if ws.fs_ref().is_dir(&attachments_dir)
+                    && !visited_attachment_dirs.contains(&attachments_dir)
+                {
                     visited_attachment_dirs.insert(attachments_dir.clone());
-                    
+
                     // List all files in _attachments directory
                     if let Ok(files) = ws.fs_ref().list_files(&attachments_dir) {
                         for file_path in files {
@@ -1823,7 +1788,7 @@ pub fn export_binary_attachments(root_path: &str, _audience: &str) -> Result<JsV
                                 if let Ok(data) = ws.fs_ref().read_binary(&file_path) {
                                     let relative_path = pathdiff::diff_paths(&file_path, root_dir)
                                         .unwrap_or_else(|| file_path.clone());
-                                    
+
                                     binary_files.push(BinaryExportFile {
                                         path: relative_path.to_string_lossy().to_string(),
                                         data,
@@ -1839,17 +1804,30 @@ pub fn export_binary_attachments(root_path: &str, _audience: &str) -> Result<JsV
                     for child_rel in index.frontmatter.contents_list() {
                         let child_path = index.resolve_path(child_rel);
                         if ws.fs_ref().exists(&child_path) {
-                            collect_attachments(ws, &child_path, root_dir, binary_files, visited_entries, visited_attachment_dirs);
+                            collect_attachments(
+                                ws,
+                                &child_path,
+                                root_dir,
+                                binary_files,
+                                visited_entries,
+                                visited_attachment_dirs,
+                            );
                         }
                     }
                 }
             }
         }
 
-        collect_attachments(&ws, root, root_dir, &mut binary_files, &mut visited_entries, &mut visited_attachment_dirs);
+        collect_attachments(
+            &ws,
+            root,
+            root_dir,
+            &mut binary_files,
+            &mut visited_entries,
+            &mut visited_attachment_dirs,
+        );
 
-        serde_wasm_bindgen::to_value(&binary_files)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&binary_files).map_err(|e| JsValue::from_str(&e.to_string()))
     })
 }
 
@@ -1858,26 +1836,29 @@ fn remove_audience_from_content(content: &str) -> String {
     if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
         return content.to_string();
     }
-    
+
     let rest = &content[4..];
     let Some(end_idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) else {
         return content.to_string();
     };
-    
+
     let frontmatter_str = &rest[..end_idx];
     let body = &rest[end_idx + 5..];
-    
+
     // Parse and remove audience
     if let Ok(mut frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_str) {
         if let Some(map) = frontmatter.as_mapping_mut() {
-            if map.remove(serde_yaml::Value::String("audience".to_string())).is_some() {
+            if map
+                .remove(serde_yaml::Value::String("audience".to_string()))
+                .is_some()
+            {
                 if let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {
                     return format!("---\n{}---\n{}", new_fm, body);
                 }
             }
         }
     }
-    
+
     content.to_string()
 }
 
@@ -1886,22 +1867,23 @@ fn filter_contents_and_audience(content: &str, filtered: &[String]) -> String {
     if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
         return content.to_string();
     }
-    
+
     let rest = &content[4..];
     let Some(end_idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) else {
         return content.to_string();
     };
-    
+
     let frontmatter_str = &rest[..end_idx];
     let body = &rest[end_idx + 5..];
-    
+
     if let Ok(mut frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_str) {
         if let Some(map) = frontmatter.as_mapping_mut() {
             // Remove audience
             map.remove(serde_yaml::Value::String("audience".to_string()));
-            
+
             // Filter contents
-            if let Some(contents) = map.get_mut(&serde_yaml::Value::String("contents".to_string())) {
+            if let Some(contents) = map.get_mut(&serde_yaml::Value::String("contents".to_string()))
+            {
                 if let Some(arr) = contents.as_sequence_mut() {
                     arr.retain(|item| {
                         if let Some(s) = item.as_str() {
@@ -1913,12 +1895,12 @@ fn filter_contents_and_audience(content: &str, filtered: &[String]) -> String {
                 }
             }
         }
-        
+
         if let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {
             return format!("---\n{}---\n{}", new_fm, body);
         }
     }
-    
+
     content.to_string()
 }
 

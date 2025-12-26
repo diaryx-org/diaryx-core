@@ -358,7 +358,7 @@ export class WasmBackend implements Backend {
   async attachEntryToParent(
     entryPath: string,
     parentIndexPath: string,
-  ): Promise<void> {
+  ): Promise<string> {
     const wasm = this.requireWasm();
     const workspaceRoot = this.config?.default_workspace ?? "workspace";
 
@@ -371,7 +371,7 @@ export class WasmBackend implements Backend {
       workspaceRoot,
     );
 
-    wasm.attach_entry_to_parent(normalizedEntryPath, normalizedParentIndexPath);
+    return wasm.attach_entry_to_parent(normalizedEntryPath, normalizedParentIndexPath);
   }
 
   async convertToIndex(path: string): Promise<string> {

@@ -742,16 +742,17 @@ impl<FS: FileSystem> Workspace<FS> {
 
                     let child_str = child_file.to_string_lossy();
                     if let Ok(fm) = app.get_all_frontmatter(&child_str)
-                        && let Some(Value::String(old_part_of)) = fm.get("part_of") {
-                            // Check if it points to the old filename
-                            if old_part_of == &old_file_name {
-                                let _ = app.set_frontmatter_property(
-                                    &child_str,
-                                    "part_of",
-                                    Value::String(new_filename.to_string()),
-                                );
-                            }
+                        && let Some(Value::String(old_part_of)) = fm.get("part_of")
+                    {
+                        // Check if it points to the old filename
+                        if old_part_of == &old_file_name {
+                            let _ = app.set_frontmatter_property(
+                                &child_str,
+                                "part_of",
+                                Value::String(new_filename.to_string()),
+                            );
                         }
+                    }
                 }
             }
 
@@ -809,16 +810,14 @@ impl<FS: FileSystem> Workspace<FS> {
         if !self.fs.exists(path) {
             return Err(DiaryxError::FileRead {
                 path: path.to_path_buf(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "File does not exist",
-                ),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "File does not exist"),
             });
         }
 
         // If it's an index file, check that contents is empty
         if let Ok(index) = self.parse_index(path)
-            && index.frontmatter.is_index() {
+            && index.frontmatter.is_index()
+        {
             if !index.frontmatter.contents_list().is_empty() {
                 return Err(DiaryxError::InvalidPath {
                     path: path.to_path_buf(),
@@ -861,15 +860,10 @@ impl<FS: FileSystem> Workspace<FS> {
             if let Some(grandparent) = parent.parent() {
                 if let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(grandparent) {
                     let app = DiaryxApp::new(&self.fs);
-                    let dir_name = parent
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
+                    let dir_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     // Try to remove various possible reference formats
-                    let _ = app.remove_from_index_contents(
-                        &grandparent_index,
-                        &format!("{}/", dir_name),
-                    );
+                    let _ = app
+                        .remove_from_index_contents(&grandparent_index, &format!("{}/", dir_name));
                     let _ = app.remove_from_index_contents(
                         &grandparent_index,
                         &format!("{}/{}", dir_name, filename),
@@ -1103,13 +1097,14 @@ impl<FS: FileSystem> Workspace<FS> {
         // Adjust part_of path if it exists (remove ../ prefix since we're one level shallower)
         let frontmatter = app.get_all_frontmatter(&new_leaf_str)?;
         if let Some(Value::String(old_part_of)) = frontmatter.get("part_of")
-            && let Some(new_part_of) = old_part_of.strip_prefix("../") {
-                app.set_frontmatter_property(
-                    &new_leaf_str,
-                    "part_of",
-                    Value::String(new_part_of.to_string()),
-                )?;
-            }
+            && let Some(new_part_of) = old_part_of.strip_prefix("../")
+        {
+            app.set_frontmatter_property(
+                &new_leaf_str,
+                "part_of",
+                Value::String(new_part_of.to_string()),
+            )?;
+        }
 
         // Update parent index if there is one (change reference from dir/{name}.md to dir.md)
         if let Ok(Some(parent_index)) = self.find_any_index_in_dir(grandparent) {
@@ -1124,6 +1119,202 @@ impl<FS: FileSystem> Workspace<FS> {
         // don't support delete_dir and it's not critical. The directory will be empty.
 
         Ok(new_leaf_path)
+    }
+
+    /// Attach an entry to a parent, converting the parent to an index if needed,
+    /// and moving the entry file into the parent's directory.
+    ///
+    /// This is a higher-level operation that combines:
+    /// 1. Convert parent to index if it's a leaf file (creates directory)
+    /// 2. Move entry into the parent's directory (if not already there)
+    /// 3. Create bidirectional links (contents and part_of)
+    ///
+    /// Returns the new path to the entry after any moves.
+    pub fn attach_and_move_entry_to_parent(&self, entry: &Path, parent: &Path) -> Result<PathBuf> {
+        use crate::entry::DiaryxApp;
+
+        // Validate entry exists
+        if !self.fs.exists(entry) {
+            return Err(DiaryxError::FileRead {
+                path: entry.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "Entry does not exist"),
+            });
+        }
+
+        // Validate parent exists
+        if !self.fs.exists(parent) {
+            return Err(DiaryxError::FileRead {
+                path: parent.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "Parent does not exist"),
+            });
+        }
+
+        // Convert parent to index if needed (creates directory)
+        let parent_index = if !self.is_index_file(parent) {
+            self.convert_to_index(parent)?
+        } else {
+            parent.to_path_buf()
+        };
+
+        // Get parent directory (where the index file lives)
+        let parent_dir = parent_index.parent().unwrap_or_else(|| Path::new(""));
+
+        // Get entry filename
+        let entry_filename = entry
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("entry.md")
+            .to_string();
+
+        // Check if entry is already in parent directory
+        let entry_in_parent_dir = entry.parent().map_or(false, |ep| ep == parent_dir);
+
+        // Move entry if not already in parent directory
+        let final_entry = if !entry_in_parent_dir {
+            let new_entry_path = parent_dir.join(&entry_filename);
+
+            // Handle filename collision
+            let unique_path = if self.fs.exists(&new_entry_path) {
+                self.generate_unique_path(parent_dir, &entry_filename)
+            } else {
+                new_entry_path
+            };
+
+            // Move the file
+            self.fs
+                .move_file(entry, &unique_path)
+                .map_err(|e| DiaryxError::FileWrite {
+                    path: unique_path.clone(),
+                    source: e,
+                })?;
+
+            unique_path
+        } else {
+            entry.to_path_buf()
+        };
+
+        // Attach entry to parent (creates bidirectional links)
+        self.attach_entry_to_parent(&final_entry, &parent_index)?;
+
+        Ok(final_entry)
+    }
+
+    /// Generate a unique path for a file in a directory, handling collisions.
+    fn generate_unique_path(&self, dir: &Path, filename: &str) -> PathBuf {
+        let stem = filename.strip_suffix(".md").unwrap_or(filename);
+        let mut counter = 2u32;
+
+        loop {
+            let numbered_name = format!("{}_{}.md", stem, counter);
+            let numbered_path = dir.join(&numbered_name);
+            if !self.fs.exists(&numbered_path) {
+                return numbered_path;
+            }
+            counter += 1;
+            if counter > 10000 {
+                return dir.join(format!("{}_{}.md", stem, chrono::Utc::now().timestamp()));
+            }
+        }
+    }
+
+    /// Create a new child entry under a parent, converting the parent to an index if needed.
+    ///
+    /// This is a higher-level operation that combines:
+    /// 1. Convert parent to index if it's a leaf file (creates directory)
+    /// 2. Generate a unique filename in the parent's directory
+    /// 3. Create the entry file with title, created, and updated frontmatter
+    /// 4. Attach the new entry to the parent
+    ///
+    /// Returns the path to the newly created entry.
+    pub fn create_child_entry(&self, parent: &Path, title: Option<&str>) -> Result<PathBuf> {
+        use crate::entry::DiaryxApp;
+
+        // Validate parent exists
+        if !self.fs.exists(parent) {
+            return Err(DiaryxError::FileRead {
+                path: parent.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "Parent does not exist"),
+            });
+        }
+
+        // Convert parent to index if needed (creates directory)
+        let parent_index = if !self.is_index_file(parent) {
+            self.convert_to_index(parent)?
+        } else {
+            parent.to_path_buf()
+        };
+
+        // Get parent directory
+        let parent_dir = parent_index.parent().unwrap_or_else(|| Path::new(""));
+
+        // Generate filename
+        let (filename, entry_title) = if let Some(t) = title {
+            let slug = self.slugify(t);
+            let unique_name = if self.fs.exists(&parent_dir.join(format!("{}.md", slug))) {
+                self.generate_unique_path(parent_dir, &format!("{}.md", slug))
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("entry.md")
+                    .to_string()
+            } else {
+                format!("{}.md", slug)
+            };
+            (unique_name, t.to_string())
+        } else {
+            let name = self.generate_unique_child_name(parent_dir);
+            let title = self.title_from_filename(&name);
+            (name, title)
+        };
+
+        let child_path = parent_dir.join(&filename);
+        let child_path_str = child_path.to_string_lossy().to_string();
+
+        // Create the entry
+        let app = DiaryxApp::new(&self.fs);
+        app.create_entry(&child_path_str)?;
+
+        // Set frontmatter properties
+        app.set_frontmatter_property(&child_path_str, "title", Value::String(entry_title))?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        app.set_frontmatter_property(&child_path_str, "created", Value::String(now.clone()))?;
+        app.set_frontmatter_property(&child_path_str, "updated", Value::String(now))?;
+
+        // Attach to parent
+        self.attach_entry_to_parent(&child_path, &parent_index)?;
+
+        Ok(child_path)
+    }
+
+    /// Convert a title to a slug suitable for filenames.
+    fn slugify(&self, title: &str) -> String {
+        title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    /// Convert a filename to a title.
+    fn title_from_filename(&self, filename: &str) -> String {
+        filename
+            .trim_end_matches(".md")
+            .replace('-', " ")
+            .replace('_', " ")
+            .split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 

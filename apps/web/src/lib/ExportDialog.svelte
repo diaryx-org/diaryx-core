@@ -4,6 +4,7 @@
   import Checkbox from "$lib/components/ui/checkbox/checkbox.svelte";
   import NativeSelect from "$lib/components/ui/native-select/native-select.svelte";
   import type { Backend, ExportPlan, ExportedFile } from "./backend";
+  import { toast } from "svelte-sonner";
   import {
     Download,
     FileText,
@@ -134,11 +135,15 @@
     const a = document.createElement("a");
     a.href = url;
     const baseName = rootPath.split("/").pop()?.replace(".md", "") || "export";
-    a.download = `${baseName}-export.zip`;
+    const filename = `${baseName}-export.zip`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    
+    // Show success toast
+    toast.success(`Saved to ${filename}`);
   }
 
   function toggleNode(path: string) {

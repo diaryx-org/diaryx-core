@@ -3,7 +3,7 @@ title: Roadmap
 description: The plan for future Diaryx features
 author: adammharris
 created: 2025-12-05T12:06:55-07:00
-updated: 2025-12-15T13:07:12-07:00
+updated: 2025-12-25T16:43:14-07:00
 audience:
   - public
 part_of: README.md
@@ -11,13 +11,17 @@ part_of: README.md
 
 # Roadmap
 
-## v0.5.0
+## v0.6.0
 
-- Including attachments in publish and export
-  New `attachments` property to declare attachments. Include in validate command below.
-- Link validation
-  A command to validate that all `part_of`/`contents` references are still valid, and that exported workspaces have no broken internal links. Maybe consolidate `diaryx normalize` into a validate command?
-- Update Diaryx CLI to support attachments/other features added to apps/web
+- Workspace import
+  - Import from Obsidian (add all part_of/contents properties + index files)
+  - Better validation
+- Sync/backup backends
+  - Google Drive, file/folders, and so forth
+  - Configurable intervals/sync behavior
+  - Possibly live edit/CRDT?
+- Links between files
+  - Click to seamlessly navigate to other files
 
 ## Future considerations
 
