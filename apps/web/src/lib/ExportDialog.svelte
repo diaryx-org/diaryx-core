@@ -226,8 +226,8 @@
     <div class="flex-1 overflow-hidden flex flex-col gap-4 py-4">
       <!-- Audience Selector -->
       <div class="flex items-center gap-2">
-        <label class="text-sm font-medium w-20">Audience:</label>
-        <NativeSelect bind:value={selectedAudience} class="flex-1">
+        <label for="audience-select" class="text-sm font-medium w-20">Audience:</label>
+        <NativeSelect id="audience-select" bind:value={selectedAudience} class="flex-1">
           <option value="all">All (no filter)</option>
           {#each audiences as audience}
             <option value={audience}>{audience}</option>

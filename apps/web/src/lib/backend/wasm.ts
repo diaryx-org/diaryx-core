@@ -371,7 +371,7 @@ export class WasmBackend implements Backend {
       workspaceRoot,
     );
 
-    return wasm.attach_entry_to_parent(normalizedEntryPath, normalizedParentIndexPath);
+    return wasm.attach_entry_to_parent(normalizedEntryPath, normalizedParentIndexPath) as unknown as string;
   }
 
   async convertToIndex(path: string): Promise<string> {

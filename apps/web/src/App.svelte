@@ -388,8 +388,10 @@
         // Try again after a short delay
         setTimeout(async () => {
           try {
-            tree = await backend.getWorkspaceTree();
-            await runValidation();
+            if (backend) {
+              tree = await backend.getWorkspaceTree();
+              await runValidation();
+            }
           } catch (e) {
             console.error("[App] Retry tree refresh failed:", e);
           }

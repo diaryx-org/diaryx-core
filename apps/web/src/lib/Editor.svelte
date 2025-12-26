@@ -46,8 +46,6 @@
     onFileDrop,
   }: Props = $props();
 
-  let imageFileInput: HTMLInputElement | null = $state(null);
-
   let element: HTMLDivElement;
   let editor: Editor | null = $state(null);
   let isUpdatingContent = false; // Flag to skip onchange during programmatic updates
@@ -417,19 +415,12 @@
         </button>
       </div>
     </div>
-  {/if}
-
-  <!-- Hidden file input for images -->
-  <input
-    type="file"
-    bind:this={imageFileInput}
-    class="hidden"
-    accept="image/*"
-  />
+{/if}
 
   <div 
     class="flex-1 overflow-y-auto p-4" 
     bind:this={element}
+    role="application"
     ondragover={(e) => { e.preventDefault(); e.dataTransfer && (e.dataTransfer.dropEffect = 'copy'); }}
     ondrop={async (e) => {
       e.preventDefault();
