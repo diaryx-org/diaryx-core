@@ -422,9 +422,10 @@ impl<FS: FileSystem> DiaryxApp<FS> {
             for att_path in index.frontmatter.attachments_list() {
                 let resolved = entry_dir.join(att_path);
                 if resolved.file_name().map(|n| n.to_string_lossy()) == Some(attachment_name.into())
-                    && self.fs.exists(&resolved) {
-                        return Ok(Some(resolved));
-                    }
+                    && self.fs.exists(&resolved)
+                {
+                    return Ok(Some(resolved));
+                }
                 // Also check if the path itself matches
                 if att_path == attachment_name
                     || att_path.ends_with(&format!("/{}", attachment_name))

@@ -45,7 +45,7 @@ pub trait FileSystem {
     }
 
     /// Write binary content to a file
-    fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
+    fn write_binary(&self, _path: &Path, _content: &[u8]) -> Result<()> {
         // Default implementation: not supported
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -54,7 +54,7 @@ pub trait FileSystem {
     }
 
     /// List all files in a directory (not recursive)
-    fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+    fn list_files(&self, _dir: &Path) -> Result<Vec<PathBuf>> {
         // Default: return empty
         Ok(vec![])
     }
@@ -624,17 +624,19 @@ impl FileSystem for InMemoryFileSystem {
         // Check text files
         for path in files.keys() {
             if let Some(parent) = path.parent()
-                && parent == normalized {
-                    result.push(path.clone());
-                }
+                && parent == normalized
+            {
+                result.push(path.clone());
+            }
         }
 
         // Check binary files
         for path in binary_files.keys() {
             if let Some(parent) = path.parent()
-                && parent == normalized {
-                    result.push(path.clone());
-                }
+                && parent == normalized
+            {
+                result.push(path.clone());
+            }
         }
 
         Ok(result)

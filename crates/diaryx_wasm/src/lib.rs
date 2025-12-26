@@ -1848,12 +1848,13 @@ fn remove_audience_from_content(content: &str) -> String {
     // Parse and remove audience
     if let Ok(mut frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_str)
         && let Some(map) = frontmatter.as_mapping_mut()
-            && map
-                .remove(serde_yaml::Value::String("audience".to_string()))
-                .is_some()
-                && let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {
-                    return format!("---\n{}---\n{}", new_fm, body);
-                }
+        && map
+            .remove(serde_yaml::Value::String("audience".to_string()))
+            .is_some()
+        && let Ok(new_fm) = serde_yaml::to_string(&frontmatter)
+    {
+        return format!("---\n{}---\n{}", new_fm, body);
+    }
 
     content.to_string()
 }
@@ -1879,15 +1880,16 @@ fn filter_contents_and_audience(content: &str, filtered: &[String]) -> String {
 
             // Filter contents
             if let Some(contents) = map.get_mut(serde_yaml::Value::String("contents".to_string()))
-                && let Some(arr) = contents.as_sequence_mut() {
-                    arr.retain(|item| {
-                        if let Some(s) = item.as_str() {
-                            !filtered.iter().any(|f| f == s)
-                        } else {
-                            true
-                        }
-                    });
-                }
+                && let Some(arr) = contents.as_sequence_mut()
+            {
+                arr.retain(|item| {
+                    if let Some(s) = item.as_str() {
+                        !filtered.iter().any(|f| f == s)
+                    } else {
+                        true
+                    }
+                });
+            }
         }
 
         if let Ok(new_fm) = serde_yaml::to_string(&frontmatter) {

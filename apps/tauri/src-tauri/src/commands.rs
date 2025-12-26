@@ -1519,20 +1519,22 @@ pub fn export_binary_attachments<R: Runtime>(
             if let Some(entry_dir) = path.parent() {
                 let attachments_dir = entry_dir.join("_attachments");
                 if attachments_dir.is_dir()
-                    && let Ok(entries) = std::fs::read_dir(&attachments_dir) {
-                        for entry in entries.flatten() {
-                            let entry_path = entry.path();
-                            if entry_path.is_file()
-                                && let Ok(data) = std::fs::read(&entry_path) {
-                                    let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
-                                        .unwrap_or_else(|| entry_path.clone());
-                                    attachments.push(BinaryExportResult {
-                                        path: relative_path.to_string_lossy().to_string(),
-                                        data,
-                                    });
-                                }
+                    && let Ok(entries) = std::fs::read_dir(&attachments_dir)
+                {
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if entry_path.is_file()
+                            && let Ok(data) = std::fs::read(&entry_path)
+                        {
+                            let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
+                                .unwrap_or_else(|| entry_path.clone());
+                            attachments.push(BinaryExportResult {
+                                path: relative_path.to_string_lossy().to_string(),
+                                data,
+                            });
                         }
                     }
+                }
             }
 
             // Recurse into children

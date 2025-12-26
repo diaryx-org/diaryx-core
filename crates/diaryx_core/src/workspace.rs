@@ -817,13 +817,13 @@ impl<FS: FileSystem> Workspace<FS> {
         // If it's an index file, check that contents is empty
         if let Ok(index) = self.parse_index(path)
             && index.frontmatter.is_index()
-            && !index.frontmatter.contents_list().is_empty() {
-                return Err(DiaryxError::InvalidPath {
-                    path: path.to_path_buf(),
-                    message: "Cannot delete: entry has children. Delete children first."
-                        .to_string(),
-                });
-            }
+            && !index.frontmatter.contents_list().is_empty()
+        {
+            return Err(DiaryxError::InvalidPath {
+                path: path.to_path_buf(),
+                message: "Cannot delete: entry has children. Delete children first.".to_string(),
+            });
+        }
 
         // Get filename for updating parent's contents
         let filename = path
@@ -856,21 +856,22 @@ impl<FS: FileSystem> Workspace<FS> {
         if is_index {
             // For index files, the grandparent's contents has the reference
             if let Some(grandparent) = parent.parent()
-                && let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(grandparent) {
-                    let app = DiaryxApp::new(&self.fs);
-                    let dir_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    // Try to remove various possible reference formats
-                    let _ = app
-                        .remove_from_index_contents(&grandparent_index, &format!("{}/", dir_name));
-                    let _ = app.remove_from_index_contents(
-                        &grandparent_index,
-                        &format!("{}/{}", dir_name, filename),
-                    );
-                    let _ = app.remove_from_index_contents(
-                        &grandparent_index,
-                        &format!("{}/index.md", dir_name),
-                    );
-                }
+                && let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(grandparent)
+            {
+                let app = DiaryxApp::new(&self.fs);
+                let dir_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // Try to remove various possible reference formats
+                let _ =
+                    app.remove_from_index_contents(&grandparent_index, &format!("{}/", dir_name));
+                let _ = app.remove_from_index_contents(
+                    &grandparent_index,
+                    &format!("{}/{}", dir_name, filename),
+                );
+                let _ = app.remove_from_index_contents(
+                    &grandparent_index,
+                    &format!("{}/index.md", dir_name),
+                );
+            }
         } else {
             // For leaf files, parent's contents has the reference
             if let Ok(Some(parent_index)) = self.find_any_index_in_dir(parent) {
@@ -1128,8 +1129,6 @@ impl<FS: FileSystem> Workspace<FS> {
     ///
     /// Returns the new path to the entry after any moves.
     pub fn attach_and_move_entry_to_parent(&self, entry: &Path, parent: &Path) -> Result<PathBuf> {
-        
-
         // Validate entry exists
         if !self.fs.exists(entry) {
             return Err(DiaryxError::FileRead {
@@ -1361,6 +1360,7 @@ mod tests {
             contents: Some(vec!["child/README.md".to_string()]),
             part_of: None,
             audience: None,
+            attachments: None,
             extra: Default::default(),
         };
         assert!(root.is_root());
@@ -1373,6 +1373,7 @@ mod tests {
             contents: Some(vec![]),
             part_of: None,
             audience: None,
+            attachments: None,
             extra: Default::default(),
         };
         assert!(empty_root.is_root());
@@ -1385,6 +1386,7 @@ mod tests {
             contents: Some(vec![]),
             part_of: Some("../README.md".to_string()),
             audience: None,
+            attachments: None,
             extra: Default::default(),
         };
         assert!(!leaf.is_root());
@@ -1397,6 +1399,7 @@ mod tests {
             contents: None,
             part_of: Some("../README.md".to_string()),
             audience: None,
+            attachments: None,
             extra: Default::default(),
         };
         assert!(!entry.is_root());
@@ -1409,6 +1412,7 @@ mod tests {
             contents: Some(vec!["sub/README.md".to_string()]),
             part_of: Some("../README.md".to_string()),
             audience: None,
+            attachments: None,
             extra: Default::default(),
         };
         assert!(!middle.is_root()); // has part_of, so not root
