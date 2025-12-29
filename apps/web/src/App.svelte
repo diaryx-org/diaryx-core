@@ -49,9 +49,17 @@
   let showExportDialog = $state(false);
   let exportPath = $state("");
   
-  // Display settings - persisted to localStorage
-  let showUnlinkedFiles = $state(true);
-  let showHiddenFiles = $state(false);
+  // Display settings - initialized from localStorage if available
+  let showUnlinkedFiles = $state(
+    typeof window !== 'undefined' 
+      ? localStorage.getItem('diaryx-show-unlinked-files') !== 'false'
+      : true
+  );
+  let showHiddenFiles = $state(
+    typeof window !== 'undefined'
+      ? localStorage.getItem('diaryx-show-hidden-files') === 'true'
+      : false
+  );
   
   // Attachment state
   let pendingAttachmentPath = $state("");
@@ -156,8 +164,10 @@
   
   // Persist display setting to localStorage when changed
   $effect(() => {
-    localStorage.setItem('diaryx-show-unlinked-files', String(showUnlinkedFiles));
-    localStorage.setItem('diaryx-show-hidden-files', String(showHiddenFiles));
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('diaryx-show-unlinked-files', String(showUnlinkedFiles));
+      localStorage.setItem('diaryx-show-hidden-files', String(showHiddenFiles));
+    }
   });
 
   // Check if we're on desktop and expand sidebars by default
@@ -166,12 +176,6 @@
     if (window.innerWidth >= 768) {
       leftSidebarCollapsed = false;
       rightSidebarCollapsed = false;
-    }
-    
-    // Restore display settings from localStorage
-    const savedShowUnlinked = localStorage.getItem('diaryx-show-unlinked-files');
-    if (savedShowUnlinked !== null) {
-      showUnlinkedFiles = savedShowUnlinked === 'true';
     }
 
     try {

@@ -316,6 +316,15 @@ export class WasmBackend implements Backend {
     return workspacePath;
   }
 
+  async getFilesystemTree(
+    workspacePath?: string,
+    showHidden?: boolean,
+  ): Promise<TreeNode> {
+    const wasm = this.requireWasm();
+    const path = workspacePath ?? this.config?.default_workspace ?? "workspace";
+    return wasm.get_filesystem_tree(path, showHidden ?? false);
+  }
+
   // --------------------------------------------------------------------------
   // Entries
   // --------------------------------------------------------------------------

@@ -1603,3 +1603,105 @@ pub fn export_binary_attachments<R: Runtime>(
 
     Ok(attachments)
 }
+
+// ============================================================================
+// Backup Commands
+// ============================================================================
+
+/// Status of a backup operation
+#[derive(Debug, Serialize)]
+pub struct BackupStatus {
+    pub target_name: String,
+    pub success: bool,
+    pub files_processed: usize,
+    pub error: Option<String>,
+}
+
+/// Backup workspace to all configured targets
+#[tauri::command]
+pub fn backup_workspace<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+) -> Result<Vec<BackupStatus>, SerializableError> {
+    use diaryx_core::backup::{BackupManager, LocalDriveTarget};
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.default_workspace.clone());
+
+    // Create backup manager with default local target
+    let backup_dir = paths.data_dir.join("backups");
+    let target = LocalDriveTarget::new("Local Backup", backup_dir);
+
+    let mut manager = BackupManager::new();
+    manager.add_target(Box::new(target));
+
+    // Run backup
+    let results = manager.backup_all(&RealFileSystem, &workspace);
+
+    Ok(results
+        .into_iter()
+        .zip(manager.target_names())
+        .map(|(result, name)| BackupStatus {
+            target_name: name.to_string(),
+            success: result.success,
+            files_processed: result.files_processed,
+            error: result.error,
+        })
+        .collect())
+}
+
+/// Restore workspace from a backup target
+#[tauri::command]
+pub fn restore_workspace<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+    _target_name: Option<String>, // For future use with multiple targets
+) -> Result<BackupStatus, SerializableError> {
+    use diaryx_core::backup::{BackupManager, LocalDriveTarget};
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.default_workspace.clone());
+
+    // Create backup manager with default local target
+    let backup_dir = paths.data_dir.join("backups");
+    let target = LocalDriveTarget::new("Local Backup", backup_dir);
+
+    let mut manager = BackupManager::new();
+    manager.add_target(Box::new(target));
+
+    // Restore from primary
+    match manager.restore_from_primary(&RealFileSystem, &workspace) {
+        Some(result) => Ok(BackupStatus {
+            target_name: manager.primary_name().unwrap_or("Unknown").to_string(),
+            success: result.success,
+            files_processed: result.files_processed,
+            error: result.error,
+        }),
+        None => Err(SerializableError {
+            kind: "NoBackupTarget".to_string(),
+            message: "No backup target configured".to_string(),
+            path: None,
+        }),
+    }
+}
+
+/// List available backup targets
+#[tauri::command]
+pub fn list_backup_targets<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<String>, SerializableError> {
+    use diaryx_core::backup::{BackupManager, LocalDriveTarget};
+
+    let paths = get_platform_paths(&app)?;
+    let backup_dir = paths.data_dir.join("backups");
+    let target = LocalDriveTarget::new("Local Backup", backup_dir);
+
+    let mut manager = BackupManager::new();
+    manager.add_target(Box::new(target));
+
+    Ok(manager.target_names().into_iter().map(String::from).collect())
+}

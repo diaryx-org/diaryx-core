@@ -62,6 +62,10 @@ pub fn run() {
             commands::export_to_memory,
             commands::export_to_html,
             commands::export_binary_attachments,
+            // Backup
+            commands::backup_workspace,
+            commands::restore_workspace,
+            commands::list_backup_targets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

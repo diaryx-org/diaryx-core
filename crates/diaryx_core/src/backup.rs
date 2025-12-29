@@ -64,7 +64,7 @@ impl BackupResult {
 /// persisted for backup purposes. This is a one-way operation: data flows
 /// from the working filesystem to the target.
 ///
-/// For bidirectional sync, see `SyncTarget` (future implementation).
+/// For bidirectional sync, see `SyncTarget`.
 pub trait BackupTarget: Send + Sync {
     /// Human-readable name for this target (e.g., "Local Backup", "Google Drive")
     fn name(&self) -> &str;
@@ -94,6 +94,110 @@ pub trait BackupTarget: Send + Sync {
     /// For example, a local drive target might check if the path exists,
     /// while a cloud target might ping the service.
     fn is_available(&self) -> bool;
+
+    /// Get timestamp of last successful backup.
+    ///
+    /// Returns `None` if no backup has been performed yet.
+    fn get_last_sync(&self) -> Option<std::time::SystemTime> {
+        None // Default implementation
+    }
+}
+
+// ============================================================================
+// SyncTarget Trait (for bidirectional sync)
+// ============================================================================
+
+/// Result of a sync operation.
+#[derive(Debug)]
+pub struct SyncResult {
+    /// Whether the operation completed successfully
+    pub success: bool,
+    /// Number of files pulled from remote
+    pub files_pulled: usize,
+    /// Number of files pushed to remote
+    pub files_pushed: usize,
+    /// List of conflicts that need resolution
+    pub conflicts: Vec<Conflict>,
+    /// Error message if the operation failed
+    pub error: Option<String>,
+}
+
+impl SyncResult {
+    /// Create a successful sync result
+    pub fn success(files_pulled: usize, files_pushed: usize) -> Self {
+        Self {
+            success: true,
+            files_pulled,
+            files_pushed,
+            conflicts: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// Create a failed sync result
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            files_pulled: 0,
+            files_pushed: 0,
+            conflicts: Vec::new(),
+            error: Some(error.into()),
+        }
+    }
+
+    /// Create a result with conflicts
+    pub fn with_conflicts(conflicts: Vec<Conflict>) -> Self {
+        Self {
+            success: false,
+            files_pulled: 0,
+            files_pushed: 0,
+            conflicts,
+            error: Some("Conflicts detected".to_string()),
+        }
+    }
+}
+
+/// A file conflict between local and remote versions.
+#[derive(Debug, Clone)]
+pub struct Conflict {
+    /// Path to the conflicting file
+    pub path: PathBuf,
+    /// Local modification timestamp
+    pub local_modified: std::time::SystemTime,
+    /// Remote modification timestamp
+    pub remote_modified: std::time::SystemTime,
+}
+
+/// How to resolve a conflict.
+#[derive(Debug, Clone)]
+pub enum Resolution {
+    /// Keep the local version
+    KeepLocal,
+    /// Keep the remote version
+    KeepRemote,
+    /// Use merged content (for future CRDT support)
+    Merge(String),
+}
+
+/// Trait for sync targets (bidirectional persistence).
+///
+/// Extends `BackupTarget` with conflict detection and resolution.
+/// Used for cloud sync and multi-device scenarios.
+pub trait SyncTarget: BackupTarget {
+    /// Pull changes from remote, returning any conflicts.
+    fn pull(&self, fs: &dyn FileSystem, workspace_path: &Path) -> SyncResult;
+
+    /// Push local changes to remote.
+    fn push(&self, fs: &dyn FileSystem, workspace_path: &Path) -> SyncResult;
+
+    /// Resolve a conflict using the specified resolution strategy.
+    fn resolve_conflict(
+        &self,
+        fs: &dyn FileSystem,
+        workspace_path: &Path,
+        conflict: &Conflict,
+        resolution: Resolution,
+    ) -> BackupResult;
 }
 
 // ============================================================================

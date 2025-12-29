@@ -116,6 +116,89 @@ pub fn load_binary_files(entries: JsValue) -> Result<(), JsValue> {
     Ok(())
 }
 
+// ============================================================================
+// Backup Status (for consistency with Tauri API)
+// ============================================================================
+
+/// Result of a backup operation
+#[derive(Serialize)]
+pub struct JsBackupResult {
+    pub success: bool,
+    pub files_processed: usize,
+    pub text_files: usize,
+    pub binary_files: usize,
+    pub error: Option<String>,
+}
+
+/// Get backup data for persistence to IndexedDB.
+/// Returns a structured result with file counts.
+#[wasm_bindgen]
+pub fn get_backup_data() -> Result<JsValue, JsValue> {
+    let text_entries = with_fs(|fs| fs.export_entries());
+    let binary_entries = with_fs(|fs| fs.export_binary_entries());
+
+    #[derive(Serialize)]
+    struct BackupData {
+        text_files: Vec<(String, String)>,
+        binary_files: Vec<BinaryEntry>,
+        text_count: usize,
+        binary_count: usize,
+    }
+
+    let binary_files: Vec<BinaryEntry> = binary_entries
+        .into_iter()
+        .map(|(path, data)| BinaryEntry { path, data })
+        .collect();
+
+    let data = BackupData {
+        text_count: text_entries.len(),
+        binary_count: binary_files.len(),
+        text_files: text_entries,
+        binary_files,
+    };
+
+    Ok(serde_wasm_bindgen::to_value(&data)?)
+}
+
+/// Restore from backup data.
+/// Takes an object with text_files and binary_files arrays.
+#[wasm_bindgen]
+pub fn restore_from_backup(data: JsValue) -> Result<JsValue, JsValue> {
+    #[derive(Deserialize)]
+    struct BackupData {
+        text_files: Vec<(String, String)>,
+        binary_files: Vec<BinaryEntry>,
+    }
+
+    let backup: BackupData = serde_wasm_bindgen::from_value(data)?;
+
+    // Load text files
+    FILESYSTEM.with(|fs| {
+        *fs.borrow_mut() = InMemoryFileSystem::load_from_entries(backup.text_files.clone());
+    });
+
+    // Load binary files
+    let binary_entries: Vec<(String, Vec<u8>)> = backup
+        .binary_files
+        .iter()
+        .map(|e| (e.path.clone(), e.data.clone()))
+        .collect();
+
+    with_fs(|fs| {
+        fs.load_binary_entries(binary_entries);
+    });
+
+    let result = JsBackupResult {
+        success: true,
+        files_processed: backup.text_files.len() + backup.binary_files.len(),
+        text_files: backup.text_files.len(),
+        binary_files: backup.binary_files.len(),
+        error: None,
+    };
+
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
 /// Check if a file exists.
 #[wasm_bindgen]
 pub fn file_exists(path: &str) -> bool {
@@ -226,6 +309,70 @@ pub fn create_workspace(path: &str, name: &str) -> Result<(), JsValue> {
 
         fs.write_file(&index_path, &content)
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    })
+}
+
+/// Get the filesystem tree structure (for "Show All Files" mode).
+/// Unlike get_workspace_tree, this scans actual filesystem rather than following contents/part_of.
+#[wasm_bindgen]
+pub fn get_filesystem_tree(
+    workspace_path: &str,
+    show_hidden: bool,
+) -> Result<JsValue, JsValue> {
+    with_fs(|fs| {
+        let root_path = PathBuf::from(workspace_path);
+
+        // Build tree recursively from filesystem
+        fn build_tree(
+            fs: &dyn FileSystem,
+            path: &Path,
+            show_hidden: bool,
+        ) -> Result<JsTreeNode, String> {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+            // Skip hidden files if not showing them
+            if !show_hidden && name.starts_with('.') {
+                return Err("hidden".to_string());
+            }
+
+            let mut children = Vec::new();
+
+            if fs.is_dir(path) {
+                // List directory contents
+                if let Ok(entries) = fs.list_files(path) {
+                    for entry in entries {
+                        if let Ok(child) = build_tree(fs, &entry, show_hidden) {
+                            children.push(child);
+                        }
+                    }
+                }
+                // Sort: directories first, then files, alphabetically
+                children.sort_by(|a, b| {
+                    let a_is_dir = !a.children.is_empty();
+                    let b_is_dir = !b.children.is_empty();
+                    match (a_is_dir, b_is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                    }
+                });
+            }
+
+            Ok(JsTreeNode {
+                name,
+                description: None,
+                path: path.to_string_lossy().to_string(),
+                children,
+            })
+        }
+
+        let tree = build_tree(fs, &root_path, show_hidden)
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        Ok(serde_wasm_bindgen::to_value(&tree)?)
     })
 }
 

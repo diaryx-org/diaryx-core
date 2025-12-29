@@ -3,8 +3,9 @@
   import { Button } from "$lib/components/ui/button";
   import { Switch } from "$lib/components/ui/switch";
   import { Label } from "$lib/components/ui/label";
-  import { Settings, Info, Eye } from "@lucide/svelte";
+  import { Settings, Info, Eye, Save, Check, AlertCircle } from "@lucide/svelte";
   import { getBackend } from "./backend";
+  import type { BackupStatus } from "./backend/interface";
 
   interface Props {
     open: boolean;
@@ -19,10 +20,17 @@
   let appPaths: Record<string, string> | null = $state(null);
   let loadError: string | null = $state(null);
   
+  // Backup state
+  let backupTargets: string[] = $state([]);
+  let backupStatus: BackupStatus[] | null = $state(null);
+  let isBackingUp: boolean = $state(false);
+  let backupError: string | null = $state(null);
+  
   // Load config when dialog opens
   $effect(() => {
     if (open) {
       loadConfig();
+      loadBackupTargets();
     }
   });
   
@@ -44,6 +52,49 @@
       loadError = null;
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  
+  async function loadBackupTargets() {
+    try {
+      const backend = await getBackend();
+      if ('getInvoke' in backend) {
+        const invoke = (backend as any).getInvoke();
+        backupTargets = await invoke("list_backup_targets", {});
+      } else {
+        // WASM backend - IndexedDB is implicit target
+        backupTargets = ["IndexedDB (Local)"];
+      }
+    } catch (e) {
+      backupTargets = [];
+    }
+  }
+  
+  async function performBackup() {
+    isBackingUp = true;
+    backupError = null;
+    backupStatus = null;
+    
+    try {
+      const backend = await getBackend();
+      if ('getInvoke' in backend) {
+        // Tauri backend
+        const invoke = (backend as any).getInvoke();
+        backupStatus = await invoke("backup_workspace", {});
+      } else {
+        // WASM backend - persist to IndexedDB
+        await backend.persist();
+        backupStatus = [{
+          target_name: "IndexedDB (Local)",
+          success: true,
+          files_processed: 0, // We don't have exact count from persist()
+          error: undefined,
+        }];
+      }
+    } catch (e) {
+      backupError = e instanceof Error ? e.message : String(e);
+    } finally {
+      isBackingUp = false;
     }
   }
 </script>
@@ -87,6 +138,53 @@
           </Label>
           <Switch id="show-hidden" bind:checked={showHiddenFiles} disabled={!showUnlinkedFiles} />
         </div>
+      </div>
+
+      <!-- Backup Section -->
+      <div class="space-y-3">
+        <h3 class="font-medium flex items-center gap-2">
+          <Save class="size-4" />
+          Backup
+        </h3>
+        
+        {#if backupTargets.length > 0}
+          <div class="text-sm text-muted-foreground px-1">
+            Configured targets: {backupTargets.join(", ")}
+          </div>
+        {/if}
+        
+        <div class="flex items-center gap-2 px-1">
+          <Button 
+            variant="outline" 
+            size="sm"
+            onclick={performBackup}
+            disabled={isBackingUp}
+          >
+            {isBackingUp ? 'Backing up...' : 'Backup Now'}
+          </Button>
+        </div>
+        
+        {#if backupStatus}
+          <div class="space-y-1 px-1">
+            {#each backupStatus as status}
+              <div class="flex items-center gap-2 text-sm">
+                {#if status.success}
+                  <Check class="size-4 text-green-500" />
+                  <span>{status.target_name}: {status.files_processed} files</span>
+                {:else}
+                  <AlertCircle class="size-4 text-destructive" />
+                  <span class="text-destructive">{status.target_name}: {status.error}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+        
+        {#if backupError}
+          <div class="text-destructive text-sm p-2 bg-destructive/10 rounded">
+            Backup failed: {backupError}
+          </div>
+        {/if}
       </div>
 
       {#if loadError}
@@ -135,3 +233,4 @@
     </div>
   </Dialog.Content>
 </Dialog.Root>
+

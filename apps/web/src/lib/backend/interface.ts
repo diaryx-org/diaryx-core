@@ -89,6 +89,21 @@ export interface StorageInfo {
   attachment_limit: number;
 }
 
+// Backup types
+export interface BackupStatus {
+  target_name: string;
+  success: boolean;
+  files_processed: number;
+  error?: string;
+}
+
+export interface BackupData {
+  text_files: [string, string][];
+  binary_files: { path: string; data: number[] }[];
+  text_count: number;
+  binary_count: number;
+}
+
 export interface SearchOptions {
   workspacePath?: string;
   searchFrontmatter?: boolean;
