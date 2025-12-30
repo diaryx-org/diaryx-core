@@ -17,7 +17,7 @@ use diaryx_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Entry data returned to frontend
 #[derive(Debug, Serialize)]
@@ -141,9 +141,31 @@ pub fn get_app_paths<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, Serializ
     get_platform_paths(&app)
 }
 
+/// Google Auth configuration
+#[derive(Debug, Serialize)]
+pub struct GoogleAuthConfig {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+}
+
+/// Get Google Auth configuration from environment variables or hardcoded defaults
+#[tauri::command]
+pub fn get_google_auth_config() -> GoogleAuthConfig {
+    // Load .env file if it exists (useful for development)
+    let _ = dotenvy::dotenv();
+
+    let client_id = std::env::var("GOOGLE_CLIENT_ID").ok();
+    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").ok();
+
+    GoogleAuthConfig {
+        client_id,
+        client_secret,
+    }
+}
+
 /// Initialize the app - creates necessary directories and default workspace if needed
 #[tauri::command]
-pub fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, SerializableError> {
+pub async fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, SerializableError> {
     log::info!("[initialize_app] Starting initialization...");
 
     let paths = get_platform_paths(&app).map_err(|e| {
@@ -1617,6 +1639,17 @@ pub struct BackupStatus {
     pub error: Option<String>,
 }
 
+/// Progress event for backup operations (emitted via Tauri events)
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupProgressEvent {
+    /// Current stage: "preparing", "zipping", "uploading", "complete", "error"
+    pub stage: String,
+    /// Progress percentage (0-100)
+    pub percent: u8,
+    /// Optional message for additional context
+    pub message: Option<String>,
+}
+
 /// Backup workspace to all configured targets
 #[tauri::command]
 pub fn backup_workspace<R: Runtime>(
@@ -1704,4 +1737,303 @@ pub fn list_backup_targets<R: Runtime>(
     manager.add_target(Box::new(target));
 
     Ok(manager.target_names().into_iter().map(String::from).collect())
+}
+
+// ============================================================================
+// Cloud Backup Commands (S3)
+// ============================================================================
+
+/// S3 credentials request
+#[derive(Debug, Deserialize)]
+pub struct S3Credentials {
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+/// S3 configuration request
+#[derive(Debug, Deserialize)]
+pub struct S3ConfigRequest {
+    pub name: String,
+    pub bucket: String,
+    pub region: String,
+    pub prefix: Option<String>,
+    pub endpoint: Option<String>,
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+/// Test S3 connection
+#[tauri::command]
+pub fn test_s3_connection(
+    config: S3ConfigRequest,
+) -> Result<bool, SerializableError> {
+    use diaryx_core::backup::{BackupTarget, CloudBackupConfig, CloudProvider};
+    use crate::cloud::S3Target;
+
+    let cloud_config = CloudBackupConfig {
+        id: "test".to_string(),
+        name: config.name,
+        provider: CloudProvider::S3 {
+            bucket: config.bucket,
+            region: config.region,
+            prefix: config.prefix,
+            endpoint: config.endpoint,
+        },
+        enabled: true,
+    };
+
+    let target = S3Target::new(cloud_config, config.access_key, config.secret_key)
+        .map_err(|e| SerializableError {
+            kind: "S3ConfigError".to_string(),
+            message: e,
+            path: None,
+        })?;
+
+    Ok(target.is_available())
+}
+
+/// Backup workspace to S3
+#[tauri::command]
+pub async fn backup_to_s3<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+    config: S3ConfigRequest,
+) -> Result<BackupStatus, SerializableError> {
+    use diaryx_core::backup::{BackupTarget, CloudBackupConfig, CloudProvider};
+    use crate::cloud::S3Target;
+    use tokio::sync::mpsc;
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or(paths.default_workspace);
+    
+    let config_name = config.name.clone();
+    
+    // Create a channel to send progress from the background thread
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<BackupProgressEvent>();
+    
+    // Clone app for the event emission task
+    let app_clone = app.clone();
+    
+    // Spawn a task to forward progress events to the frontend
+    let event_task = tauri::async_runtime::spawn(async move {
+        while let Some(event) = progress_rx.recv().await {
+            let _ = app_clone.emit("backup_progress", &event);
+        }
+    });
+
+    // Run backup in a blocking thread to not freeze the UI
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let fs = RealFileSystem;
+        
+        // Emit preparing stage
+        let _ = progress_tx.send(BackupProgressEvent {
+            stage: "preparing".to_string(),
+            percent: 5,
+            message: Some("Preparing backup...".to_string()),
+        });
+        
+        let cloud_config = CloudBackupConfig {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: config.name.clone(),
+            provider: CloudProvider::S3 {
+                bucket: config.bucket,
+                region: config.region,
+                prefix: config.prefix,
+                endpoint: config.endpoint,
+            },
+            enabled: true,
+        };
+
+        let target = S3Target::new(cloud_config, config.access_key, config.secret_key)
+            .map_err(|e| SerializableError {
+                kind: "S3ConfigError".to_string(),
+                message: e,
+                path: None,
+            })?;
+
+        // Use backup_with_progress to get per-file progress callbacks
+        let result = target.backup_with_progress(&fs, &workspace, |stage, current, total, percent| {
+            let message = match stage {
+                "preparing" => Some("Preparing backup...".to_string()),
+                "zipping" => Some(format!("Zipping files: {}/{}", current, total)),
+                "uploading" => Some("Uploading to S3...".to_string()),
+                "complete" => Some("Backup complete!".to_string()),
+                "error" => Some("Backup failed".to_string()),
+                _ => None,
+            };
+            
+            let _ = progress_tx.send(BackupProgressEvent {
+                stage: stage.to_string(),
+                percent,
+                message,
+            });
+        });
+        
+        Ok::<_, SerializableError>(result)
+    }).await.map_err(|e| SerializableError {
+        kind: "SpawnError".to_string(),
+        message: e.to_string(),
+        path: None,
+    })??;
+    
+    // Wait for event task to finish
+    let _ = event_task.await;
+
+    Ok(BackupStatus {
+        target_name: config_name,
+        success: result.success,
+        files_processed: result.files_processed,
+        error: result.error,
+    })
+}
+
+/// Restore workspace from S3
+#[tauri::command]
+pub fn restore_from_s3<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+    config: S3ConfigRequest,
+) -> Result<BackupStatus, SerializableError> {
+    use diaryx_core::backup::{BackupTarget, CloudBackupConfig, CloudProvider};
+    use crate::cloud::S3Target;
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or(paths.default_workspace);
+    let fs = RealFileSystem;
+
+    let cloud_config = CloudBackupConfig {
+        id: "restore".to_string(),
+        name: config.name.clone(),
+        provider: CloudProvider::S3 {
+            bucket: config.bucket,
+            region: config.region,
+            prefix: config.prefix,
+            endpoint: config.endpoint,
+        },
+        enabled: true,
+    };
+
+    let target = S3Target::new(cloud_config, config.access_key, config.secret_key)
+        .map_err(|e| SerializableError {
+            kind: "S3ConfigError".to_string(),
+            message: e,
+            path: None,
+        })?;
+
+    let result = target.restore(&fs, &workspace);
+
+    Ok(BackupStatus {
+        target_name: config.name,
+        success: result.success,
+        files_processed: result.files_processed,
+        error: result.error,
+    })
+}
+
+/// Google Drive configuration request from frontend.
+#[derive(Debug, Deserialize)]
+pub struct GoogleDriveConfigRequest {
+    pub name: String,
+    pub access_token: String,
+    pub folder_id: Option<String>,
+}
+
+/// Backup workspace to Google Drive
+#[tauri::command]
+pub async fn backup_to_google_drive<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+    config: GoogleDriveConfigRequest,
+) -> Result<BackupStatus, SerializableError> {
+    use diaryx_core::backup::{CloudBackupConfig, CloudProvider};
+    use crate::cloud::GoogleDriveTarget;
+    use tokio::sync::mpsc;
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or(paths.default_workspace);
+    
+    let config_name = config.name.clone();
+    let access_token = config.access_token.clone();
+    let folder_id = config.folder_id.clone();
+    
+    // Create a channel to send progress from the background thread
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<BackupProgressEvent>();
+    
+    // Clone app for the event emission task
+    let app_clone = app.clone();
+    
+    // Spawn a task to forward progress events to the frontend
+    let event_task = tauri::async_runtime::spawn(async move {
+        while let Some(event) = progress_rx.recv().await {
+            let _ = app_clone.emit("backup_progress", &event);
+        }
+    });
+
+    // Run backup in a blocking thread
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let fs = RealFileSystem;
+        
+        // Emit preparing stage
+        let _ = progress_tx.send(BackupProgressEvent {
+            stage: "preparing".to_string(),
+            percent: 5,
+            message: Some("Preparing backup...".to_string()),
+        });
+        
+        let cloud_config = CloudBackupConfig {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: config.name.clone(),
+            provider: CloudProvider::GoogleDrive {
+                folder_id: folder_id.clone(),
+            },
+            enabled: true,
+        };
+
+        let target = GoogleDriveTarget::new(cloud_config, access_token, folder_id)
+            .map_err(|e| SerializableError {
+                kind: "GoogleDriveConfigError".to_string(),
+                message: e,
+                path: None,
+            })?;
+
+        // Use backup_with_progress for progress callbacks
+        let result = target.backup_with_progress(&fs, &workspace, |stage, current, total, percent| {
+            let message = match stage {
+                "preparing" => Some("Preparing backup...".to_string()),
+                "zipping" => Some(format!("Zipping files: {}/{}", current, total)),
+                "uploading" => Some("Uploading to Google Drive...".to_string()),
+                "complete" => Some("Backup complete!".to_string()),
+                "error" => Some("Backup failed".to_string()),
+                _ => None,
+            };
+            
+            let _ = progress_tx.send(BackupProgressEvent {
+                stage: stage.to_string(),
+                percent,
+                message,
+            });
+        });
+        
+        Ok::<_, SerializableError>(result)
+    }).await.map_err(|e| SerializableError {
+        kind: "SpawnError".to_string(),
+        message: e.to_string(),
+        path: None,
+    })??;
+    
+    // Wait for event task to finish
+    let _ = event_task.await;
+
+    Ok(BackupStatus {
+        target_name: config_name,
+        success: result.success,
+        files_processed: result.files_processed,
+        error: result.error,
+    })
 }

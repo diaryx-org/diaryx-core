@@ -238,6 +238,14 @@ impl FileSystem for RealFileSystem {
         }
         Ok(files)
     }
+
+    fn read_binary(&self, path: &Path) -> Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
+        fs::write(path, content)
+    }
 }
 
 // ============================================================================

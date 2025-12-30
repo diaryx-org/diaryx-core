@@ -81,7 +81,7 @@ impl Config {
 
     /// Load config from a specific path using a FileSystem
     pub fn load_from<FS: FileSystem>(fs: &FS, path: &std::path::Path) -> Result<Self> {
-        let contents = fs.read_to_string(path).map_err(|e| DiaryxError::FileRead {
+        let contents = fs::read_to_string(path).map_err(|e| DiaryxError::FileRead {
             path: path.to_path_buf(),
             source: e,
         })?;

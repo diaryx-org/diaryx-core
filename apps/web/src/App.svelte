@@ -792,7 +792,7 @@
 />
 
 <!-- Settings Dialog -->
-<SettingsDialog bind:open={showSettingsDialog} bind:showUnlinkedFiles bind:showHiddenFiles />
+<SettingsDialog bind:open={showSettingsDialog} bind:showUnlinkedFiles bind:showHiddenFiles workspacePath={tree?.path} />
 
 <!-- Export Dialog -->
 <ExportDialog

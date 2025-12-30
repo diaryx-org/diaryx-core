@@ -23,6 +23,57 @@ pub enum FailurePolicy {
     Abort,
 }
 
+// ============================================================================
+// Cloud Backup Configuration (Serializable)
+// ============================================================================
+
+use serde::{Deserialize, Serialize};
+
+/// Cloud storage provider configuration.
+///
+/// This is a serializable configuration type. Actual implementations
+/// of cloud backup targets live in platform-specific apps (Tauri, WASM).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CloudProvider {
+    /// Amazon S3 or S3-compatible storage
+    S3 {
+        bucket: String,
+        region: String,
+        #[serde(default)]
+        prefix: Option<String>,
+        #[serde(default)]
+        endpoint: Option<String>, // For S3-compatible (MinIO, etc.)
+    },
+    /// Google Drive
+    GoogleDrive {
+        #[serde(default)]
+        folder_id: Option<String>,
+    },
+    /// WebDAV (Nextcloud, ownCloud, etc.)
+    WebDAV {
+        url: String,
+    },
+}
+
+/// Configuration for a cloud backup target.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CloudBackupConfig {
+    /// Unique identifier for this backup target
+    pub id: String,
+    /// Human-readable name
+    pub name: String,
+    /// Cloud provider configuration
+    pub provider: CloudProvider,
+    /// Whether this target is enabled for automatic backups
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 /// Result of a backup or restore operation.
 #[derive(Debug)]
 pub struct BackupResult {
