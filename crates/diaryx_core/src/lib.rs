@@ -38,5 +38,9 @@ pub mod path_utils;
 /// Workspace (specify a directory to work in)
 pub mod workspace;
 
+/// Live sync (CRDT-based synchronization)
+#[cfg(feature = "live-sync")]
+pub mod sync_crdt;
+
 #[cfg(test)]
 pub mod test_utils;

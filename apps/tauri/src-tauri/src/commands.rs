@@ -2037,3 +2037,676 @@ pub async fn backup_to_google_drive<R: Runtime>(
         error: result.error,
     })
 }
+
+/// Import workspace from a backup zip file
+#[tauri::command]
+pub async fn import_from_zip(
+    zip_path: String,
+    workspace_path: Option<String>,
+) -> Result<ImportResult, SerializableError> {
+    use std::io::Read;
+    
+    let fs = RealFileSystem;
+    
+    // Get workspace path
+    let workspace = match workspace_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            // Get default workspace from config
+            let config = Config::default();
+            if config.default_workspace.as_os_str().is_empty() {
+                return Err(SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: "No workspace specified and no default workspace configured".to_string(),
+                    path: None,
+                });
+            }
+            config.default_workspace
+        }
+    };
+    
+    log::info!("[Import] Importing from {} to {:?}", zip_path, workspace);
+    
+    // Open zip file
+    let zip_file = std::fs::File::open(&zip_path).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to open zip file: {}", e),
+        path: Some(PathBuf::from(&zip_path)),
+    })?;
+    
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to read zip archive: {}", e),
+        path: Some(PathBuf::from(&zip_path)),
+    })?;
+    
+    let total_files = archive.len();
+    let mut files_imported = 0;
+    let mut files_skipped = 0;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read zip entry: {}", e),
+            path: None,
+        })?;
+        
+        // Skip directories
+        if file.is_dir() {
+            continue;
+        }
+        
+        let file_name = file.name().to_string();
+        
+        // Skip files that shouldn't be imported
+        let should_skip = file_name.split('/').any(|part| {
+            part.starts_with('.')  // Hidden files/dirs
+            || part == "Thumbs.db" || part == "desktop.ini"
+        });
+        
+        if should_skip {
+            continue;
+        }
+        
+        // Only import markdown files and attachments
+        let is_markdown = file_name.ends_with(".md");
+        let is_in_attachments = file_name.contains("/attachments/") || file_name.contains("/assets/");
+        let is_common_attachment = {
+            let lower = file_name.to_lowercase();
+            lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") 
+            || lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".pdf")
+            || lower.ends_with(".webp")
+        };
+        
+        if !is_markdown && !is_in_attachments && !is_common_attachment {
+            continue;
+        }
+        
+        let file_path = workspace.join(&file_name);
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = file_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: format!("Failed to create directory: {}", e),
+                    path: Some(parent.to_path_buf()),
+                })?;
+            }
+        }
+        
+        // Read file contents
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read file from zip: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        // Write to filesystem
+        fs.write_binary(&file_path, &contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to write file: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        files_imported += 1;
+        
+        // Log progress every 100 files
+        if files_imported % 100 == 0 {
+            log::info!("[Import] Progress: {}/{} files", files_imported, total_files);
+        }
+    }
+    
+    log::info!("[Import] Complete: {} files imported, {} skipped", files_imported, files_skipped);
+    
+    Ok(ImportResult {
+        success: true,
+        files_imported,
+        files_skipped,
+        workspace_path: workspace.to_string_lossy().to_string(),
+        error: None,
+        cancelled: false,
+    })
+}
+
+/// Result of an import operation
+#[derive(Debug, Serialize)]
+pub struct ImportResult {
+    pub success: bool,
+    pub files_imported: usize,
+    pub files_skipped: usize,
+    pub workspace_path: String,
+    pub error: Option<String>,
+    /// True if user cancelled the file picker
+    pub cancelled: bool,
+}
+
+/// Pick a zip file using native dialog and import it
+/// This handles the file picker on the backend for consistent iOS behavior
+#[tauri::command]
+pub async fn pick_and_import_zip<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+) -> Result<ImportResult, SerializableError> {
+    use std::io::Read;
+    use tauri_plugin_dialog::DialogExt;
+    
+    let fs = RealFileSystem;
+    
+    // Get workspace path
+    let workspace = match workspace_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let config = Config::default();
+            if config.default_workspace.as_os_str().is_empty() {
+                return Err(SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: "No workspace specified".to_string(),
+                    path: None,
+                });
+            }
+            config.default_workspace
+        }
+    };
+    
+    // Use blocking_pick_file with application/zip MIME type filter for iOS
+    // The MIME type should help iOS choose document picker over photo picker
+    let file_path = app.dialog()
+        .file()
+        .add_filter("Zip Archive", &["zip", "application/zip"])
+        .set_title("Select Backup Zip to Import")
+        .blocking_pick_file();
+    
+    let selected_path = match file_path {
+        Some(path) => path.into_path().map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to get file path: {:?}", e),
+            path: None,
+        })?,
+        None => {
+            // User cancelled
+            return Ok(ImportResult {
+                success: false,
+                files_imported: 0,
+                files_skipped: 0,
+                workspace_path: workspace.to_string_lossy().to_string(),
+                error: None,
+                cancelled: true,
+            });
+        }
+    };
+    
+    log::info!("[Import] Importing from {:?} to {:?}", selected_path, workspace);
+    
+    // Open zip file
+    let zip_file = std::fs::File::open(&selected_path).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to open zip file: {}", e),
+        path: Some(selected_path.clone()),
+    })?;
+    
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to read zip archive: {}", e),
+        path: Some(selected_path.clone()),
+    })?;
+    
+    let total_files = archive.len();
+    let mut files_imported = 0;
+    let mut files_skipped = 0;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read zip entry: {}", e),
+            path: None,
+        })?;
+        
+        if file.is_dir() {
+            continue;
+        }
+        
+        let file_name = file.name().to_string();
+        
+        // Skip files that shouldn't be imported
+        let should_skip = file_name.split('/').any(|part| {
+            part.starts_with('.') || part == "Thumbs.db" || part == "desktop.ini"
+        });
+        
+        if should_skip {
+            continue;
+        }
+        
+        // Only import markdown files and attachments
+        let is_markdown = file_name.ends_with(".md");
+        let is_in_attachments = file_name.contains("/attachments/") || file_name.contains("/assets/");
+        let is_common_attachment = {
+            let lower = file_name.to_lowercase();
+            lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") 
+            || lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".pdf")
+            || lower.ends_with(".webp")
+        };
+        
+        if !is_markdown && !is_in_attachments && !is_common_attachment {
+            continue;
+        }
+        
+        let file_path = workspace.join(&file_name);
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = file_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: format!("Failed to create directory: {}", e),
+                    path: Some(parent.to_path_buf()),
+                })?;
+            }
+        }
+        
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read file from zip: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        fs.write_binary(&file_path, &contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to write file: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        files_imported += 1;
+        
+        if files_imported % 100 == 0 {
+            log::info!("[Import] Progress: {}/{} files", files_imported, total_files);
+        }
+    }
+    
+    log::info!("[Import] Complete: {} files imported, {} skipped", files_imported, files_skipped);
+    
+    Ok(ImportResult {
+        success: true,
+        files_imported,
+        files_skipped,
+        workspace_path: workspace.to_string_lossy().to_string(),
+        error: None,
+        cancelled: false,
+    })
+}
+
+/// Import workspace from base64-encoded zip data
+/// This is used when the file is selected via webview file input (for iOS compatibility)
+#[tauri::command]
+pub async fn import_from_zip_data(
+    zip_data: String,
+    workspace_path: Option<String>,
+) -> Result<ImportResult, SerializableError> {
+    use std::io::{Cursor, Read};
+    use base64::Engine;
+    
+    let fs = RealFileSystem;
+    
+    // Get workspace path
+    let workspace = match workspace_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let config = Config::default();
+            if config.default_workspace.as_os_str().is_empty() {
+                return Err(SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: "No workspace specified".to_string(),
+                    path: None,
+                });
+            }
+            config.default_workspace
+        }
+    };
+    
+    log::info!("[Import] Importing from base64 data ({} chars) to {:?}", zip_data.len(), workspace);
+    
+    // Decode base64
+    let zip_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&zip_data)
+        .map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to decode base64: {}", e),
+            path: None,
+        })?;
+    
+    log::info!("[Import] Decoded {} bytes of zip data", zip_bytes.len());
+    
+    // Create zip archive from bytes
+    let cursor = Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to read zip archive: {}", e),
+        path: None,
+    })?;
+    
+    let total_files = archive.len();
+    let mut files_imported = 0;
+    let files_skipped = 0;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read zip entry: {}", e),
+            path: None,
+        })?;
+        
+        if file.is_dir() {
+            continue;
+        }
+        
+        let file_name = file.name().to_string();
+        
+        // Skip files that shouldn't be imported
+        let should_skip = file_name.split('/').any(|part| {
+            part.starts_with('.') || part == "Thumbs.db" || part == "desktop.ini"
+        });
+        
+        if should_skip {
+            continue;
+        }
+        
+        // Only import markdown files and attachments
+        let is_markdown = file_name.ends_with(".md");
+        let is_in_attachments = file_name.contains("/attachments/") || file_name.contains("/assets/");
+        let is_common_attachment = {
+            let lower = file_name.to_lowercase();
+            lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") 
+            || lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".pdf")
+            || lower.ends_with(".webp")
+        };
+        
+        if !is_markdown && !is_in_attachments && !is_common_attachment {
+            continue;
+        }
+        
+        let file_path = workspace.join(&file_name);
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = file_path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: format!("Failed to create directory: {}", e),
+                    path: Some(parent.to_path_buf()),
+                })?;
+            }
+        }
+        
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read file from zip: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        fs.write_binary(&file_path, &contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to write file: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        files_imported += 1;
+        
+        if files_imported % 100 == 0 {
+            log::info!("[Import] Progress: {}/{} files", files_imported, total_files);
+        }
+    }
+    
+    log::info!("[Import] Complete: {} files imported, {} skipped", files_imported, files_skipped);
+    
+    Ok(ImportResult {
+        success: true,
+        files_imported,
+        files_skipped,
+        workspace_path: workspace.to_string_lossy().to_string(),
+        error: None,
+        cancelled: false,
+    })
+}
+
+// ============================================================================
+// Chunked Import Commands - for large files that can't fit in memory
+// ============================================================================
+
+use std::sync::Mutex;
+use std::collections::HashMap;
+
+/// Global storage for in-progress uploads
+static UPLOAD_SESSIONS: std::sync::LazyLock<Mutex<HashMap<String, std::fs::File>>> = 
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Start a chunked upload session
+/// Returns a session ID to use for subsequent chunks
+#[tauri::command]
+pub async fn start_import_upload() -> Result<String, SerializableError> {
+    use uuid::Uuid;
+    
+    let session_id = Uuid::new_v4().to_string();
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("diaryx_import_{}.zip", &session_id));
+    
+    log::info!("[Import] Starting chunked upload session: {} -> {:?}", session_id, temp_path);
+    
+    let file = std::fs::File::create(&temp_path).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to create temp file: {}", e),
+        path: Some(temp_path),
+    })?;
+    
+    UPLOAD_SESSIONS.lock().unwrap().insert(session_id.clone(), file);
+    
+    Ok(session_id)
+}
+
+/// Append a chunk of base64-encoded data to an upload session
+#[tauri::command]
+pub async fn append_import_chunk(
+    session_id: String,
+    chunk: String,
+) -> Result<usize, SerializableError> {
+    use std::io::Write;
+    use base64::Engine;
+    
+    // Decode base64 chunk
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&chunk)
+        .map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to decode chunk: {}", e),
+            path: None,
+        })?;
+    
+    let bytes_len = bytes.len();
+    
+    // Write to temp file
+    let mut sessions = UPLOAD_SESSIONS.lock().unwrap();
+    let file = sessions.get_mut(&session_id).ok_or_else(|| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Upload session not found: {}", session_id),
+        path: None,
+    })?;
+    
+    file.write_all(&bytes).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to write chunk: {}", e),
+        path: None,
+    })?;
+    
+    Ok(bytes_len)
+}
+
+/// Finish a chunked upload and import the zip file
+#[tauri::command]
+pub async fn finish_import_upload(
+    session_id: String,
+    workspace_path: Option<String>,
+) -> Result<ImportResult, SerializableError> {
+    use std::io::Read;
+    
+    let fs = RealFileSystem;
+    
+    // Get workspace path
+    let workspace = match workspace_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let config = Config::default();
+            if config.default_workspace.as_os_str().is_empty() {
+                return Err(SerializableError {
+                    kind: "ImportError".to_string(),
+                    message: "No workspace specified".to_string(),
+                    path: None,
+                });
+            }
+            config.default_workspace
+        }
+    };
+    
+    // Close the file and remove from sessions
+    let temp_path = {
+        let mut sessions = UPLOAD_SESSIONS.lock().unwrap();
+        sessions.remove(&session_id);
+        std::env::temp_dir().join(format!("diaryx_import_{}.zip", &session_id))
+    };
+    
+    log::info!("[Import] Finishing chunked upload: {} -> {:?}", session_id, temp_path);
+    
+    // Open the completed temp file
+    let zip_file = std::fs::File::open(&temp_path).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to open temp file: {}", e),
+        path: Some(temp_path.clone()),
+    })?;
+    
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| SerializableError {
+        kind: "ImportError".to_string(),
+        message: format!("Failed to read zip archive: {}", e),
+        path: Some(temp_path.clone()),
+    })?;
+    
+    let total_files = archive.len();
+    let mut files_imported = 0;
+    let files_skipped = 0;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read zip entry: {}", e),
+            path: None,
+        })?;
+        
+        if file.is_dir() {
+            continue;
+        }
+        
+        let file_name = file.name().to_string();
+        
+        // Skip files that shouldn't be imported:
+        // - Hidden files and directories (starting with .)
+        // - macOS metadata files (.DS_Store)
+        // - Git files
+        // - Other system files
+        let should_skip = file_name.split('/').any(|part| {
+            part.starts_with('.')  // Hidden files/dirs
+            || part == ".DS_Store"
+            || part == ".git"
+            || part == "Thumbs.db"  // Windows
+            || part == "desktop.ini"  // Windows
+        });
+        
+        if should_skip {
+            log::debug!("[Import] Skipping system file: {}", file_name);
+            continue;
+        }
+        
+        // For non-markdown files, only import if they're in an attachments directory
+        // or are common attachment types
+        let is_markdown = file_name.ends_with(".md");
+        let is_in_attachments = file_name.contains("/attachments/") || file_name.contains("/assets/");
+        let is_common_attachment = {
+            let lower = file_name.to_lowercase();
+            lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") 
+            || lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".pdf")
+            || lower.ends_with(".webp")
+        };
+        
+        if !is_markdown && !is_in_attachments && !is_common_attachment {
+            log::debug!("[Import] Skipping non-workspace file: {}", file_name);
+            continue;
+        }
+        
+        let file_path = workspace.join(&file_name);
+        
+        log::info!("[Import] Processing zip entry: {} -> {:?}", file_name, file_path);
+        
+        // Create parent directories, deleting any files that conflict
+        // (backup is authoritative, so if zip has a directory, it replaces any file)
+        if let Some(parent) = file_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let mut current = workspace.clone();
+                for component in std::path::Path::new(&file_name).parent().unwrap_or(std::path::Path::new("")).components() {
+                    current = current.join(component);
+                    
+                    if current.exists() && current.is_file() {
+                        // Delete file that's blocking directory creation
+                        std::fs::remove_file(&current).map_err(|e| SerializableError {
+                            kind: "ImportError".to_string(),
+                            message: format!("Failed to remove conflicting file: {}", e),
+                            path: Some(current.clone()),
+                        })?;
+                        log::info!("[Import] Removed conflicting file: {:?}", current);
+                    }
+                    
+                    if !current.exists() {
+                        std::fs::create_dir(&current).map_err(|e| SerializableError {
+                            kind: "ImportError".to_string(),
+                            message: format!("Failed to create directory: {}", e),
+                            path: Some(current.clone()),
+                        })?;
+                    }
+                }
+            }
+        }
+        
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to read file from zip: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        fs.write_binary(&file_path, &contents).map_err(|e| SerializableError {
+            kind: "ImportError".to_string(),
+            message: format!("Failed to write file: {}", e),
+            path: Some(file_path.clone()),
+        })?;
+        
+        files_imported += 1;
+        
+        if files_imported % 100 == 0 {
+            log::info!("[Import] Progress: {}/{} files", files_imported, total_files);
+        }
+    }
+    
+    // Clean up temp file
+    if let Err(e) = std::fs::remove_file(&temp_path) {
+        log::warn!("[Import] Failed to clean up temp file: {}", e);
+    }
+    
+    log::info!("[Import] Complete: {} files imported, {} skipped", files_imported, files_skipped);
+    
+    Ok(ImportResult {
+        success: true,
+        files_imported,
+        files_skipped,
+        workspace_path: workspace.to_string_lossy().to_string(),
+        error: None,
+        cancelled: false,
+    })
+}

@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-diaryx_core = { workspace = true, features = ["markdown"] }
+diaryx_core = { workspace = true, features = ["markdown", "live-sync"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
@@ -45,6 +45,10 @@ rust-argon2 = "3.0.0"
 tauri-plugin-google-auth = "0.3"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 dotenvy = "0.15"
+
+# Live sync (WebSocket transport)
+tokio-tungstenite = "0.23"
+url = "2"
 
 [features]
 default = ["custom-protocol"]

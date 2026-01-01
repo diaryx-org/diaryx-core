@@ -5,9 +5,13 @@
 
 /// Where all the Tauri `invoke` functions are defined.
 mod commands;
+mod commands_sync;
 
 /// Cloud backup targets (S3, Google Drive, etc.)
 mod cloud;
+
+/// Live sync (WebSocket-based collaboration)
+pub mod sync;
 
 /// Run function used by Tauri clients. Builds Tauri plugins and invokable commands.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,7 +23,13 @@ pub fn run() {
 
     log::info!("Starting Diaryx application...");
 
+    // Initialize sync state
+    let sync_state = std::sync::Arc::new(
+        std::sync::Mutex::new(commands_sync::SyncState::new())
+    );
+
     tauri::Builder::default()
+        .manage(sync_state)
         // Stronghold plugin for secure credential storage
         .plugin(
             tauri_plugin_stronghold::Builder::new(|password| {
@@ -97,6 +107,20 @@ pub fn run() {
             // Cloud Backup (Google Drive)
             commands::get_google_auth_config,
             commands::backup_to_google_drive,
+            // Import
+            commands::import_from_zip,
+            commands::pick_and_import_zip,
+            commands::import_from_zip_data,
+            // Chunked Import (for large files)
+            commands::start_import_upload,
+            commands::append_import_chunk,
+            commands::finish_import_upload,
+            // Live Sync
+            commands_sync::start_live_sync,
+            commands_sync::stop_live_sync,
+            commands_sync::get_sync_status,
+            commands_sync::sync_round,
+            commands_sync::update_synced_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

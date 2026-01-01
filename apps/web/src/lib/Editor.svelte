@@ -11,6 +11,11 @@
   import Highlight from "@tiptap/extension-highlight";
   import Typography from "@tiptap/extension-typography";
   import Image from "@tiptap/extension-image";
+  // Y.js collaboration
+  import Collaboration from "@tiptap/extension-collaboration";
+  import CollaborationCursor from "@tiptap/extension-collaboration-caret";
+  import type * as Y from "yjs";
+  import type { HocuspocusProvider } from "@hocuspocus/provider";
   import {
     Bold,
     Italic,
@@ -34,7 +39,14 @@
     onchange?: (markdown: string) => void;
     readonly?: boolean;
     onInsertImage?: () => void;
-    onFileDrop?: (file: File) => Promise<{ blobUrl: string; attachmentPath: string } | null>;
+    onFileDrop?: (
+      file: File,
+    ) => Promise<{ blobUrl: string; attachmentPath: string } | null>;
+    // Y.js collaboration options
+    ydoc?: Y.Doc;
+    provider?: HocuspocusProvider;
+    userName?: string;
+    userColor?: string;
   }
 
   let {
@@ -44,15 +56,173 @@
     readonly = false,
     onInsertImage,
     onFileDrop,
+    ydoc,
+    provider,
+    userName = "Anonymous",
+    userColor = "#958DF1",
   }: Props = $props();
 
   let element: HTMLDivElement;
   let editor: Editor | null = $state(null);
   let isUpdatingContent = false; // Flag to skip onchange during programmatic updates
 
+  // Collaboration gating:
+  // We show local markdown content first, then enable Collaboration after provider has synced once.
+  let collabReady = $state(false);
+  let providerSyncedUnsub: (() => void) | null = null;
+
+  // Track what kind of editor we built last, so we only rebuild when it truly changes.
+  // This avoids constantly recreating the editor (which can lead to blank content/races).
+  let lastCollabKey: string | null = null;
+  let lastReadonly: boolean | null = null;
+  let lastPlaceholder: string | null = null;
+  let lastCollabReady: boolean | null = null;
+
+  function cleanupProviderSyncedHook() {
+    if (providerSyncedUnsub) {
+      providerSyncedUnsub();
+      providerSyncedUnsub = null;
+    }
+  }
+
+  function hookProviderSyncedOnce() {
+    cleanupProviderSyncedHook();
+    if (!provider || collabReady) return;
+
+    // HocuspocusProvider is an EventEmitter-like object.
+    // We listen once for "synced" and then flip collabReady.
+    const anyProvider = provider as any;
+
+    if (
+      typeof anyProvider?.on === "function" &&
+      typeof anyProvider?.off === "function"
+    ) {
+      const handler = () => {
+        collabReady = true;
+        anyProvider.off("synced", handler);
+        providerSyncedUnsub = null;
+      };
+      anyProvider.on("synced", handler);
+      providerSyncedUnsub = () => {
+        try {
+          anyProvider.off("synced", handler);
+        } catch {
+          // ignore
+        }
+      };
+      return;
+    }
+
+    // Fallback: poll provider.synced boolean
+    if (typeof (provider as any).synced === "boolean") {
+      const interval = window.setInterval(() => {
+        if ((provider as any)?.synced) {
+          window.clearInterval(interval);
+          collabReady = true;
+          providerSyncedUnsub = null;
+        }
+      }, 50);
+      providerSyncedUnsub = () => window.clearInterval(interval);
+    }
+  }
+
+  function destroyEditor() {
+    cleanupProviderSyncedHook();
+    editor?.destroy();
+    editor = null;
+  }
+
+  function createEditor() {
+    destroyEditor();
+
+    // Build extensions array
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const extensions: any[] = [
+      StarterKit.configure({
+        codeBlock: false, // We'll use the separate extension
+        link: false, // Disable Link in StarterKit; we register Link explicitly below
+        // Disable undoRedo when using Y.js - Collaboration extension handles undo/redo
+        ...(ydoc ? { undoRedo: false } : {}),
+      }),
+      Markdown.configure({
+        //transformPastedText: true,
+        //transformCopiedText: true,
+      }),
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: {
+          class: "editor-link",
+        },
+      }),
+      TaskList,
+      TaskItem.configure({
+        nested: true,
+      }),
+      Placeholder.configure({
+        placeholder,
+      }),
+      CodeBlock.configure({
+        HTMLAttributes: {
+          class: "editor-code-block",
+        },
+      }),
+      Highlight,
+      Typography,
+      Image.configure({
+        inline: true,
+        allowBase64: true,
+        HTMLAttributes: {
+          class: "editor-image",
+        },
+      }),
+    ];
+
+    // Only enable Collaboration after provider has reported initial sync.
+    // Until then, show the local markdown `content` in a regular editor.
+    if (ydoc && provider && collabReady) {
+      extensions.push(
+        Collaboration.configure({
+          document: ydoc,
+        }),
+      );
+
+      extensions.push(
+        CollaborationCursor.configure({
+          provider,
+          user: {
+            name: userName,
+            color: userColor,
+          },
+        }),
+      );
+    }
+
+    editor = new Editor({
+      element,
+      extensions,
+      // Always start by showing local content; once collabReady flips,
+      // the editor will be rebuilt with Collaboration enabled.
+      content: content,
+      contentType: "markdown",
+      editable: !readonly,
+      onUpdate: ({ editor }) => {
+        if (onchange && !isUpdatingContent) {
+          const markdown = editor.getMarkdown();
+          onchange(markdown);
+        }
+      },
+      editorProps: {
+        attributes: {
+          class: "editor-content",
+        },
+      },
+    });
+  }
+
   export function getMarkdown(): string | undefined {
     return editor?.getMarkdown();
   }
+
   /**
    * Set content from markdown
    */
@@ -80,84 +250,71 @@
    */
   export function insertImage(src: string, alt?: string): void {
     if (!editor) return;
-    editor.chain().focus().setImage({ src, alt: alt || '' }).run();
+    editor
+      .chain()
+      .focus()
+      .setImage({ src, alt: alt || "" })
+      .run();
   }
 
   onMount(() => {
-    editor = new Editor({
-      element,
-      extensions: [
-        StarterKit.configure({
-          codeBlock: false, // We'll use the separate extension
-        }),
-        Markdown.configure({
-          //transformPastedText: true,
-          //transformCopiedText: true,
-        }),
-        Link.configure({
-          openOnClick: false,
-          HTMLAttributes: {
-            class: "editor-link",
-          },
-        }),
-        TaskList,
-        TaskItem.configure({
-          nested: true,
-        }),
-        Placeholder.configure({
-          placeholder,
-        }),
-        CodeBlock.configure({
-          HTMLAttributes: {
-            class: "editor-code-block",
-          },
-        }),
-        Highlight,
-        Typography,
-        Image.configure({
-          inline: true,
-          allowBase64: true,
-          HTMLAttributes: {
-            class: "editor-image",
-          },
-        }),
-      ],
-      content: content,
-      contentType: "markdown",
-      editable: !readonly,
-      onUpdate: ({ editor }) => {
-        // Skip onchange during programmatic content updates (e.g., switching files)
-        if (onchange && !isUpdatingContent) {
-          const markdown = editor.getMarkdown();
-          onchange(markdown);
-        }
-      },
-      editorProps: {
-        attributes: {
-          class: "editor-content",
-        },
-      },
-    });
+    // Begin in non-collab mode; enable collab after provider syncs.
+    collabReady = false;
+    hookProviderSyncedOnce();
+
+    createEditor();
+    lastCollabKey = ydoc ? "yjs" : "local";
+    lastReadonly = readonly;
+    lastPlaceholder = placeholder;
+    lastCollabReady = collabReady;
   });
 
   onDestroy(() => {
-    editor?.destroy();
+    destroyEditor();
+  });
+
+  // Scope rebuild:
+  // - Rebuild when switching between local <-> Yjs, or when readonly/placeholder changes,
+  //   OR when collabReady flips after initial provider sync.
+  $effect(() => {
+    if (!element) return;
+
+    // Keep the sync hook current when switching providers/docs.
+    hookProviderSyncedOnce();
+
+    const collabKey = ydoc ? "yjs" : "local";
+    const needsRebuild =
+      lastCollabKey === null ||
+      lastReadonly === null ||
+      lastPlaceholder === null ||
+      lastCollabReady === null ||
+      collabKey !== lastCollabKey ||
+      readonly !== lastReadonly ||
+      placeholder !== lastPlaceholder ||
+      collabReady !== lastCollabReady;
+
+    if (!needsRebuild) return;
+
+    lastCollabKey = collabKey;
+    lastReadonly = readonly;
+    lastPlaceholder = placeholder;
+    lastCollabReady = collabReady;
+
+    createEditor();
   });
 
   // Update editor content when the content prop changes (e.g., switching files)
   $effect(() => {
-    if (editor && content !== undefined) {
-      // Only update if the new content is different from what's currently in the editor
-      const currentEditorContent = editor.getMarkdown();
-      if (content !== currentEditorContent) {
-        // Set flag to prevent onchange from firing during programmatic update
-        isUpdatingContent = true;
-        editor.commands.setContent(content, { contentType: "markdown" });
-        // Reset flag after a tick to allow future user edits to trigger onchange
-        setTimeout(() => {
-          isUpdatingContent = false;
-        }, 0);
-      }
+    if (!editor) return;
+    if (content === undefined) return;
+
+    const currentEditorContent = editor.getMarkdown();
+    if (content !== currentEditorContent) {
+      isUpdatingContent = true;
+      editor.commands.setContent(content, { contentType: "markdown" });
+      setTimeout(() => {
+        isUpdatingContent = false;
+      }, 0);
     }
   });
 
@@ -203,9 +360,14 @@
   }
 
   function setLink() {
-    const url = window.prompt("Enter URL:");
+    const url = window.prompt("Enter URL");
     if (url) {
-      editor?.chain().focus().setLink({ href: url }).run();
+      editor
+        ?.chain()
+        .focus()
+        .extendMarkRange("link")
+        .setLink({ href: url })
+        .run();
     }
   }
 
@@ -213,8 +375,7 @@
     editor?.chain().focus().unsetLink().run();
   }
 
-  // Check if format is active
-  function isActive(name: string, attrs?: Record<string, unknown>): boolean {
+  function isActive(name: string, attrs?: Record<string, unknown>) {
     return editor?.isActive(name, attrs) ?? false;
   }
 </script>
@@ -415,21 +576,28 @@
         </button>
       </div>
     </div>
-{/if}
+  {/if}
 
-  <div 
-    class="flex-1 overflow-y-auto p-4" 
+  <div
+    class="flex-1 overflow-y-auto p-4"
     bind:this={element}
     role="application"
-    ondragover={(e) => { e.preventDefault(); e.dataTransfer && (e.dataTransfer.dropEffect = 'copy'); }}
+    ondragover={(e) => {
+      e.preventDefault();
+      e.dataTransfer && (e.dataTransfer.dropEffect = "copy");
+    }}
     ondrop={async (e) => {
       e.preventDefault();
       const file = e.dataTransfer?.files?.[0];
-      if (file && file.type.startsWith('image/') && onFileDrop) {
+      if (file && file.type.startsWith("image/") && onFileDrop) {
         const result = await onFileDrop(file);
         if (result && editor) {
           // Insert image at cursor position
-          editor.chain().focus().setImage({ src: result.blobUrl, alt: file.name }).run();
+          editor
+            .chain()
+            .focus()
+            .setImage({ src: result.blobUrl, alt: file.name })
+            .run();
         }
       }
     }}
@@ -573,5 +741,30 @@
     height: auto;
     border-radius: 6px;
     margin: 0.5em 0;
+  }
+
+  /* Collaborative cursor styles */
+  :global(.collaboration-carets__caret) {
+    border-left: 1px solid;
+    border-right: 1px solid;
+    margin-left: -1px;
+    margin-right: -1px;
+    pointer-events: none;
+    position: relative;
+    word-break: normal;
+  }
+
+  :global(.collaboration-carets__label) {
+    border-radius: 3px 3px 3px 0;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    left: -1px;
+    line-height: normal;
+    padding: 0.1rem 0.3rem;
+    position: absolute;
+    top: -1.4em;
+    user-select: none;
+    white-space: nowrap;
   }
 </style>

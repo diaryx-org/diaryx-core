@@ -284,3 +284,53 @@ export async function removeGoogleDriveCredentials(): Promise<void> {
   await removeCredential(GD_CLIENT_ID);
   await removeCredential(GD_CLIENT_SECRET);
 }
+
+// Live Sync specific helpers
+const SYNC_SERVER_URL = 'sync_server_url';
+const SYNC_WORKSPACE_ID = 'sync_workspace_id';
+const SYNC_ENABLED = 'sync_enabled';
+
+export interface SyncConfig {
+  serverUrl: string;
+  workspaceId: string;
+  enabled: boolean;
+}
+
+/**
+ * Store sync configuration.
+ */
+export async function storeSyncConfig(config: SyncConfig): Promise<void> {
+  await storeCredential(SYNC_SERVER_URL, config.serverUrl);
+  await storeCredential(SYNC_WORKSPACE_ID, config.workspaceId);
+  await storeCredential(SYNC_ENABLED, config.enabled ? 'true' : 'false');
+}
+
+/**
+ * Get sync configuration.
+ */
+export async function getSyncConfig(): Promise<SyncConfig | null> {
+  try {
+    const serverUrl = await getCredential(SYNC_SERVER_URL);
+    const workspaceId = await getCredential(SYNC_WORKSPACE_ID);
+    const enabled = await getCredential(SYNC_ENABLED);
+    
+    if (!serverUrl && !workspaceId) return null;
+    
+    return {
+      serverUrl: serverUrl || '',
+      workspaceId: workspaceId || '',
+      enabled: enabled === 'true',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove sync configuration.
+ */
+export async function removeSyncConfig(): Promise<void> {
+  await removeCredential(SYNC_SERVER_URL);
+  await removeCredential(SYNC_WORKSPACE_ID);
+  await removeCredential(SYNC_ENABLED);
+}

@@ -123,6 +123,13 @@ export interface TemplateInfo {
   source: "workspace" | "user" | "builtin";
 }
 
+// Import types
+export interface ImportResult {
+  success: boolean;
+  files_imported: number;
+  error?: string;
+}
+
 // ============================================================================
 // Backend Interface
 // ============================================================================
@@ -470,6 +477,24 @@ export interface Backend {
    * For Tauri: no-op (changes are written directly to disk).
    */
   persist(): Promise<void>;
+
+  // --------------------------------------------------------------------------
+  // Import
+  // --------------------------------------------------------------------------
+
+  /**
+   * Import workspace from a zip file.
+   * Handles large files by streaming in chunks.
+   * @param file The File object from a file input.
+   * @param workspacePath Optional workspace path to import into.
+   * @param onProgress Optional callback for progress updates.
+   * @returns Import result with success status and file count.
+   */
+  importFromZip(
+    file: File,
+    workspacePath?: string,
+    onProgress?: (bytesUploaded: number, totalBytes: number) => void,
+  ): Promise<ImportResult>;
 }
 
 // ============================================================================

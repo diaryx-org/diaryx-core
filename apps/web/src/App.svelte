@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     getBackend,
     startAutoPersist,
@@ -10,6 +10,12 @@
     type EntryData,
     type ValidationResult,
   } from "./lib/backend";
+  import {
+    getCollaborativeDocument,
+    disconnectDocument,
+  } from "./lib/collaborationUtils";
+  import type { Doc as YDoc } from "yjs";
+  import type { HocuspocusProvider } from "@hocuspocus/provider";
   import LeftSidebar from "./lib/LeftSidebar.svelte";
   import RightSidebar from "./lib/RightSidebar.svelte";
   import NewEntryModal from "./lib/NewEntryModal.svelte";
@@ -42,30 +48,36 @@
   // Sidebar states - collapsed by default on mobile
   let leftSidebarCollapsed = $state(true);
   let rightSidebarCollapsed = $state(true);
-  
+
   // Modal states
   let showCommandPalette = $state(false);
   let showSettingsDialog = $state(false);
   let showExportDialog = $state(false);
   let exportPath = $state("");
-  
+
+  // Y.js collaboration state
+  let currentYDoc: YDoc | null = $state(null);
+  let currentProvider: HocuspocusProvider | null = $state(null);
+  let currentCollaborationPath: string | null = $state(null); // Track absolute path for cleanup
+  let collaborationEnabled = $state(true); // Toggle for enabling/disabling collaboration
+
   // Display settings - initialized from localStorage if available
   let showUnlinkedFiles = $state(
-    typeof window !== 'undefined' 
-      ? localStorage.getItem('diaryx-show-unlinked-files') !== 'false'
-      : true
+    typeof window !== "undefined"
+      ? localStorage.getItem("diaryx-show-unlinked-files") !== "false"
+      : true,
   );
   let showHiddenFiles = $state(
-    typeof window !== 'undefined'
-      ? localStorage.getItem('diaryx-show-hidden-files') === 'true'
-      : false
+    typeof window !== "undefined"
+      ? localStorage.getItem("diaryx-show-hidden-files") === "true"
+      : false,
   );
-  
+
   // Attachment state
   let pendingAttachmentPath = $state("");
   let attachmentError: string | null = $state(null);
   let attachmentFileInput: HTMLInputElement | null = $state(null);
-  
+
   // Blob URL tracking for attachments
   let blobUrlMap = $state(new Map<string, string>()); // originalPath -> blobUrl
   let displayContent = $state(""); // Content with blob URLs for editor
@@ -79,53 +91,56 @@
   }
 
   // Transform attachment paths in content to blob URLs
-  async function transformAttachmentPaths(content: string, entryPath: string): Promise<string> {
+  async function transformAttachmentPaths(
+    content: string,
+    entryPath: string,
+  ): Promise<string> {
     if (!backend) return content;
-    
+
     // Find all image references: ![alt](...) or ![alt](<...>) for paths with spaces
     const imageRegex = /!\[([^\]]*)\]\((?:<([^>]+)>|([^)]+))\)/g;
     let match;
     const replacements: { original: string; replacement: string }[] = [];
-    
+
     while ((match = imageRegex.exec(content)) !== null) {
       const [fullMatch, alt] = match;
       // Angle bracket path is in group 2, regular path is in group 3
       const imagePath = match[2] || match[3];
-      
+
       // Skip external URLs
-      if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+      if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
         continue;
       }
-      
+
       // Skip already-transformed blob URLs
-      if (imagePath.startsWith('blob:')) {
+      if (imagePath.startsWith("blob:")) {
         continue;
       }
-      
+
       try {
         // Try to read the attachment data
         const data = await backend.getAttachmentData(entryPath, imagePath);
-        
+
         // Determine MIME type from extension
-        const ext = imagePath.split('.').pop()?.toLowerCase() || '';
+        const ext = imagePath.split(".").pop()?.toLowerCase() || "";
         const mimeTypes: Record<string, string> = {
-          'png': 'image/png',
-          'jpg': 'image/jpeg',
-          'jpeg': 'image/jpeg',
-          'gif': 'image/gif',
-          'webp': 'image/webp',
-          'svg': 'image/svg+xml',
-          'pdf': 'application/pdf',
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+          pdf: "application/pdf",
         };
-        const mimeType = mimeTypes[ext] || 'application/octet-stream';
-        
+        const mimeType = mimeTypes[ext] || "application/octet-stream";
+
         // Create blob and URL
         const blob = new Blob([new Uint8Array(data)], { type: mimeType });
         const blobUrl = URL.createObjectURL(blob);
-        
+
         // Track for cleanup
         blobUrlMap.set(imagePath, blobUrl);
-        
+
         // Queue replacement
         replacements.push({
           original: fullMatch,
@@ -136,13 +151,13 @@
         console.warn(`[App] Could not load attachment: ${imagePath}`, e);
       }
     }
-    
+
     // Apply replacements
     let result = content;
     for (const { original, replacement } of replacements) {
       result = result.replace(original, replacement);
     }
-    
+
     return result;
   }
 
@@ -150,23 +165,28 @@
   // Wraps paths with spaces in angle brackets for CommonMark compatibility
   function reverseBlobUrlsToAttachmentPaths(content: string): string {
     let result = content;
-    
+
     // Iterate through blobUrlMap (originalPath -> blobUrl) and replace blob URLs with original paths
     for (const [originalPath, blobUrl] of blobUrlMap.entries()) {
       // Wrap path in angle brackets if it contains spaces (CommonMark spec)
-      const pathToUse = originalPath.includes(' ') ? `<${originalPath}>` : originalPath;
+      const pathToUse = originalPath.includes(" ")
+        ? `<${originalPath}>`
+        : originalPath;
       // Replace all occurrences of the blob URL with the original path
       result = result.replaceAll(blobUrl, pathToUse);
     }
-    
+
     return result;
   }
-  
+
   // Persist display setting to localStorage when changed
   $effect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('diaryx-show-unlinked-files', String(showUnlinkedFiles));
-      localStorage.setItem('diaryx-show-hidden-files', String(showHiddenFiles));
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        "diaryx-show-unlinked-files",
+        String(showUnlinkedFiles),
+      );
+      localStorage.setItem("diaryx-show-hidden-files", String(showHiddenFiles));
     }
   });
 
@@ -198,7 +218,7 @@
 
       // Run initial validation
       await runValidation();
-      
+
       // Add swipe-down gesture for command palette on mobile
       let touchStartY = 0;
       let touchStartX = 0;
@@ -216,8 +236,8 @@
           showCommandPalette = true;
         }
       };
-      document.addEventListener('touchstart', handleTouchStart);
-      document.addEventListener('touchend', handleTouchEnd);
+      document.addEventListener("touchstart", handleTouchStart);
+      document.addEventListener("touchend", handleTouchEnd);
     } catch (e) {
       console.error("[App] Initialization error:", e);
       error = e instanceof Error ? e.message : String(e);
@@ -247,10 +267,10 @@
 
     try {
       isLoading = true;
-      
+
       // Cleanup previous blob URLs
       revokeBlobUrls();
-      
+
       currentEntry = await backend.getEntry(path);
       titleError = null; // Clear any title error when switching files
       console.log("[App] Loaded entry:", currentEntry);
@@ -259,14 +279,86 @@
         "[App] Frontmatter keys:",
         Object.keys(currentEntry?.frontmatter ?? {}),
       );
-      
+
       // Transform attachment paths to blob URLs for display
       if (currentEntry) {
-        displayContent = await transformAttachmentPaths(currentEntry.content, currentEntry.path);
+        displayContent = await transformAttachmentPaths(
+          currentEntry.content,
+          currentEntry.path,
+        );
+
+        // Setup Y.js collaboration for this document
+        // Always disconnect previous collaboration session (if any). We keep the session cached
+        // to avoid `ystate.doc` errors from destroying Y.Doc while TipTap plugins are still tearing down.
+        if (currentCollaborationPath) {
+          currentYDoc = null;
+          currentProvider = null;
+          await tick();
+          try {
+            disconnectDocument(currentCollaborationPath);
+          } catch (e) {
+            console.warn(
+              "[App] Failed to disconnect collaboration session:",
+              e,
+            );
+          }
+          currentCollaborationPath = null;
+        }
+
+        // Connect to collaboration for this entry only if enabled.
+        // If not enabled, Editor will render the plain markdown `content` immediately.
+        if (collaborationEnabled) {
+          // Use RELATIVE path within workspace so desktop and iOS match
+          try {
+            // Get workspace directory from tree path
+            // We want the root folder so we can create relative paths like "Utility/doc.md"
+            let workspaceDir = tree?.path || "";
+            // Handle case where tree.path might be the index file or have trailing slash
+            if (workspaceDir.endsWith("/"))
+              workspaceDir = workspaceDir.slice(0, -1);
+            if (
+              workspaceDir.endsWith("README.md") ||
+              workspaceDir.endsWith("index.md")
+            ) {
+              workspaceDir = workspaceDir.substring(
+                0,
+                workspaceDir.lastIndexOf("/"),
+              );
+            }
+
+            // Calculate relative path within workspace
+            let relativePath = currentEntry.path;
+            if (workspaceDir && currentEntry.path.startsWith(workspaceDir)) {
+              relativePath = currentEntry.path.substring(
+                workspaceDir.length + 1,
+              ); // +1 for the /
+            }
+
+            console.log(
+              "[App] Collaboration room:",
+              relativePath,
+              "(from",
+              currentEntry.path,
+              ")",
+            );
+
+            const { ydoc, provider } = getCollaborativeDocument(relativePath);
+            currentYDoc = ydoc;
+            currentProvider = provider;
+            currentCollaborationPath = relativePath;
+          } catch (e) {
+            console.warn("[App] Failed to setup collaboration:", e);
+            currentYDoc = null;
+            currentProvider = null;
+            currentCollaborationPath = null;
+          }
+        }
       } else {
         displayContent = "";
+        currentYDoc = null;
+        currentProvider = null;
       }
-      
+
       isDirty = false;
       error = null;
     } catch (e) {
@@ -283,7 +375,9 @@
     try {
       const markdownWithBlobUrls = editorRef.getMarkdown();
       // Reverse-transform blob URLs back to attachment paths
-      const markdown = reverseBlobUrlsToAttachmentPaths(markdownWithBlobUrls || '');
+      const markdown = reverseBlobUrlsToAttachmentPaths(
+        markdownWithBlobUrls || "",
+      );
       await backend.saveEntry(currentEntry.path, markdown);
       isDirty = false;
       // Trigger persist for WASM backend
@@ -385,20 +479,20 @@
   async function handleDeleteEntry(path: string) {
     if (!backend) return;
     const confirm = window.confirm(
-      `Are you sure you want to delete "${path.split('/').pop()?.replace('.md', '')}"?`
+      `Are you sure you want to delete "${path.split("/").pop()?.replace(".md", "")}"?`,
     );
     if (!confirm) return;
 
     try {
       await backend.deleteEntry(path);
       await persistNow();
-      
+
       // If we deleted the currently open entry, clear it
       if (currentEntry?.path === path) {
         currentEntry = null;
         isDirty = false;
       }
-      
+
       // Try to refresh the tree - this might fail if workspace state is temporarily inconsistent
       try {
         await refreshTree();
@@ -474,35 +568,42 @@
     try {
       // Convert file to base64
       const dataBase64 = await fileToBase64(file);
-      
+
       // Upload attachment
-      const attachmentPath = await backend.uploadAttachment(pendingAttachmentPath, file.name, dataBase64);
+      const attachmentPath = await backend.uploadAttachment(
+        pendingAttachmentPath,
+        file.name,
+        dataBase64,
+      );
       await persistNow();
-      
+
       // Refresh the entry if it's currently open
       if (currentEntry?.path === pendingAttachmentPath) {
         currentEntry = await backend.getEntry(pendingAttachmentPath);
-        
+
         // If it's an image, also insert it into the editor at cursor
-        if (file.type.startsWith('image/') && editorRef) {
+        if (file.type.startsWith("image/") && editorRef) {
           // Get the binary data and create blob URL
-          const data = await backend.getAttachmentData(currentEntry.path, attachmentPath);
+          const data = await backend.getAttachmentData(
+            currentEntry.path,
+            attachmentPath,
+          );
           const blob = new Blob([new Uint8Array(data)], { type: file.type });
           const blobUrl = URL.createObjectURL(blob);
-          
+
           // Track for cleanup
           blobUrlMap.set(attachmentPath, blobUrl);
-          
+
           // Insert image at cursor using Editor's insertImage method
           editorRef.insertImage(blobUrl, file.name);
         }
       }
-      
+
       attachmentError = null;
     } catch (e) {
       attachmentError = e instanceof Error ? e.message : String(e);
     }
-    
+
     input.value = "";
     pendingAttachmentPath = "";
   }
@@ -530,7 +631,9 @@
   }
 
   // Handle file drop in Editor - upload and return blob URL
-  async function handleEditorFileDrop(file: File): Promise<{ blobUrl: string; attachmentPath: string } | null> {
+  async function handleEditorFileDrop(
+    file: File,
+  ): Promise<{ blobUrl: string; attachmentPath: string } | null> {
     if (!backend || !currentEntry) return null;
 
     // Check size limit (5MB)
@@ -543,32 +646,39 @@
     try {
       // Convert file to base64
       const dataBase64 = await fileToBase64(file);
-      
+
       // Upload attachment
-      const attachmentPath = await backend.uploadAttachment(currentEntry.path, file.name, dataBase64);
+      const attachmentPath = await backend.uploadAttachment(
+        currentEntry.path,
+        file.name,
+        dataBase64,
+      );
       await persistNow();
-      
+
       // Refresh the entry to update attachments list
       currentEntry = await backend.getEntry(currentEntry.path);
-      
+
       // Get the binary data back and create blob URL
-      const data = await backend.getAttachmentData(currentEntry.path, attachmentPath);
-      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const data = await backend.getAttachmentData(
+        currentEntry.path,
+        attachmentPath,
+      );
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
       const mimeTypes: Record<string, string> = {
-        'png': 'image/png',
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'gif': 'image/gif',
-        'webp': 'image/webp',
-        'svg': 'image/svg+xml',
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
       };
-      const mimeType = mimeTypes[ext] || 'image/png';
+      const mimeType = mimeTypes[ext] || "image/png";
       const blob = new Blob([new Uint8Array(data)], { type: mimeType });
       const blobUrl = URL.createObjectURL(blob);
-      
+
       // Track for cleanup
       blobUrlMap.set(attachmentPath, blobUrl);
-      
+
       return { blobUrl, attachmentPath };
     } catch (e) {
       attachmentError = e instanceof Error ? e.message : String(e);
@@ -579,7 +689,7 @@
   // Handle delete attachment from RightSidebar
   async function handleDeleteAttachment(attachmentPath: string) {
     if (!backend || !currentEntry) return;
-    
+
     try {
       await backend.deleteAttachment(currentEntry.path, attachmentPath);
       await persistNow();
@@ -595,9 +705,11 @@
   async function handleMoveEntry(entryPath: string, newParentPath: string) {
     if (!backend) return;
     if (entryPath === newParentPath) return; // Can't attach to self
-    
-    console.log(`[Drag-Drop] entryPath="${entryPath}" -> newParentPath="${newParentPath}"`);
-    
+
+    console.log(
+      `[Drag-Drop] entryPath="${entryPath}" -> newParentPath="${newParentPath}"`,
+    );
+
     try {
       // Attach the entry to the new parent
       // This will:
@@ -620,16 +732,16 @@
       if (key === "title" && typeof value === "string" && value.trim()) {
         const newFilename = backend.slugifyTitle(value);
         const currentFilename = currentEntry.path.split("/").pop() || "";
-        
+
         // Only rename if the filename would actually change
         // For index files (have contents property), compare the directory name
         const isIndex = Array.isArray(currentEntry.frontmatter?.contents);
         const pathParts = currentEntry.path.split("/");
-        const currentDir = isIndex 
+        const currentDir = isIndex
           ? pathParts.slice(-2, -1)[0] || ""
           : currentFilename.replace(/\.md$/, "");
         const newDir = newFilename.replace(/\.md$/, "");
-        
+
         if (currentDir !== newDir) {
           // Try rename FIRST, before updating frontmatter
           try {
@@ -638,24 +750,34 @@
             // Rename succeeded, now update title in frontmatter (at new path)
             await backend.setFrontmatterProperty(newPath, key, value);
             await persistNow();
-            
+
             // Transfer expanded state from old path to new path
             if (expandedNodes.has(oldPath)) {
               expandedNodes.delete(oldPath);
               expandedNodes.add(newPath);
               expandedNodes = expandedNodes; // trigger reactivity
             }
-            
+
             // Update current entry path and refresh tree
-            currentEntry = { ...currentEntry, path: newPath, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+            currentEntry = {
+              ...currentEntry,
+              path: newPath,
+              frontmatter: { ...currentEntry.frontmatter, [key]: value },
+            };
             await refreshTree();
             titleError = null; // Clear any previous error
           } catch (renameError) {
             // Rename failed (e.g., target exists), show user-friendly error near title input
             // DON'T update the title - leave frontmatter unchanged
-            const errorMsg = renameError instanceof Error ? renameError.message : String(renameError);
-            if (errorMsg.includes("already exists") || errorMsg.includes("Destination")) {
-              titleError = `A file named "${newFilename.replace('.md', '')}" already exists. Choose a different title.`;
+            const errorMsg =
+              renameError instanceof Error
+                ? renameError.message
+                : String(renameError);
+            if (
+              errorMsg.includes("already exists") ||
+              errorMsg.includes("Destination")
+            ) {
+              titleError = `A file named "${newFilename.replace(".md", "")}" already exists. Choose a different title.`;
             } else {
               titleError = `Could not rename: ${errorMsg}`;
             }
@@ -665,14 +787,20 @@
           // No rename needed, just update title
           await backend.setFrontmatterProperty(currentEntry.path, key, value);
           await persistNow();
-          currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+          currentEntry = {
+            ...currentEntry,
+            frontmatter: { ...currentEntry.frontmatter, [key]: value },
+          };
           titleError = null;
         }
       } else {
         // Non-title properties: update normally
         await backend.setFrontmatterProperty(currentEntry.path, key, value);
         await persistNow();
-        currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+        currentEntry = {
+          ...currentEntry,
+          frontmatter: { ...currentEntry.frontmatter, [key]: value },
+        };
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -699,7 +827,10 @@
       await backend.setFrontmatterProperty(currentEntry.path, key, value);
       await persistNow();
       // Update local state
-      currentEntry = { ...currentEntry, frontmatter: { ...currentEntry.frontmatter, [key]: value } };
+      currentEntry = {
+        ...currentEntry,
+        frontmatter: { ...currentEntry.frontmatter, [key]: value },
+      };
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -781,9 +912,9 @@
   {tree}
   {backend}
   onOpenEntry={openEntry}
-  onNewEntry={() => showNewEntryModal = true}
+  onNewEntry={() => (showNewEntryModal = true)}
   onDailyEntry={handleDailyEntry}
-  onSettings={() => showSettingsDialog = true}
+  onSettings={() => (showSettingsDialog = true)}
   onExport={() => {
     exportPath = currentEntry?.path ?? tree?.path ?? "";
     if (exportPath) showExportDialog = true;
@@ -792,14 +923,19 @@
 />
 
 <!-- Settings Dialog -->
-<SettingsDialog bind:open={showSettingsDialog} bind:showUnlinkedFiles bind:showHiddenFiles workspacePath={tree?.path} />
+<SettingsDialog
+  bind:open={showSettingsDialog}
+  bind:showUnlinkedFiles
+  bind:showHiddenFiles
+  workspacePath={tree?.path}
+/>
 
 <!-- Export Dialog -->
 <ExportDialog
   bind:open={showExportDialog}
   rootPath={exportPath}
   {backend}
-  onOpenChange={(open) => showExportDialog = open}
+  onOpenChange={(open) => (showExportDialog = open)}
 />
 
 <!-- Toast Notifications -->
@@ -925,14 +1061,22 @@
 
       <div class="flex-1 overflow-y-auto p-4 md:p-6">
         {#if Editor}
-          <Editor
-            bind:this={editorRef}
-            content={displayContent}
-            onchange={handleContentChange}
-            placeholder="Start writing..."
-            onInsertImage={handleEditorImageInsert}
-            onFileDrop={handleEditorFileDrop}
-          />
+          {#key `${currentCollaborationPath ?? currentEntry.path}:${collaborationEnabled ? "collab" : "local"}`}
+            <Editor
+              bind:this={editorRef}
+              content={displayContent}
+              onchange={handleContentChange}
+              placeholder="Start writing..."
+              onInsertImage={handleEditorImageInsert}
+              onFileDrop={handleEditorFileDrop}
+              ydoc={collaborationEnabled
+                ? (currentYDoc ?? undefined)
+                : undefined}
+              provider={collaborationEnabled
+                ? (currentProvider ?? undefined)
+                : undefined}
+            />
+          {/key}
         {:else}
           <div class="flex items-center justify-center h-full">
             <div
@@ -996,10 +1140,11 @@
     onPropertyRemove={handlePropertyRemove}
     onPropertyAdd={handlePropertyAdd}
     {titleError}
-    onTitleErrorClear={() => titleError = null}
-    onAddAttachment={() => currentEntry && handleAddAttachment(currentEntry.path)}
+    onTitleErrorClear={() => (titleError = null)}
+    onAddAttachment={() =>
+      currentEntry && handleAddAttachment(currentEntry.path)}
     onDeleteAttachment={handleDeleteAttachment}
     {attachmentError}
-    onAttachmentErrorClear={() => attachmentError = null}
+    onAttachmentErrorClear={() => (attachmentError = null)}
   />
 </div>

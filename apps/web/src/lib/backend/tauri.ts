@@ -383,11 +383,11 @@ export class TauriBackend implements Backend {
       );
 
       // Use snake_case keys to match Rust struct field names
-      return await this.getInvoke()<string>("attach_entry_to_parent", { 
+      return await this.getInvoke()<string>("attach_entry_to_parent", {
         request: {
           entry_path: normalizedEntryPath,
           parent_index_path: normalizedParentIndexPath,
-        }
+        },
       });
     } catch (e) {
       handleError(e);
@@ -456,7 +456,10 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async planExport(rootPath: string, audience: string): Promise<import("./interface").ExportPlan> {
+  async planExport(
+    rootPath: string,
+    audience: string,
+  ): Promise<import("./interface").ExportPlan> {
     try {
       return await this.getInvoke()("plan_export", { rootPath, audience });
     } catch (e) {
@@ -464,7 +467,10 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async exportToMemory(rootPath: string, audience: string): Promise<import("./interface").ExportedFile[]> {
+  async exportToMemory(
+    rootPath: string,
+    audience: string,
+  ): Promise<import("./interface").ExportedFile[]> {
     try {
       return await this.getInvoke()("export_to_memory", { rootPath, audience });
     } catch (e) {
@@ -472,7 +478,10 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async exportToHtml(rootPath: string, audience: string): Promise<import("./interface").ExportedFile[]> {
+  async exportToHtml(
+    rootPath: string,
+    audience: string,
+  ): Promise<import("./interface").ExportedFile[]> {
     try {
       return await this.getInvoke()("export_to_html", { rootPath, audience });
     } catch (e) {
@@ -480,9 +489,15 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async exportBinaryAttachments(rootPath: string, audience: string): Promise<import("./interface").BinaryExportFile[]> {
+  async exportBinaryAttachments(
+    rootPath: string,
+    audience: string,
+  ): Promise<import("./interface").BinaryExportFile[]> {
     try {
-      return await this.getInvoke()("export_binary_attachments", { rootPath, audience });
+      return await this.getInvoke()("export_binary_attachments", {
+        rootPath,
+        audience,
+      });
     } catch (e) {
       handleError(e);
     }
@@ -500,17 +515,31 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async uploadAttachment(entryPath: string, filename: string, dataBase64: string): Promise<string> {
+  async uploadAttachment(
+    entryPath: string,
+    filename: string,
+    dataBase64: string,
+  ): Promise<string> {
     try {
-      return await this.getInvoke()("upload_attachment", { entryPath, filename, dataBase64 });
+      return await this.getInvoke()("upload_attachment", {
+        entryPath,
+        filename,
+        dataBase64,
+      });
     } catch (e) {
       handleError(e);
     }
   }
 
-  async deleteAttachment(entryPath: string, attachmentPath: string): Promise<void> {
+  async deleteAttachment(
+    entryPath: string,
+    attachmentPath: string,
+  ): Promise<void> {
     try {
-      await this.getInvoke()("delete_attachment", { entryPath, attachmentPath });
+      await this.getInvoke()("delete_attachment", {
+        entryPath,
+        attachmentPath,
+      });
     } catch (e) {
       handleError(e);
     }
@@ -524,15 +553,20 @@ export class TauriBackend implements Backend {
     }
   }
 
-  async getAttachmentData(entryPath: string, attachmentPath: string): Promise<Uint8Array> {
+  async getAttachmentData(
+    entryPath: string,
+    attachmentPath: string,
+  ): Promise<Uint8Array> {
     try {
-      const data: number[] = await this.getInvoke()("get_attachment_data", { entryPath, attachmentPath });
+      const data: number[] = await this.getInvoke()("get_attachment_data", {
+        entryPath,
+        attachmentPath,
+      });
       return new Uint8Array(data);
     } catch (e) {
       handleError(e);
     }
   }
-
 
   // --------------------------------------------------------------------------
   // Frontmatter
@@ -646,5 +680,86 @@ export class TauriBackend implements Backend {
 
   async persist(): Promise<void> {
     // No-op for Tauri - changes are written directly to disk
+  }
+
+  // --------------------------------------------------------------------------
+  // Import
+  // --------------------------------------------------------------------------
+
+  async importFromZip(
+    file: File,
+    workspacePath?: string,
+    onProgress?: (bytesUploaded: number, totalBytes: number) => void,
+  ): Promise<import("./interface").ImportResult> {
+    const invoke = this.getInvoke();
+    const totalBytes = file.size;
+
+    console.log(
+      `[TauriBackend] Starting import of ${(totalBytes / 1024 / 1024).toFixed(2)} MB`,
+    );
+
+    // Start upload session on Rust side
+    const sessionId = await invoke<string>("start_import_upload");
+
+    // Read and send file in chunks (1MB each)
+    const CHUNK_SIZE = 1024 * 1024; // 1MB
+    const reader = file.stream().getReader();
+    let bytesUploaded = 0;
+
+    try {
+      // Read chunks and send to Rust
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Process in 1MB sub-chunks if needed
+        for (let offset = 0; offset < value.length; offset += CHUNK_SIZE) {
+          const subChunk = value.slice(offset, offset + CHUNK_SIZE);
+          const base64 = btoa(
+            Array.from(subChunk)
+              .map((b) => String.fromCharCode(b))
+              .join(""),
+          );
+
+          await invoke<number>("append_import_chunk", {
+            sessionId,
+            chunk: base64,
+          });
+
+          bytesUploaded += subChunk.length;
+
+          if (onProgress) {
+            onProgress(bytesUploaded, totalBytes);
+          }
+        }
+      }
+
+      console.log(`[TauriBackend] Upload complete, extracting zip...`);
+
+      // Finish upload and import
+      const result = await invoke<{
+        success: boolean;
+        files_imported: number;
+        error?: string;
+      }>("finish_import_upload", {
+        sessionId,
+        workspacePath,
+      });
+
+      return {
+        success: result.success,
+        files_imported: result.files_imported,
+        error: result.error,
+      };
+    } catch (e) {
+      // Format error properly
+      const errorMessage = this.formatError(e);
+      console.error("[TauriBackend] Import failed:", errorMessage);
+      return {
+        success: false,
+        files_imported: 0,
+        error: errorMessage,
+      };
+    }
   }
 }

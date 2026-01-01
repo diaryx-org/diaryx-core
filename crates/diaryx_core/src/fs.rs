@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 /// Abstraction over filesystem operations
 /// Allows for different implementations: real filesystem, in-memory (for WASM), etc.
-pub trait FileSystem {
+/// Send + Sync required for multi-threaded environments (e.g., Tauri)
+pub trait FileSystem: Send + Sync {
     /// Reads the file content (for parsing frontmatter)
     fn read_to_string(&self, path: &Path) -> Result<String>;
 
