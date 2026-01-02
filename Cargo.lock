@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "automerge",
  "chrono",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_tauri"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_wasm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "comrak",

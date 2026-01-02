@@ -13,14 +13,7 @@ part_of: ../../README.md
 
 This is the `diaryx_core` library! It contains shared code for the Diaryx clients.
 
-There are three Diaryx clients right now:
-
-1. Command-line (`diaryx`)
-2. Web (via `diaryx_wasm`)
-3. Tauri (via Tauri backend)
-
-Diaryx is an opinionated journaling method that makes careful use of frontmatter
-so that journal entries are queryable and useable well into the future.
+NOTE: this README is not finished yet!
 
 ## Provided functionality
 
