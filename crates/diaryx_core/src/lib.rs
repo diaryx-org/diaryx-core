@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+/// Unified Diaryx API - the main entry point
+pub mod diaryx;
+
 /// Configuration options
 pub mod config;
 
@@ -28,7 +31,12 @@ pub mod publish;
 /// Search (query frontmatter or search content)
 pub mod search;
 
+/// Frontmatter parsing and manipulation utilities
+pub mod frontmatter;
+
+/// Templates for creating new entries
 pub mod template;
+
 /// Validate (check workspace link integrity)
 pub mod validate;
 
