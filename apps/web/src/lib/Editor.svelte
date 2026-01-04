@@ -13,6 +13,8 @@
   import Image from "@tiptap/extension-image";
   // FloatingMenu extension for block formatting
   import FloatingMenu from "@tiptap/extension-floating-menu";
+  // ProseMirror Plugin for link click handling
+  import { Plugin as ProseMirrorPlugin } from "@tiptap/pm/state";
   // Y.js collaboration
   import Collaboration from "@tiptap/extension-collaboration";
   import CollaborationCursor from "@tiptap/extension-collaboration-caret";
@@ -44,6 +46,8 @@
     userColor?: string;
     // Debug mode for menus (logs shouldShow decisions to console)
     debugMenus?: boolean;
+    // Callback when a link is clicked (for handling relative links to other notes)
+    onLinkClick?: (href: string) => void;
   }
 
   let {
@@ -58,6 +62,7 @@
     userName = "Anonymous",
     userColor = "#958DF1",
     debugMenus = false,
+    onLinkClick,
   }: Props = $props();
 
   let element: HTMLDivElement;
@@ -166,6 +171,37 @@
         openOnClick: false,
         HTMLAttributes: {
           class: "editor-link",
+        },
+      }).extend({
+        // Add click handler for links
+        addProseMirrorPlugins() {
+          const plugins = this.parent?.() ?? [];
+          return [
+            ...plugins,
+            new ProseMirrorPlugin({
+              props: {
+                handleClick: (_view, _pos, event) => {
+                  const target = event.target as HTMLElement;
+                  const link = target.closest("a");
+                  if (link && link.href) {
+                    event.preventDefault();
+                    const href = link.getAttribute("href") || "";
+                    if (onLinkClick) {
+                      onLinkClick(href);
+                    } else if (
+                      href.startsWith("http://") ||
+                      href.startsWith("https://")
+                    ) {
+                      // External link - open in new tab
+                      window.open(href, "_blank", "noopener,noreferrer");
+                    }
+                    return true;
+                  }
+                  return false;
+                },
+              },
+            }),
+          ];
         },
       }),
       TaskList,

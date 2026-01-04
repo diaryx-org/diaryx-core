@@ -1398,6 +1398,87 @@
       "Untitled"
     );
   }
+
+  /**
+   * Handle link clicks in the editor.
+   * - Relative links (./file.md, ../folder/file.md) navigate to other notes
+   * - External links (http://, https://) open in a new tab
+   * - Broken relative links offer to create the file
+   */
+  async function handleLinkClick(href: string) {
+    if (!href) return;
+
+    // External links - open in new tab
+    if (href.startsWith("http://") || href.startsWith("https://")) {
+      window.open(href, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    // Relative link - resolve against current file's directory
+    if (!currentEntry) return;
+
+    // Get the directory of the current file
+    const currentDir = currentEntry.path.substring(
+      0,
+      currentEntry.path.lastIndexOf("/"),
+    );
+
+    // Resolve the relative path
+    let targetPath: string;
+    if (href.startsWith("/")) {
+      // Absolute path from workspace root
+      const workspaceRoot =
+        tree?.path?.substring(0, tree.path.lastIndexOf("/")) || "";
+      targetPath = workspaceRoot + href;
+    } else {
+      // Relative path - resolve against current directory
+      const parts = [...currentDir.split("/"), ...href.split("/")];
+      const resolved: string[] = [];
+      for (const part of parts) {
+        if (part === "..") {
+          resolved.pop();
+        } else if (part !== "." && part !== "") {
+          resolved.push(part);
+        }
+      }
+      targetPath = resolved.join("/");
+    }
+
+    // Ensure .md extension
+    if (!targetPath.endsWith(".md")) {
+      targetPath += ".md";
+    }
+
+    // Try to open the entry
+    try {
+      if (backend) {
+        // Check if file exists by trying to get it
+        const entry = await backend.getEntry(targetPath);
+        if (entry) {
+          await openEntry(targetPath);
+          return;
+        }
+      }
+    } catch {
+      // File doesn't exist - offer to create it
+      const fileName = targetPath.split("/").pop() || "note.md";
+      const create = window.confirm(
+        `"${fileName}" doesn't exist.\n\nWould you like to create it?`,
+      );
+      if (create && backend) {
+        try {
+          // Create the file with basic frontmatter
+          const title = fileName.replace(".md", "").replace(/-/g, " ");
+          await backend.createEntry(targetPath, { title });
+          await refreshTree();
+          await openEntry(targetPath);
+        } catch (e) {
+          console.error("Failed to create entry:", e);
+          error = e instanceof Error ? e.message : String(e);
+        }
+      }
+    }
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -1574,6 +1655,7 @@
               placeholder="Start writing..."
               onInsertImage={handleEditorImageInsert}
               onFileDrop={handleEditorFileDrop}
+              onLinkClick={handleLinkClick}
               ydoc={collaborationEnabled
                 ? (currentYDoc ?? undefined)
                 : undefined}

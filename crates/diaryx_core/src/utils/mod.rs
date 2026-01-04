@@ -2,7 +2,9 @@
 //!
 //! This module consolidates various utility functions used across the crate.
 
+/// Date parsing and path generation utilities.
 pub mod date;
+/// Path calculation utilities for relative paths.
 pub mod path;
 
 // Re-export commonly used items for convenience

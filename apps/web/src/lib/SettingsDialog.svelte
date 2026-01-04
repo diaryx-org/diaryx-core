@@ -13,7 +13,11 @@
     AlertCircle,
     Loader2,
     Upload,
+    Sun,
+    Moon,
+    Monitor,
   } from "@lucide/svelte";
+  import { getThemeStore } from "./stores/theme.svelte";
   import { getBackend } from "./backend";
   import {
     getS3Config,
@@ -46,6 +50,9 @@
   // Config info state
   let config: Record<string, unknown> | null = $state(null);
   let appPaths: Record<string, string> | null = $state(null);
+
+  // Theme state
+  const themeStore = getThemeStore();
 
   // Backup state
   let backupTargets: string[] = $state([]);
@@ -579,6 +586,47 @@
           <Eye class="size-4" />
           Display
         </h3>
+
+        <div class="flex items-center justify-between gap-4 px-1">
+          <Label
+            for="theme-mode"
+            class="text-sm cursor-pointer flex flex-col gap-0.5"
+          >
+            <span>Theme</span>
+            <span class="font-normal text-xs text-muted-foreground">
+              Choose light, dark, or follow system preference.
+            </span>
+          </Label>
+          <div class="flex items-center gap-1">
+            <Button
+              variant={themeStore.mode === "light" ? "default" : "ghost"}
+              size="sm"
+              class="h-8 w-8 p-0"
+              onclick={() => themeStore.setMode("light")}
+              title="Light mode"
+            >
+              <Sun class="size-4" />
+            </Button>
+            <Button
+              variant={themeStore.mode === "dark" ? "default" : "ghost"}
+              size="sm"
+              class="h-8 w-8 p-0"
+              onclick={() => themeStore.setMode("dark")}
+              title="Dark mode"
+            >
+              <Moon class="size-4" />
+            </Button>
+            <Button
+              variant={themeStore.mode === "system" ? "default" : "ghost"}
+              size="sm"
+              class="h-8 w-8 p-0"
+              onclick={() => themeStore.setMode("system")}
+              title="System preference"
+            >
+              <Monitor class="size-4" />
+            </Button>
+          </div>
+        </div>
 
         <div class="flex items-center justify-between gap-4 px-1">
           <Label
