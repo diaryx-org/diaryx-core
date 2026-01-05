@@ -72,6 +72,13 @@
   let floatingMenuElement: HTMLDivElement | undefined = $state();
   let isUpdatingContent = false; // Flag to skip onchange during programmatic updates
 
+  // Track editor focus state for mobile toolbar visibility
+  let editorHasFocus = $state(false);
+
+  // Track the last content prop value we synced FROM, so we only sync when it actually changes
+  // This prevents resetting editor content when the user is typing and the prop hasn't changed
+  let lastSyncedContent: string | undefined = undefined;
+
   // Mobile state for responsive behavior
   const mobileState = getMobileState();
 
@@ -320,11 +327,21 @@
       content: content,
       contentType: "markdown",
       editable: !readonly,
+      onCreate: () => {
+        // Track the initial content so we don't reset it on the first effect run
+        lastSyncedContent = content;
+      },
       onUpdate: ({ editor }) => {
         if (onchange && !isUpdatingContent) {
           const markdown = editor.getMarkdown();
           onchange(markdown);
         }
+      },
+      onFocus: () => {
+        editorHasFocus = true;
+      },
+      onBlur: () => {
+        editorHasFocus = false;
       },
       editorProps: {
         attributes: {
@@ -473,18 +490,24 @@
   });
 
   // Update editor content when the content prop changes (e.g., switching files)
+  // Only sync when the content PROP has actually changed from what we last synced
+  // This prevents resetting user's typing when the prop hasn't changed
   $effect(() => {
     if (!editor) return;
     if (content === undefined) return;
 
-    const currentEditorContent = editor.getMarkdown();
-    if (content !== currentEditorContent) {
-      isUpdatingContent = true;
-      editor.commands.setContent(content, { contentType: "markdown" });
-      setTimeout(() => {
-        isUpdatingContent = false;
-      }, 0);
-    }
+    // Only sync if the content prop has actually changed from what we last synced
+    // This prevents resetting the editor when the user is typing (prop stays the same,
+    // but editor content changes)
+    if (content === lastSyncedContent) return;
+
+    // Content prop changed - sync it to the editor
+    lastSyncedContent = content;
+    isUpdatingContent = true;
+    editor.commands.setContent(content, { contentType: "markdown" });
+    setTimeout(() => {
+      isUpdatingContent = false;
+    }, 0);
   });
 </script>
 
@@ -529,8 +552,8 @@
   ></div>
 </div>
 
-<!-- Mobile inline toolbar: appears above virtual keyboard when keyboard is visible -->
-{#if !readonly && mobileState.isMobile && mobileState.keyboardVisible}
+<!-- Mobile inline toolbar: appears above virtual keyboard when keyboard is visible AND editor is focused -->
+{#if !readonly && mobileState.isMobile && mobileState.keyboardVisible && editorHasFocus}
   <InlineToolbar
     {editor}
     position="bottom"

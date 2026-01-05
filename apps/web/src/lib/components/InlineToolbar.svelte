@@ -51,8 +51,15 @@
     isCodeActive = editor.isActive("code");
     isHighlightActive = editor.isActive("highlight");
     isLinkActive = editor.isActive("link");
-    canUndo = editor.can().undo();
-    canRedo = editor.can().redo();
+    // undo/redo may not be available in collaboration mode (Y.js handles history)
+    try {
+      const can = editor.can();
+      canUndo = typeof can.undo === "function" ? can.undo() : false;
+      canRedo = typeof can.redo === "function" ? can.redo() : false;
+    } catch {
+      canUndo = false;
+      canRedo = false;
+    }
   }
 
   function handleAction(event: Event, action: () => void) {
@@ -99,12 +106,20 @@
   }
 
   function handleUndo() {
-    editor?.chain().focus().undo().run();
+    try {
+      editor?.chain().focus().undo().run();
+    } catch {
+      // undo not available (e.g., in collaboration mode)
+    }
     updateActiveStates();
   }
 
   function handleRedo() {
-    editor?.chain().focus().redo().run();
+    try {
+      editor?.chain().focus().redo().run();
+    } catch {
+      // redo not available (e.g., in collaboration mode)
+    }
     updateActiveStates();
   }
 
@@ -267,7 +282,7 @@
     align-items: center;
     background: var(--card);
     border-color: var(--border);
-    z-index: 100;
+    z-index: 40;
     /* Prevent text selection on toolbar */
     -webkit-user-select: none;
     user-select: none;

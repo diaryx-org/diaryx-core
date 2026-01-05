@@ -16,7 +16,16 @@
     Sun,
     Moon,
     Monitor,
+    Wifi,
+    WifiOff,
+    RefreshCw,
   } from "@lucide/svelte";
+  import { Input } from "$lib/components/ui/input";
+  import {
+    setCollaborationServer,
+    getCollaborationServer,
+  } from "./collaborationUtils";
+  import { setWorkspaceServer } from "./workspaceCrdt";
   import { getThemeStore } from "./stores/theme.svelte";
   import { getBackend } from "./backend";
   import {
@@ -38,6 +47,10 @@
     showUnlinkedFiles?: boolean;
     showHiddenFiles?: boolean;
     workspacePath?: string | null;
+    collaborationEnabled?: boolean;
+    collaborationConnected?: boolean;
+    onCollaborationToggle?: (enabled: boolean) => void;
+    onCollaborationReconnect?: () => void;
   }
 
   let {
@@ -45,6 +58,10 @@
     showUnlinkedFiles = $bindable(),
     showHiddenFiles = $bindable(false),
     workspacePath = null,
+    collaborationEnabled = $bindable(false),
+    collaborationConnected = false,
+    onCollaborationToggle,
+    onCollaborationReconnect,
   }: Props = $props();
 
   // Config info state
@@ -59,6 +76,14 @@
   let backupStatus: BackupStatus[] | null = $state(null);
   let isBackingUp: boolean = $state(false);
   let backupError: string | null = $state(null);
+
+  // Collaboration/Sync state
+  let syncServerUrl = $state(
+    typeof window !== "undefined"
+      ? localStorage.getItem("diaryx-sync-server") || ""
+      : "",
+  );
+  let isApplyingServer = $state(false);
 
   // Import state
   let isImporting: boolean = $state(false);
@@ -75,8 +100,68 @@
       loadBackupTargets();
       loadSavedS3Config();
       loadSavedGoogleDriveConfig();
+      // Load current server URL from the collaboration module
+      const currentServer = getCollaborationServer();
+      if (currentServer && currentServer !== "ws://localhost:1234") {
+        syncServerUrl = currentServer;
+      }
     }
   });
+
+  function applySyncServer() {
+    const url = syncServerUrl.trim();
+
+    if (url) {
+      // Validate URL format
+      try {
+        new URL(url);
+      } catch {
+        // Allow partial URLs like "localhost:1234" by prepending ws://
+        if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
+          syncServerUrl = `ws://${url}`;
+        }
+      }
+    }
+
+    isApplyingServer = true;
+
+    // Save to localStorage
+    if (typeof window !== "undefined") {
+      if (url) {
+        localStorage.setItem("diaryx-sync-server", syncServerUrl);
+      } else {
+        localStorage.removeItem("diaryx-sync-server");
+      }
+    }
+
+    // Apply to both collaboration systems
+    const serverUrl = syncServerUrl || null;
+    setCollaborationServer(serverUrl || "ws://localhost:1234");
+    setWorkspaceServer(serverUrl);
+
+    // Trigger reconnection if collaboration is enabled
+    if (collaborationEnabled && onCollaborationReconnect) {
+      onCollaborationReconnect();
+    }
+
+    setTimeout(() => {
+      isApplyingServer = false;
+    }, 500);
+  }
+
+  function clearSyncServer() {
+    syncServerUrl = "";
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("diaryx-sync-server");
+    }
+    setCollaborationServer("ws://localhost:1234");
+    setWorkspaceServer(null);
+
+    // Disable collaboration when clearing server
+    if (onCollaborationToggle) {
+      onCollaborationToggle(false);
+    }
+  }
 
   async function loadConfig() {
     try {
@@ -625,6 +710,108 @@
             >
               <Monitor class="size-4" />
             </Button>
+          </div>
+
+          <!-- Live Sync / Collaboration -->
+          <div class="space-y-3">
+            <h3 class="font-medium flex items-center gap-2">
+              {#if collaborationConnected}
+                <Wifi class="size-4 text-green-500" />
+              {:else}
+                <WifiOff class="size-4" />
+              {/if}
+              Live Sync
+            </h3>
+
+            <div class="space-y-2 px-1">
+              <p class="text-xs text-muted-foreground">
+                Connect to a Hocuspocus server for real-time collaboration and
+                multi-device sync.
+              </p>
+
+              <div class="space-y-1">
+                <Label for="sync-server" class="text-xs">Server URL</Label>
+                <div class="flex gap-2">
+                  <Input
+                    id="sync-server"
+                    type="text"
+                    bind:value={syncServerUrl}
+                    placeholder="wss://your-server.com or leave empty"
+                    class="h-8 text-sm flex-1"
+                    onkeydown={(e) => {
+                      if (e.key === "Enter") {
+                        applySyncServer();
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    class="h-8 px-3"
+                    onclick={applySyncServer}
+                    disabled={isApplyingServer}
+                  >
+                    {#if isApplyingServer}
+                      <Loader2 class="size-3 animate-spin" />
+                    {:else}
+                      Apply
+                    {/if}
+                  </Button>
+                </div>
+                <p class="text-xs text-muted-foreground">
+                  Use <code class="bg-muted px-1 rounded">ws://</code> for local
+                  or <code class="bg-muted px-1 rounded">wss://</code> for secure
+                  connections.
+                </p>
+              </div>
+
+              <div class="flex items-center justify-between gap-4 pt-2">
+                <div class="flex flex-col gap-0.5">
+                  <Label for="collab-enabled" class="text-sm cursor-pointer">
+                    Enable sync
+                  </Label>
+                  <span class="text-xs text-muted-foreground">
+                    {#if collaborationConnected}
+                      <span class="text-green-600">Connected</span>
+                    {:else if collaborationEnabled}
+                      <span class="text-yellow-600">Connecting...</span>
+                    {:else}
+                      Disabled
+                    {/if}
+                  </span>
+                </div>
+                <div class="flex items-center gap-2">
+                  {#if collaborationEnabled}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="h-8 w-8 p-0"
+                      onclick={() => onCollaborationReconnect?.()}
+                      title="Reconnect"
+                    >
+                      <RefreshCw class="size-4" />
+                    </Button>
+                  {/if}
+                  <Switch
+                    id="collab-enabled"
+                    checked={collaborationEnabled}
+                    onCheckedChange={(checked) =>
+                      onCollaborationToggle?.(checked)}
+                  />
+                </div>
+              </div>
+
+              {#if syncServerUrl}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="text-xs text-muted-foreground h-7"
+                  onclick={clearSyncServer}
+                >
+                  Clear server URL
+                </Button>
+              {/if}
+            </div>
           </div>
         </div>
 

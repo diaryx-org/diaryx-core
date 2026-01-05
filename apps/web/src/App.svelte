@@ -14,10 +14,13 @@
     getCollaborativeDocument,
     disconnectDocument,
     setWorkspaceId,
+    setCollaborationServer,
   } from "./lib/collaborationUtils";
   import {
     initWorkspace,
     disconnectWorkspace,
+    reconnectWorkspace,
+    destroyWorkspace,
     getFileMetadata,
     updateFileMetadata,
     deleteFile as crdtDeleteFile,
@@ -30,6 +33,7 @@
     syncFromBackend,
     garbageCollect,
     getWorkspaceStats,
+    setWorkspaceServer,
     type FileMetadata,
     type BinaryRef,
   } from "./lib/workspaceCrdt";
@@ -78,18 +82,33 @@
   let currentYDoc: YDoc | null = $state(null);
   let currentProvider: HocuspocusProvider | null = $state(null);
   let currentCollaborationPath: string | null = $state(null); // Track absolute path for cleanup
-  let collaborationEnabled = $state(true); // Toggle for enabling/disabling collaboration
+  let collaborationEnabled = $state(false); // Toggle for enabling/disabling collaboration (off by default)
+  let collaborationConnected = $state(false); // Track actual connection status
 
   // Workspace CRDT state
   let workspaceCrdtInitialized = $state(false);
   let workspaceId: string | null = $state(null);
 
-  // Collaboration server URL (null for local-only mode)
-  const collaborationServerUrl: string | null =
-    typeof import.meta !== "undefined" &&
-    (import.meta as any).env?.VITE_COLLAB_SERVER
-      ? (import.meta as any).env.VITE_COLLAB_SERVER
-      : "ws://localhost:1234";
+  // Collaboration server URL - loaded from localStorage or env variable
+  // null means local-only mode (no server connection)
+  function getInitialServerUrl(): string | null {
+    // First check localStorage
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("diaryx-sync-server");
+      if (saved) return saved;
+    }
+    // Then check environment variable
+    if (
+      typeof import.meta !== "undefined" &&
+      (import.meta as any).env?.VITE_COLLAB_SERVER
+    ) {
+      return (import.meta as any).env.VITE_COLLAB_SERVER;
+    }
+    // Default to null (no server) - user must configure in settings
+    return null;
+  }
+
+  let collaborationServerUrl: string | null = $state(getInitialServerUrl());
 
   // Set VITE_DISABLE_WORKSPACE_CRDT=true to disable workspace CRDT for debugging
   // This keeps per-file collaboration working but disables the workspace-level sync
@@ -153,8 +172,8 @@
   // Display settings - initialized from localStorage if available
   let showUnlinkedFiles = $state(
     typeof window !== "undefined"
-      ? localStorage.getItem("diaryx-show-unlinked-files") !== "false"
-      : true,
+      ? localStorage.getItem("diaryx-show-unlinked-files") === "true"
+      : false,
   );
   let showHiddenFiles = $state(
     typeof window !== "undefined"
@@ -285,6 +304,18 @@
     if (window.innerWidth >= 768) {
       leftSidebarCollapsed = false;
       rightSidebarCollapsed = false;
+    }
+
+    // Load saved collaboration settings
+    if (typeof window !== "undefined") {
+      const savedServerUrl = localStorage.getItem("diaryx-sync-server");
+      if (savedServerUrl) {
+        collaborationServerUrl = savedServerUrl;
+        setCollaborationServer(savedServerUrl);
+        setWorkspaceServer(savedServerUrl);
+        // Auto-enable collaboration if we have a saved server
+        collaborationEnabled = true;
+      }
     }
 
     try {
@@ -528,6 +559,7 @@
             "[App] Workspace CRDT connection:",
             connected ? "online" : "offline",
           );
+          collaborationConnected = connected;
         },
       });
 
@@ -803,6 +835,77 @@
   }
 
   // Keyboard shortcuts
+  // Collaboration handlers
+  async function handleCollaborationToggle(enabled: boolean) {
+    collaborationEnabled = enabled;
+
+    if (enabled) {
+      // Reconnect with the current server URL
+      if (collaborationServerUrl) {
+        setCollaborationServer(collaborationServerUrl);
+        setWorkspaceServer(collaborationServerUrl);
+      }
+      // Re-initialize workspace CRDT if needed
+      if (!workspaceCrdtInitialized && !workspaceCrdtDisabled) {
+        await initializeWorkspaceCrdt();
+      } else {
+        reconnectWorkspace();
+      }
+      // Refresh current entry to establish collaboration
+      if (currentEntry) {
+        await openEntry(currentEntry.path);
+      }
+    } else {
+      // Disconnect collaboration
+      collaborationConnected = false;
+      disconnectWorkspace();
+      if (currentCollaborationPath) {
+        disconnectDocument(currentCollaborationPath);
+        currentYDoc = null;
+        currentProvider = null;
+        currentCollaborationPath = null;
+      }
+      // Refresh current entry without collaboration
+      if (currentEntry) {
+        await openEntry(currentEntry.path);
+      }
+    }
+  }
+
+  async function handleCollaborationReconnect() {
+    if (!collaborationEnabled) return;
+
+    // Reload server URL from localStorage in case it was updated
+    const savedUrl = localStorage.getItem("diaryx-sync-server");
+    if (savedUrl) {
+      collaborationServerUrl = savedUrl;
+      setCollaborationServer(savedUrl);
+      setWorkspaceServer(savedUrl);
+    }
+
+    // Disconnect and reconnect
+    collaborationConnected = false;
+    disconnectWorkspace();
+    if (currentCollaborationPath) {
+      disconnectDocument(currentCollaborationPath);
+      currentYDoc = null;
+      currentProvider = null;
+      currentCollaborationPath = null;
+    }
+
+    // Re-initialize
+    if (!workspaceCrdtDisabled) {
+      await destroyWorkspace();
+      workspaceCrdtInitialized = false;
+      await initializeWorkspaceCrdt();
+    }
+
+    // Refresh current entry
+    if (currentEntry) {
+      await openEntry(currentEntry.path);
+    }
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key === "s") {
       event.preventDefault();
@@ -1512,6 +1615,10 @@
   bind:showUnlinkedFiles
   bind:showHiddenFiles
   workspacePath={tree?.path}
+  bind:collaborationEnabled
+  {collaborationConnected}
+  onCollaborationToggle={handleCollaborationToggle}
+  onCollaborationReconnect={handleCollaborationReconnect}
 />
 
 <!-- Export Dialog -->
