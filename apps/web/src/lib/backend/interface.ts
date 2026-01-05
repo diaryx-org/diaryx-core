@@ -46,24 +46,53 @@ export interface SearchResults {
 
 // Validation types
 export interface ValidationError {
-  type: 'BrokenPartOf' | 'BrokenContentsRef';
-  file?: string;  // For BrokenPartOf
+  type: "BrokenPartOf" | "BrokenContentsRef" | "BrokenAttachment";
+  file?: string; // For BrokenPartOf, BrokenAttachment
   index?: string; // For BrokenContentsRef
-  target: string;
+  target?: string; // For BrokenPartOf, BrokenContentsRef
+  attachment?: string; // For BrokenAttachment
 }
 
 export interface ValidationWarning {
-  type: 'OrphanFile' | 'CircularReference' | 'UnlinkedEntry';
-  file?: string;   // For OrphanFile
+  type:
+    | "OrphanFile"
+    | "CircularReference"
+    | "UnlinkedEntry"
+    | "UnlistedFile"
+    | "NonPortablePath"
+    | "MultipleIndexes"
+    | "OrphanBinaryFile"
+    | "MissingPartOf";
+  file?: string; // For OrphanFile, UnlistedFile, NonPortablePath, OrphanBinaryFile, MissingPartOf
   files?: string[]; // For CircularReference
-  path?: string;    // For UnlinkedEntry
+  path?: string; // For UnlinkedEntry
   is_dir?: boolean; // For UnlinkedEntry
+  index?: string; // For UnlistedFile
+  property?: string; // For NonPortablePath
+  value?: string; // For NonPortablePath
+  suggested?: string; // For NonPortablePath
+  directory?: string; // For MultipleIndexes
+  indexes?: string[]; // For MultipleIndexes
+  suggested_index?: string | null; // For OrphanBinaryFile, MissingPartOf
 }
 
 export interface ValidationResult {
   errors: ValidationError[];
   warnings: ValidationWarning[];
   files_checked: number;
+}
+
+// Fix types
+export interface FixResult {
+  success: boolean;
+  message: string;
+}
+
+export interface FixSummary {
+  error_fixes: FixResult[];
+  warning_fixes: FixResult[];
+  total_fixed: number;
+  total_failed: number;
 }
 
 // Export types
@@ -183,7 +212,10 @@ export interface Backend {
    * @param workspacePath Optional path to the workspace directory.
    * @param showHidden Whether to include hidden files (.git, .DS_Store, etc).
    */
-  getFilesystemTree(workspacePath?: string, showHidden?: boolean): Promise<TreeNode>;
+  getFilesystemTree(
+    workspacePath?: string,
+    showHidden?: boolean,
+  ): Promise<TreeNode>;
 
   /**
    * Create a new workspace at the given path.
@@ -343,7 +375,10 @@ export interface Backend {
    * @param audience Target audience to filter by.
    * @returns Array of binary files with path and data.
    */
-  exportBinaryAttachments(rootPath: string, audience: string): Promise<BinaryExportFile[]>;
+  exportBinaryAttachments(
+    rootPath: string,
+    audience: string,
+  ): Promise<BinaryExportFile[]>;
 
   // --------------------------------------------------------------------------
   // Attachments
@@ -363,7 +398,11 @@ export interface Backend {
    * @param dataBase64 Base64 encoded file data.
    * @returns The relative path where the attachment was stored.
    */
-  uploadAttachment(entryPath: string, filename: string, dataBase64: string): Promise<string>;
+  uploadAttachment(
+    entryPath: string,
+    filename: string,
+    dataBase64: string,
+  ): Promise<string>;
 
   /**
    * Delete an attachment file.
@@ -384,7 +423,10 @@ export interface Backend {
    * @param attachmentPath Relative path to the attachment.
    * @returns Uint8Array of the attachment data.
    */
-  getAttachmentData(entryPath: string, attachmentPath: string): Promise<Uint8Array>;
+  getAttachmentData(
+    entryPath: string,
+    attachmentPath: string,
+  ): Promise<Uint8Array>;
 
   // --------------------------------------------------------------------------
   // Frontmatter
@@ -466,6 +508,73 @@ export interface Backend {
    * @param workspacePath Optional path to workspace. Uses default if not provided.
    */
   validateWorkspace(workspacePath?: string): Promise<ValidationResult>;
+
+  /**
+   * Validate a single file's links.
+   * @param filePath Path to the file to validate.
+   */
+  validateFile(filePath: string): Promise<ValidationResult>;
+
+  /**
+   * Fix a broken part_of reference by removing it.
+   * @param filePath Path to the file with the broken reference.
+   */
+  fixBrokenPartOf(filePath: string): Promise<FixResult>;
+
+  /**
+   * Fix a broken contents reference by removing it from the index.
+   * @param indexPath Path to the index file.
+   * @param target The broken reference to remove.
+   */
+  fixBrokenContentsRef(indexPath: string, target: string): Promise<FixResult>;
+
+  /**
+   * Fix a broken attachment reference by removing it.
+   * @param filePath Path to the file with the broken attachment.
+   * @param attachment The broken attachment reference to remove.
+   */
+  fixBrokenAttachment(filePath: string, attachment: string): Promise<FixResult>;
+
+  /**
+   * Fix a non-portable path by normalizing it.
+   * @param filePath Path to the file containing the non-portable path.
+   * @param property The property name ('part_of', 'contents', or 'attachments').
+   * @param oldValue The current non-portable path value.
+   * @param newValue The normalized path value.
+   */
+  fixNonPortablePath(
+    filePath: string,
+    property: string,
+    oldValue: string,
+    newValue: string,
+  ): Promise<FixResult>;
+
+  /**
+   * Add an unlisted file to an index's contents.
+   * @param indexPath Path to the index file.
+   * @param filePath Path to the file to add.
+   */
+  fixUnlistedFile(indexPath: string, filePath: string): Promise<FixResult>;
+
+  /**
+   * Add an orphan binary file to an index's attachments.
+   * @param indexPath Path to the index file.
+   * @param filePath Path to the binary file to add.
+   */
+  fixOrphanBinaryFile(indexPath: string, filePath: string): Promise<FixResult>;
+
+  /**
+   * Fix a missing part_of by setting it to point to the given index.
+   * @param filePath Path to the file missing part_of.
+   * @param indexPath Path to the index file to reference.
+   */
+  fixMissingPartOf(filePath: string, indexPath: string): Promise<FixResult>;
+
+  /**
+   * Fix all errors and fixable warnings in a validation result.
+   * @param validationResult The validation result to fix.
+   */
+  fixAll(validationResult: ValidationResult): Promise<FixSummary>;
 
   // --------------------------------------------------------------------------
   // Persistence (WASM-specific, no-op for Tauri)

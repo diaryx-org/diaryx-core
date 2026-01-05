@@ -2,12 +2,14 @@
 
 Welcome to the Diaryx project! This document will help you understand the codebase structure, identify areas for improvement, and find good first issues to work on.
 
+Note that much of the documentation in this repo is NOT complete, though it is mostly up-to-date.
+
 ## Repository Structure
 
 Diaryx is organized as a Rust workspace with multiple crates:
 
 ```
-diaryx-core/
+diaryx/
 ├── crates/
 │   ├── diaryx_core/     # Core library - shared logic for all frontends
 │   ├── diaryx/          # CLI application
@@ -24,40 +26,19 @@ diaryx-core/
 
 The heart of the project. Contains all business logic that should be shared across frontends.
 
-| Module         | Purpose                                                                             |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `config.rs`    | Configuration management (workspace paths, editor settings)                         |
-| `date.rs`      | Natural language date parsing and path generation                                   |
-| `entry.rs`     | Main `DiaryxApp` struct with entry CRUD operations                                  |
-| `error.rs`     | Unified error types (`DiaryxError`)                                                 |
-| `export.rs`    | Audience-based export functionality                                                 |
-| `fs.rs`        | Filesystem abstraction (`FileSystem` trait, `RealFileSystem`, `InMemoryFileSystem`) |
-| `publish.rs`   | HTML publishing with navigation                                                     |
-| `search.rs`    | Full-text and frontmatter search                                                    |
-| `template.rs`  | Template engine with variable substitution                                          |
-| `workspace.rs` | Workspace tree building and index management                                        |
+See [more information here](crates/diaryx_core/README.md).
 
 #### `diaryx` - CLI Application
 
 Command-line interface built on top of `diaryx_core`.
 
-| Module             | Purpose                                       |
-| ------------------ | --------------------------------------------- |
-| `main.rs`          | Entry point                                   |
-| `editor.rs`        | System editor integration                     |
-| `cli/args.rs`      | Clap argument definitions                     |
-| `cli/mod.rs`       | Command dispatcher                            |
-| `cli/entry.rs`     | today, yesterday, open, create commands       |
-| `cli/workspace.rs` | workspace subcommands (add, mv, create, etc.) |
-| `cli/property.rs`  | Frontmatter property manipulation             |
-| `cli/content.rs`   | Body content manipulation                     |
-| `cli/search.rs`    | Search command handler                        |
-| `cli/template.rs`  | Template management                           |
-| `cli/util.rs`      | Shared CLI utilities                          |
+See [more information here](crates/diaryx/README.md).
 
 #### `diaryx_wasm` - WebAssembly Bindings
 
 WASM bindings that expose `diaryx_core` functionality to JavaScript. Uses an in-memory filesystem that syncs with IndexedDB.
+
+See [more information here](crates/diaryx_wasm/README.md).
 
 ---
 
@@ -132,4 +113,4 @@ All business logic should live in `diaryx_core`. Frontends should be thin wrappe
 
 ---
 
-Thank you for contributing to Diaryx! 🎉
+Thank you for contributing to Diaryx!

@@ -674,6 +674,128 @@ export class TauriBackend implements Backend {
     }
   }
 
+  async validateFile(filePath: string): Promise<ValidationResult> {
+    try {
+      return await this.getInvoke()<ValidationResult>("validate_file", {
+        filePath,
+      });
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixBrokenPartOf(
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_broken_part_of",
+        { filePath },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixBrokenContentsRef(
+    indexPath: string,
+    target: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_broken_contents_ref",
+        { indexPath, target },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixBrokenAttachment(
+    filePath: string,
+    attachment: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_broken_attachment",
+        { filePath, attachment },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixNonPortablePath(
+    filePath: string,
+    property: string,
+    oldValue: string,
+    newValue: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_non_portable_path",
+        { filePath, property, oldValue, newValue },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixUnlistedFile(
+    indexPath: string,
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_unlisted_file",
+        { indexPath, filePath },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixOrphanBinaryFile(
+    indexPath: string,
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_orphan_binary_file",
+        { indexPath, filePath },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixMissingPartOf(
+    filePath: string,
+    indexPath: string,
+  ): Promise<import("./interface").FixResult> {
+    try {
+      return await this.getInvoke()<import("./interface").FixResult>(
+        "fix_missing_part_of",
+        { filePath, indexPath },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
+  async fixAll(
+    validationResult: ValidationResult,
+  ): Promise<import("./interface").FixSummary> {
+    try {
+      return await this.getInvoke()<import("./interface").FixSummary>(
+        "fix_all_validation_issues",
+        { validationResult },
+      );
+    } catch (e) {
+      handleError(e);
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Persistence
   // --------------------------------------------------------------------------

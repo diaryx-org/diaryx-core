@@ -55,7 +55,17 @@ pub fn run() {
             // Workspace
             commands::get_workspace_tree,
             commands::get_filesystem_tree,
+            // Validation
             commands::validate_workspace,
+            commands::validate_file,
+            commands::fix_broken_part_of,
+            commands::fix_broken_contents_ref,
+            commands::fix_broken_attachment,
+            commands::fix_non_portable_path,
+            commands::fix_unlisted_file,
+            commands::fix_orphan_binary_file,
+            commands::fix_missing_part_of,
+            commands::fix_all_validation_issues,
             // Entries
             commands::get_entry,
             commands::save_entry,

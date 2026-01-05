@@ -156,6 +156,65 @@ pub fn validate_workspace(workspace_path: &str) -> Result<JsValue, JsValue> {
     DiaryxValidation::new().validate(workspace_path)
 }
 
+/// Validate a single file's links.
+#[wasm_bindgen]
+pub fn validate_file(file_path: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().validate_file(file_path)
+}
+
+/// Fix a broken part_of reference by removing it.
+#[wasm_bindgen]
+pub fn fix_broken_part_of(file_path: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_broken_part_of(file_path)
+}
+
+/// Fix a broken contents reference by removing it.
+#[wasm_bindgen]
+pub fn fix_broken_contents_ref(index_path: &str, target: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_broken_contents_ref(index_path, target)
+}
+
+/// Fix a broken attachment reference by removing it.
+#[wasm_bindgen]
+pub fn fix_broken_attachment(file_path: &str, attachment: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_broken_attachment(file_path, attachment)
+}
+
+/// Fix a non-portable path by normalizing it.
+#[wasm_bindgen]
+pub fn fix_non_portable_path(
+    file_path: &str,
+    property: &str,
+    old_value: &str,
+    new_value: &str,
+) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_non_portable_path(file_path, property, old_value, new_value)
+}
+
+/// Add an unlisted file to an index's contents.
+#[wasm_bindgen]
+pub fn fix_unlisted_file(index_path: &str, file_path: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_unlisted_file(index_path, file_path)
+}
+
+/// Add an orphan binary file to an index's attachments.
+#[wasm_bindgen]
+pub fn fix_orphan_binary_file(index_path: &str, file_path: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_orphan_binary_file(index_path, file_path)
+}
+
+/// Fix a missing part_of by setting it to point to the given index.
+#[wasm_bindgen]
+pub fn fix_missing_part_of(file_path: &str, index_path: &str) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_missing_part_of(file_path, index_path)
+}
+
+/// Fix all errors and fixable warnings in a validation result.
+#[wasm_bindgen]
+pub fn fix_all_validation_issues(validation_result: JsValue) -> Result<JsValue, JsValue> {
+    DiaryxValidation::new().fix_all(validation_result)
+}
+
 /// Get an entry's content and metadata.
 #[wasm_bindgen]
 pub fn get_entry(path: &str) -> Result<JsValue, JsValue> {

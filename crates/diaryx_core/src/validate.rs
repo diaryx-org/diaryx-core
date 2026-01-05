@@ -1,19 +1,22 @@
-//! Workspace link validation.
+//! Workspace link validation and fixing.
 //!
 //! This module provides functionality to validate `part_of` and `contents` references
-//! within a workspace, detecting broken links and other structural issues.
+//! within a workspace, detecting broken links and other structural issues, and
+//! optionally fixing them.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::entry::DiaryxApp;
 use crate::error::Result;
 use crate::fs::FileSystem;
+use crate::utils::path::relative_path_from_file_to_target;
 use crate::workspace::Workspace;
 
 /// A validation error indicating a broken reference.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ValidationError {
     /// A file's `part_of` points to a non-existent file.
@@ -40,7 +43,7 @@ pub enum ValidationError {
 }
 
 /// A validation warning indicating a potential issue.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ValidationWarning {
     /// A file exists but is not referenced by any index's contents.
@@ -103,7 +106,7 @@ pub enum ValidationWarning {
 }
 
 /// Result of validating a workspace.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValidationResult {
     /// Validation errors (broken references)
     pub errors: Vec<ValidationError>,
@@ -592,6 +595,437 @@ fn find_index_in_directory<FS: FileSystem>(
         indexes.into_iter().next()
     } else {
         None
+    }
+}
+
+// ============================================================================
+// ValidationFixer - Fix validation issues
+// ============================================================================
+
+/// Result of attempting to fix a validation issue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FixResult {
+    /// Whether the fix was successful.
+    pub success: bool,
+    /// Description of what was done (or why it failed).
+    pub message: String,
+}
+
+impl FixResult {
+    /// Create a successful fix result.
+    pub fn success(message: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            message: message.into(),
+        }
+    }
+
+    /// Create a failed fix result.
+    pub fn failure(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            message: message.into(),
+        }
+    }
+}
+
+/// Fixer for validation issues.
+///
+/// This struct provides methods to automatically fix validation errors and warnings.
+pub struct ValidationFixer<FS: FileSystem + Clone> {
+    app: DiaryxApp<FS>,
+}
+
+impl<FS: FileSystem + Clone> ValidationFixer<FS> {
+    /// Create a new validation fixer.
+    pub fn new(fs: FS) -> Self {
+        Self {
+            app: DiaryxApp::new(fs),
+        }
+    }
+
+    /// Fix a broken `part_of` reference by removing it.
+    pub fn fix_broken_part_of(&self, file: &Path) -> FixResult {
+        let file_str = file.to_string_lossy();
+        match self.app.remove_frontmatter_property(&file_str, "part_of") {
+            Ok(_) => FixResult::success(format!(
+                "Removed broken part_of from {}",
+                file.display()
+            )),
+            Err(e) => FixResult::failure(format!(
+                "Failed to remove part_of from {}: {}",
+                file.display(),
+                e
+            )),
+        }
+    }
+
+    /// Fix a broken `contents` reference by removing it from the index.
+    pub fn fix_broken_contents_ref(&self, index: &Path, target: &str) -> FixResult {
+        let index_str = index.to_string_lossy();
+        match self.app.get_frontmatter_property(&index_str, "contents") {
+            Ok(Some(serde_yaml::Value::Sequence(items))) => {
+                let filtered: Vec<serde_yaml::Value> = items
+                    .into_iter()
+                    .filter(|item| {
+                        if let serde_yaml::Value::String(s) = item {
+                            s != target
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                match self.app.set_frontmatter_property(
+                    &index_str,
+                    "contents",
+                    serde_yaml::Value::Sequence(filtered),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Removed broken contents ref '{}' from {}",
+                        target,
+                        index.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to update contents in {}: {}",
+                        index.display(),
+                        e
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!(
+                "Could not read contents from {}",
+                index.display()
+            )),
+        }
+    }
+
+    /// Fix a broken `attachments` reference by removing it.
+    pub fn fix_broken_attachment(&self, file: &Path, attachment: &str) -> FixResult {
+        let file_str = file.to_string_lossy();
+        match self.app.get_frontmatter_property(&file_str, "attachments") {
+            Ok(Some(serde_yaml::Value::Sequence(items))) => {
+                let filtered: Vec<serde_yaml::Value> = items
+                    .into_iter()
+                    .filter(|item| {
+                        if let serde_yaml::Value::String(s) = item {
+                            s != attachment
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                let result = if filtered.is_empty() {
+                    self.app.remove_frontmatter_property(&file_str, "attachments")
+                } else {
+                    self.app.set_frontmatter_property(
+                        &file_str,
+                        "attachments",
+                        serde_yaml::Value::Sequence(filtered),
+                    )
+                };
+
+                match result {
+                    Ok(_) => FixResult::success(format!(
+                        "Removed broken attachment '{}' from {}",
+                        attachment,
+                        file.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to update attachments in {}: {}",
+                        file.display(),
+                        e
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!(
+                "Could not read attachments from {}",
+                file.display()
+            )),
+        }
+    }
+
+    /// Fix a non-portable path by replacing it with the normalized version.
+    pub fn fix_non_portable_path(
+        &self,
+        file: &Path,
+        property: &str,
+        old_value: &str,
+        new_value: &str,
+    ) -> FixResult {
+        let file_str = file.to_string_lossy();
+
+        match property {
+            "part_of" => {
+                match self.app.set_frontmatter_property(
+                    &file_str,
+                    "part_of",
+                    serde_yaml::Value::String(new_value.to_string()),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Normalized {} '{}' -> '{}' in {}",
+                        property,
+                        old_value,
+                        new_value,
+                        file.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to update {} in {}: {}",
+                        property,
+                        file.display(),
+                        e
+                    )),
+                }
+            }
+            "contents" | "attachments" => {
+                match self.app.get_frontmatter_property(&file_str, property) {
+                    Ok(Some(serde_yaml::Value::Sequence(items))) => {
+                        let updated: Vec<serde_yaml::Value> = items
+                            .into_iter()
+                            .map(|item| {
+                                if let serde_yaml::Value::String(ref s) = item {
+                                    if s == old_value {
+                                        return serde_yaml::Value::String(new_value.to_string());
+                                    }
+                                }
+                                item
+                            })
+                            .collect();
+
+                        match self.app.set_frontmatter_property(
+                            &file_str,
+                            property,
+                            serde_yaml::Value::Sequence(updated),
+                        ) {
+                            Ok(_) => FixResult::success(format!(
+                                "Normalized {} '{}' -> '{}' in {}",
+                                property,
+                                old_value,
+                                new_value,
+                                file.display()
+                            )),
+                            Err(e) => FixResult::failure(format!(
+                                "Failed to update {} in {}: {}",
+                                property,
+                                file.display(),
+                                e
+                            )),
+                        }
+                    }
+                    _ => FixResult::failure(format!(
+                        "Could not read {} from {}",
+                        property,
+                        file.display()
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!("Unknown property: {}", property)),
+        }
+    }
+
+    /// Add an unlisted file to an index's contents.
+    pub fn fix_unlisted_file(&self, index: &Path, file: &Path) -> FixResult {
+        let index_str = index.to_string_lossy();
+        let file_rel = relative_path_from_file_to_target(index, file);
+
+        match self.app.get_frontmatter_property(&index_str, "contents") {
+            Ok(Some(serde_yaml::Value::Sequence(mut items))) => {
+                items.push(serde_yaml::Value::String(file_rel.clone()));
+                match self.app.set_frontmatter_property(
+                    &index_str,
+                    "contents",
+                    serde_yaml::Value::Sequence(items),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Added '{}' to contents in {}",
+                        file_rel,
+                        index.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to update contents in {}: {}",
+                        index.display(),
+                        e
+                    )),
+                }
+            }
+            Ok(None) => {
+                // No contents yet, create it
+                match self.app.set_frontmatter_property(
+                    &index_str,
+                    "contents",
+                    serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(file_rel.clone())]),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Added '{}' to new contents in {}",
+                        file_rel,
+                        index.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to create contents in {}: {}",
+                        index.display(),
+                        e
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!(
+                "Could not read contents from {}",
+                index.display()
+            )),
+        }
+    }
+
+    /// Add an orphan binary file to an index's attachments.
+    pub fn fix_orphan_binary_file(&self, index: &Path, file: &Path) -> FixResult {
+        let index_str = index.to_string_lossy();
+        let file_rel = relative_path_from_file_to_target(index, file);
+
+        match self.app.get_frontmatter_property(&index_str, "attachments") {
+            Ok(Some(serde_yaml::Value::Sequence(mut items))) => {
+                items.push(serde_yaml::Value::String(file_rel.clone()));
+                match self.app.set_frontmatter_property(
+                    &index_str,
+                    "attachments",
+                    serde_yaml::Value::Sequence(items),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Added '{}' to attachments in {}",
+                        file_rel,
+                        index.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to update attachments in {}: {}",
+                        index.display(),
+                        e
+                    )),
+                }
+            }
+            Ok(None) => {
+                // No attachments yet, create it
+                match self.app.set_frontmatter_property(
+                    &index_str,
+                    "attachments",
+                    serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(file_rel.clone())]),
+                ) {
+                    Ok(_) => FixResult::success(format!(
+                        "Added '{}' to new attachments in {}",
+                        file_rel,
+                        index.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to create attachments in {}: {}",
+                        index.display(),
+                        e
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!(
+                "Could not read attachments from {}",
+                index.display()
+            )),
+        }
+    }
+
+    /// Fix a missing `part_of` by setting it to point to the given index.
+    pub fn fix_missing_part_of(&self, file: &Path, index: &Path) -> FixResult {
+        let file_str = file.to_string_lossy();
+        let index_rel = relative_path_from_file_to_target(file, index);
+
+        match self.app.set_frontmatter_property(
+            &file_str,
+            "part_of",
+            serde_yaml::Value::String(index_rel.clone()),
+        ) {
+            Ok(_) => FixResult::success(format!(
+                "Set part_of to '{}' in {}",
+                index_rel,
+                file.display()
+            )),
+            Err(e) => FixResult::failure(format!(
+                "Failed to set part_of in {}: {}",
+                file.display(),
+                e
+            )),
+        }
+    }
+
+    /// Fix a validation error.
+    pub fn fix_error(&self, error: &ValidationError) -> FixResult {
+        match error {
+            ValidationError::BrokenPartOf { file, target: _ } => {
+                self.fix_broken_part_of(file)
+            }
+            ValidationError::BrokenContentsRef { index, target } => {
+                self.fix_broken_contents_ref(index, target)
+            }
+            ValidationError::BrokenAttachment { file, attachment } => {
+                self.fix_broken_attachment(file, attachment)
+            }
+        }
+    }
+
+    /// Fix a validation warning.
+    ///
+    /// Returns `None` if the warning type cannot be automatically fixed.
+    pub fn fix_warning(&self, warning: &ValidationWarning) -> Option<FixResult> {
+        match warning {
+            ValidationWarning::UnlistedFile { index, file } => {
+                Some(self.fix_unlisted_file(index, file))
+            }
+            ValidationWarning::NonPortablePath {
+                file,
+                property,
+                value,
+                suggested,
+            } => Some(self.fix_non_portable_path(file, property, value, suggested)),
+            ValidationWarning::OrphanBinaryFile {
+                file,
+                suggested_index,
+            } => {
+                suggested_index
+                    .as_ref()
+                    .map(|index| self.fix_orphan_binary_file(index, file))
+            }
+            ValidationWarning::MissingPartOf {
+                file,
+                suggested_index,
+            } => {
+                suggested_index
+                    .as_ref()
+                    .map(|index| self.fix_missing_part_of(file, index))
+            }
+            // These cannot be auto-fixed
+            ValidationWarning::OrphanFile { .. }
+            | ValidationWarning::UnlinkedEntry { .. }
+            | ValidationWarning::CircularReference { .. }
+            | ValidationWarning::MultipleIndexes { .. } => None,
+        }
+    }
+
+    /// Attempt to fix all errors in a validation result.
+    ///
+    /// Returns a list of fix results for each error.
+    pub fn fix_all_errors(&self, result: &ValidationResult) -> Vec<FixResult> {
+        result.errors.iter().map(|e| self.fix_error(e)).collect()
+    }
+
+    /// Attempt to fix all fixable warnings in a validation result.
+    ///
+    /// Returns a list of fix results for warnings that could be fixed.
+    /// Warnings that cannot be auto-fixed are skipped.
+    pub fn fix_all_warnings(&self, result: &ValidationResult) -> Vec<FixResult> {
+        result
+            .warnings
+            .iter()
+            .filter_map(|w| self.fix_warning(w))
+            .collect()
+    }
+
+    /// Attempt to fix all errors and fixable warnings in a validation result.
+    ///
+    /// Returns a tuple of (error fix results, warning fix results).
+    pub fn fix_all(&self, result: &ValidationResult) -> (Vec<FixResult>, Vec<FixResult>) {
+        (self.fix_all_errors(result), self.fix_all_warnings(result))
     }
 }
 

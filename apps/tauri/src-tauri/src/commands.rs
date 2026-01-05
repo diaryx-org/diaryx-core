@@ -12,7 +12,7 @@ use diaryx_core::{
     error::SerializableError,
     fs::{FileSystem, RealFileSystem},
     search::{SearchQuery, SearchResults, Searcher},
-    validate::{ValidationResult, Validator},
+    validate::{FixResult, ValidationFixer, ValidationResult, Validator},
     workspace::{TreeNode, Workspace},
 };
 use serde::{Deserialize, Serialize};
@@ -539,6 +539,195 @@ pub fn validate_workspace<R: Runtime>(
     );
 
     Ok(result)
+}
+
+/// Validate a single file's links
+#[tauri::command]
+pub fn validate_file(file_path: String) -> Result<ValidationResult, SerializableError> {
+    log::info!("[validate_file] Validating: {}", file_path);
+
+    let validator = Validator::new(RealFileSystem);
+    let path = PathBuf::from(&file_path);
+
+    let result = validator
+        .validate_file(&path)
+        .map_err(|e| e.to_serializable())?;
+
+    log::info!(
+        "[validate_file] Validation complete: {} errors, {} warnings",
+        result.errors.len(),
+        result.warnings.len()
+    );
+
+    Ok(result)
+}
+
+/// Fix a broken part_of reference by removing it
+#[tauri::command]
+pub fn fix_broken_part_of(file_path: String) -> Result<FixResult, SerializableError> {
+    log::info!("[fix_broken_part_of] Fixing: {}", file_path);
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let path = PathBuf::from(&file_path);
+
+    Ok(fixer.fix_broken_part_of(&path))
+}
+
+/// Fix a broken contents reference by removing it from the index
+#[tauri::command]
+pub fn fix_broken_contents_ref(
+    index_path: String,
+    target: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_broken_contents_ref] Removing '{}' from {}",
+        target,
+        index_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let path = PathBuf::from(&index_path);
+
+    Ok(fixer.fix_broken_contents_ref(&path, &target))
+}
+
+/// Fix a broken attachment reference by removing it
+#[tauri::command]
+pub fn fix_broken_attachment(
+    file_path: String,
+    attachment: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_broken_attachment] Removing '{}' from {}",
+        attachment,
+        file_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let path = PathBuf::from(&file_path);
+
+    Ok(fixer.fix_broken_attachment(&path, &attachment))
+}
+
+/// Fix a non-portable path by normalizing it
+#[tauri::command]
+pub fn fix_non_portable_path(
+    file_path: String,
+    property: String,
+    old_value: String,
+    new_value: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_non_portable_path] Normalizing {} '{}' -> '{}' in {}",
+        property,
+        old_value,
+        new_value,
+        file_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let path = PathBuf::from(&file_path);
+
+    Ok(fixer.fix_non_portable_path(&path, &property, &old_value, &new_value))
+}
+
+/// Add an unlisted file to an index's contents
+#[tauri::command]
+pub fn fix_unlisted_file(
+    index_path: String,
+    file_path: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_unlisted_file] Adding '{}' to {}",
+        file_path,
+        index_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let index = PathBuf::from(&index_path);
+    let file = PathBuf::from(&file_path);
+
+    Ok(fixer.fix_unlisted_file(&index, &file))
+}
+
+/// Add an orphan binary file to an index's attachments
+#[tauri::command]
+pub fn fix_orphan_binary_file(
+    index_path: String,
+    file_path: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_orphan_binary_file] Adding '{}' to attachments in {}",
+        file_path,
+        index_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let index = PathBuf::from(&index_path);
+    let file = PathBuf::from(&file_path);
+
+    Ok(fixer.fix_orphan_binary_file(&index, &file))
+}
+
+/// Fix a missing part_of by setting it to point to the given index
+#[tauri::command]
+pub fn fix_missing_part_of(
+    file_path: String,
+    index_path: String,
+) -> Result<FixResult, SerializableError> {
+    log::info!(
+        "[fix_missing_part_of] Setting part_of to '{}' in {}",
+        index_path,
+        file_path
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let file = PathBuf::from(&file_path);
+    let index = PathBuf::from(&index_path);
+
+    Ok(fixer.fix_missing_part_of(&file, &index))
+}
+
+/// Summary of fix operations
+#[derive(Debug, Serialize)]
+pub struct FixSummary {
+    pub error_fixes: Vec<FixResult>,
+    pub warning_fixes: Vec<FixResult>,
+    pub total_fixed: usize,
+    pub total_failed: usize,
+}
+
+/// Fix all errors and fixable warnings in a validation result
+#[tauri::command]
+pub fn fix_all_validation_issues(
+    validation_result: ValidationResult,
+) -> Result<FixSummary, SerializableError> {
+    log::info!(
+        "[fix_all_validation_issues] Fixing {} errors and {} warnings",
+        validation_result.errors.len(),
+        validation_result.warnings.len()
+    );
+
+    let fixer = ValidationFixer::new(RealFileSystem);
+    let (error_fixes, warning_fixes) = fixer.fix_all(&validation_result);
+
+    let total_fixed = error_fixes.iter().filter(|r| r.success).count()
+        + warning_fixes.iter().filter(|r| r.success).count();
+    let total_failed = error_fixes.iter().filter(|r| !r.success).count()
+        + warning_fixes.iter().filter(|r| !r.success).count();
+
+    log::info!(
+        "[fix_all_validation_issues] Fixed {}, failed {}",
+        total_fixed,
+        total_failed
+    );
+
+    Ok(FixSummary {
+        error_fixes,
+        warning_fixes,
+        total_fixed,
+        total_failed,
+    })
 }
 
 /// Get an entry's content and metadata

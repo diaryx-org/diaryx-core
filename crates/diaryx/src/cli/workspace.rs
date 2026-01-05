@@ -4,6 +4,7 @@ use diaryx_core::config::Config;
 use diaryx_core::entry::{DiaryxApp, prettify_filename, slugify};
 use diaryx_core::fs::{FileSystem, RealFileSystem};
 use diaryx_core::template::TemplateContext;
+use diaryx_core::validate::ValidationFixer;
 use diaryx_core::workspace::Workspace;
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
@@ -151,9 +152,10 @@ fn handle_validate(
 ) {
     use diaryx_core::entry::DiaryxApp;
     use diaryx_core::fs::RealFileSystem as CoreRealFileSystem;
-    use diaryx_core::validate::{ValidationError, ValidationWarning, ValidationResult, Validator};
+    use diaryx_core::validate::{ValidationError, ValidationWarning, ValidationResult, Validator, ValidationFixer};
 
     let validator = Validator::new(CoreRealFileSystem);
+    let fixer = ValidationFixer::new(CoreRealFileSystem);
     let app = DiaryxApp::new(CoreRealFileSystem);
 
     // If a specific path is provided, validate it (file or directory)
@@ -201,7 +203,7 @@ fn handle_validate(
             }
 
             // Report and fix using the aggregated result
-            report_and_fix_validation(&app, &total_result, fix, &resolved_path, verbose);
+            report_and_fix_validation(&fixer, &app, &total_result, fix, &resolved_path, verbose);
             return;
         }
 
@@ -218,7 +220,7 @@ fn handle_validate(
             }
         };
 
-        report_and_fix_validation(&app, &result, fix, &resolved_path, verbose);
+        report_and_fix_validation(&fixer, &app, &result, fix, &resolved_path, verbose);
         return;
     }
 
@@ -271,8 +273,8 @@ fn handle_validate(
             match err {
                 ValidationError::BrokenPartOf { file, target } => {
                     if fix {
-                        let file_str = file.to_string_lossy();
-                        if app.remove_frontmatter_property(&file_str, "part_of").is_ok() {
+                        let result = fixer.fix_broken_part_of(file);
+                        if result.success {
                             println!("  ✓ Fixed: Removed broken part_of '{}' from {}", target, file.display());
                             fixed_count += 1;
                         } else {
@@ -284,7 +286,8 @@ fn handle_validate(
                 }
                 ValidationError::BrokenContentsRef { index, target } => {
                     if fix {
-                        if fix_broken_contents_ref(&app, index, target) {
+                        let result = fixer.fix_broken_contents_ref(index, target);
+                        if result.success {
                             println!("  ✓ Fixed: Removed broken contents ref '{}' from {}", target, index.display());
                             fixed_count += 1;
                         } else {
@@ -296,7 +299,8 @@ fn handle_validate(
                 }
                 ValidationError::BrokenAttachment { file, attachment } => {
                     if fix {
-                        if fix_broken_attachment(&app, file, attachment) {
+                        let result = fixer.fix_broken_attachment(file, attachment);
+                        if result.success {
                             println!("  ✓ Fixed: Removed broken attachment '{}' from {}", attachment, file.display());
                             fixed_count += 1;
                         } else {
@@ -327,7 +331,8 @@ fn handle_validate(
                 }
                 ValidationWarning::UnlistedFile { index, file } => {
                     if fix {
-                        if add_file_to_contents(&app, index, file) {
+                        let result = fixer.fix_unlisted_file(index, file);
+                        if result.success {
                             println!("  ✓ Fixed: Added '{}' to {}", file.display(), index.display());
                             fixed_count += 1;
                         } else {
@@ -339,7 +344,8 @@ fn handle_validate(
                 }
                 ValidationWarning::NonPortablePath { file, property, value, suggested } => {
                     if fix {
-                        if fix_non_portable_path(&app, file, property, value, suggested) {
+                        let result = fixer.fix_non_portable_path(file, property, value, suggested);
+                        if result.success {
                             println!("  ✓ Fixed: Normalized {} '{}' -> '{}' in {}", property, value, suggested, file.display());
                             fixed_count += 1;
                         } else {
@@ -356,7 +362,8 @@ fn handle_validate(
                 ValidationWarning::OrphanBinaryFile { file, suggested_index } => {
                     if fix {
                         if let Some(index) = suggested_index {
-                            if add_file_to_attachments(&app, index, file) {
+                            let result = fixer.fix_orphan_binary_file(index, file);
+                            if result.success {
                                 println!("  ✓ Fixed: Added '{}' to attachments in {}", file.display(), index.display());
                                 fixed_count += 1;
                             } else {
@@ -386,7 +393,8 @@ fn handle_validate(
                         };
 
                         if let Some(index) = index_to_use {
-                            if fix_missing_part_of(&app, file, &index) {
+                            let result = fixer.fix_missing_part_of(file, &index);
+                            if result.success {
                                 println!("  ✓ Fixed: Set part_of to '{}' in {}", index.display(), file.display());
                                 fixed_count += 1;
                             } else {
@@ -422,6 +430,7 @@ fn handle_validate(
 
 /// Helper function to report validation results and optionally fix issues
 fn report_and_fix_validation(
+    fixer: &ValidationFixer<diaryx_core::fs::RealFileSystem>,
     app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
     result: &diaryx_core::validate::ValidationResult,
     fix: bool,
@@ -446,8 +455,8 @@ fn report_and_fix_validation(
             match err {
                 ValidationError::BrokenPartOf { file, target } => {
                     if fix {
-                        let file_str = file.to_string_lossy();
-                        if app.remove_frontmatter_property(&file_str, "part_of").is_ok() {
+                        let fix_result = fixer.fix_broken_part_of(file);
+                        if fix_result.success {
                             println!("  ✓ Fixed: Removed broken part_of '{}' from {}", target, file.display());
                             fixed_count += 1;
                         } else {
@@ -459,7 +468,8 @@ fn report_and_fix_validation(
                 }
                 ValidationError::BrokenContentsRef { index, target } => {
                     if fix {
-                        if fix_broken_contents_ref(app, index, target) {
+                        let fix_result = fixer.fix_broken_contents_ref(index, target);
+                        if fix_result.success {
                             println!("  ✓ Fixed: Removed broken contents ref '{}' from {}", target, index.display());
                             fixed_count += 1;
                         } else {
@@ -471,7 +481,8 @@ fn report_and_fix_validation(
                 }
                 ValidationError::BrokenAttachment { file, attachment } => {
                     if fix {
-                        if fix_broken_attachment(app, file, attachment) {
+                        let fix_result = fixer.fix_broken_attachment(file, attachment);
+                        if fix_result.success {
                             println!("  ✓ Fixed: Removed broken attachment '{}' from {}", attachment, file.display());
                             fixed_count += 1;
                         } else {
@@ -494,7 +505,8 @@ fn report_and_fix_validation(
             match warn {
                 ValidationWarning::UnlistedFile { index, file } => {
                     if fix {
-                        if add_file_to_contents(app, index, file) {
+                        let fix_result = fixer.fix_unlisted_file(index, file);
+                        if fix_result.success {
                             println!("  ✓ Fixed: Added '{}' to {}", file.display(), index.display());
                             fixed_count += 1;
                         } else {
@@ -506,7 +518,8 @@ fn report_and_fix_validation(
                 }
                 ValidationWarning::NonPortablePath { file, property, value, suggested } => {
                     if fix {
-                        if fix_non_portable_path(app, file, property, value, suggested) {
+                        let fix_result = fixer.fix_non_portable_path(file, property, value, suggested);
+                        if fix_result.success {
                             println!("  ✓ Fixed: Normalized {} '{}' -> '{}' in {}", property, value, suggested, file.display());
                             fixed_count += 1;
                         } else {
@@ -532,7 +545,8 @@ fn report_and_fix_validation(
                 ValidationWarning::OrphanBinaryFile { file, suggested_index } => {
                     if fix {
                         if let Some(index) = suggested_index {
-                            if add_file_to_attachments(app, index, file) {
+                            let fix_result = fixer.fix_orphan_binary_file(index, file);
+                            if fix_result.success {
                                 println!("  ✓ Fixed: Added '{}' to attachments in {}", file.display(), index.display());
                                 fixed_count += 1;
                             } else {
@@ -555,14 +569,15 @@ fn report_and_fix_validation(
                             let ws = Workspace::new(RealFileSystem);
                             if let Ok(None) = ws.find_any_index_in_dir(dir) {
                                 // No index exists. Create one.
-                                create_new_index(&app, dir)
+                                create_new_index(app, dir)
                             } else {
                                 None
                             }
                         };
 
                         if let Some(index) = index_to_use {
-                            if fix_missing_part_of(&app, file, &index) {
+                            let fix_result = fixer.fix_missing_part_of(file, &index);
+                            if fix_result.success {
                                 println!("  ✓ Fixed: Set part_of to '{}' in {}", index.display(), file.display());
                                 fixed_count += 1;
                             } else {
@@ -596,175 +611,9 @@ fn report_and_fix_validation(
     }
 }
 
-/// Fix a broken contents reference by removing it from the index's contents list
-fn fix_broken_contents_ref(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    index: &Path,
-    target: &str,
-) -> bool {
-    let index_str = index.to_string_lossy();
-    if let Ok(Some(Value::Sequence(items))) = app.get_frontmatter_property(&index_str, "contents") {
-        let filtered: Vec<Value> = items
-            .into_iter()
-            .filter(|item| {
-                if let Value::String(s) = item {
-                    s != target
-                } else {
-                    true
-                }
-            })
-            .collect();
-        app.set_frontmatter_property(&index_str, "contents", Value::Sequence(filtered))
-            .is_ok()
-    } else {
-        false
-    }
-}
-
-/// Add a file to an index's contents list
-fn add_file_to_contents(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    index: &Path,
-    file: &Path,
-) -> bool {
-    let index_str = index.to_string_lossy();
-
-    // Get relative path from index to file using the utility function
-    let file_rel = calculate_relative_path(index, file);
-
-    match app.get_frontmatter_property(&index_str, "contents") {
-        Ok(Some(Value::Sequence(mut items))) => {
-            items.push(Value::String(file_rel));
-            app.set_frontmatter_property(&index_str, "contents", Value::Sequence(items))
-                .is_ok()
-        }
-        Ok(None) => {
-            // No contents yet, create it
-            app.set_frontmatter_property(
-                &index_str,
-                "contents",
-                Value::Sequence(vec![Value::String(file_rel)]),
-            )
-            .is_ok()
-        }
-        _ => false,
-    }
-}
-
-/// Fix a non-portable path by replacing it with the normalized version
-fn fix_non_portable_path(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    file: &Path,
-    property: &str,
-    old_value: &str,
-    new_value: &str,
-) -> bool {
-    let file_str = file.to_string_lossy();
-
-    match property {
-        "part_of" => {
-            // Simply replace the part_of value
-            app.set_frontmatter_property(&file_str, "part_of", Value::String(new_value.to_string()))
-                .is_ok()
-        }
-        "contents" => {
-            // Get the contents list and replace the old value with new value
-            if let Ok(Some(Value::Sequence(items))) = app.get_frontmatter_property(&file_str, "contents") {
-                let updated: Vec<Value> = items
-                    .into_iter()
-                    .map(|item| {
-                        if let Value::String(ref s) = item {
-                            if s == old_value {
-                                return Value::String(new_value.to_string());
-                            }
-                        }
-                        item
-                    })
-                    .collect();
-                app.set_frontmatter_property(&file_str, "contents", Value::Sequence(updated))
-                    .is_ok()
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-/// Fix a broken attachment by removing it from the file's attachments list
-fn fix_broken_attachment(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    file: &Path,
-    attachment: &str,
-) -> bool {
-    let file_str = file.to_string_lossy();
-    if let Ok(Some(Value::Sequence(items))) = app.get_frontmatter_property(&file_str, "attachments") {
-        let filtered: Vec<Value> = items
-            .into_iter()
-            .filter(|item| {
-                if let Value::String(s) = item {
-                    s != attachment
-                } else {
-                    true
-                }
-            })
-            .collect();
-        if filtered.is_empty() {
-            // Remove empty attachments array
-            app.remove_frontmatter_property(&file_str, "attachments").is_ok()
-        } else {
-            app.set_frontmatter_property(&file_str, "attachments", Value::Sequence(filtered))
-                .is_ok()
-        }
-    } else {
-        false
-    }
-}
-
-/// Add a binary file to an index's attachments list
-fn add_file_to_attachments(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    index: &Path,
-    file: &Path,
-) -> bool {
-    let index_str = index.to_string_lossy();
-
-    // Get relative path from index to file
-    let file_rel = calculate_relative_path(index, file);
-
-    match app.get_frontmatter_property(&index_str, "attachments") {
-        Ok(Some(Value::Sequence(mut items))) => {
-            items.push(Value::String(file_rel));
-            app.set_frontmatter_property(&index_str, "attachments", Value::Sequence(items))
-                .is_ok()
-        }
-        Ok(None) => {
-            // No attachments yet, create it
-            app.set_frontmatter_property(
-                &index_str,
-                "attachments",
-                Value::Sequence(vec![Value::String(file_rel)]),
-            )
-            .is_ok()
-        }
-        _ => false,
-    }
-}
-
-/// Fix a missing part_of by setting it to point to the suggested index
-fn fix_missing_part_of(
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
-    file: &Path,
-    index: &Path,
-) -> bool {
-    let file_str = file.to_string_lossy();
-
-    // Get relative path from file to index
-    let index_rel = calculate_relative_path(file, index);
-
-    app.set_frontmatter_property(&file_str, "part_of", Value::String(index_rel))
-        .is_ok()
-}
+// Note: The fix functions (fix_broken_contents_ref, add_file_to_contents, fix_non_portable_path,
+// fix_broken_attachment, add_file_to_attachments, fix_missing_part_of) have been moved to
+// diaryx_core::validate::ValidationFixer for code reuse across CLI, WASM, and Tauri backends.
 
 /// Handle the 'workspace mv' command
 /// Moves/renames a file while updating workspace hierarchy references

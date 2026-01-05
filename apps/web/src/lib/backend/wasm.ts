@@ -317,13 +317,17 @@ export class WasmBackend implements Backend {
   // Typed WASM class instances
   private _workspace: InstanceType<WasmModule["DiaryxWorkspace"]> | null = null;
   private _entry: InstanceType<WasmModule["DiaryxEntry"]> | null = null;
-  private _frontmatter: InstanceType<WasmModule["DiaryxFrontmatter"]> | null = null;
+  private _frontmatter: InstanceType<WasmModule["DiaryxFrontmatter"]> | null =
+    null;
   private _search: InstanceType<WasmModule["DiaryxSearch"]> | null = null;
   private _template: InstanceType<WasmModule["DiaryxTemplate"]> | null = null;
-  private _validation: InstanceType<WasmModule["DiaryxValidation"]> | null = null;
+  private _validation: InstanceType<WasmModule["DiaryxValidation"]> | null =
+    null;
   private _export: InstanceType<WasmModule["DiaryxExport"]> | null = null;
-  private _attachment: InstanceType<WasmModule["DiaryxAttachment"]> | null = null;
-  private _filesystem: InstanceType<WasmModule["DiaryxFilesystem"]> | null = null;
+  private _attachment: InstanceType<WasmModule["DiaryxAttachment"]> | null =
+    null;
+  private _filesystem: InstanceType<WasmModule["DiaryxFilesystem"]> | null =
+    null;
 
   async init(): Promise<void> {
     if (this.ready) return;
@@ -405,47 +409,56 @@ export class WasmBackend implements Backend {
   }
 
   private get workspace() {
-    if (!this._workspace) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._workspace)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._workspace;
   }
 
   private get entry() {
-    if (!this._entry) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._entry)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._entry;
   }
 
   private get frontmatter() {
-    if (!this._frontmatter) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._frontmatter)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._frontmatter;
   }
 
   private get search() {
-    if (!this._search) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._search)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._search;
   }
 
   private get template() {
-    if (!this._template) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._template)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._template;
   }
 
   private get validation() {
-    if (!this._validation) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._validation)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._validation;
   }
 
   private get exportApi() {
-    if (!this._export) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._export)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._export;
   }
 
   private get attachment() {
-    if (!this._attachment) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._attachment)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._attachment;
   }
 
   private get filesystem() {
-    if (!this._filesystem) throw new BackendError("Not initialized", "NotInitialized");
+    if (!this._filesystem)
+      throw new BackendError("Not initialized", "NotInitialized");
     return this._filesystem;
   }
 
@@ -712,6 +725,73 @@ export class WasmBackend implements Backend {
   ): Promise<import("./interface").ValidationResult> {
     const path = workspacePath ?? this.config?.default_workspace ?? "workspace";
     return this.validation.validate(path);
+  }
+
+  async validateFile(
+    filePath: string,
+  ): Promise<import("./interface").ValidationResult> {
+    return this.validation.validate_file(filePath);
+  }
+
+  async fixBrokenPartOf(
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_broken_part_of(filePath);
+  }
+
+  async fixBrokenContentsRef(
+    indexPath: string,
+    target: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_broken_contents_ref(indexPath, target);
+  }
+
+  async fixBrokenAttachment(
+    filePath: string,
+    attachment: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_broken_attachment(filePath, attachment);
+  }
+
+  async fixNonPortablePath(
+    filePath: string,
+    property: string,
+    oldValue: string,
+    newValue: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_non_portable_path(
+      filePath,
+      property,
+      oldValue,
+      newValue,
+    );
+  }
+
+  async fixUnlistedFile(
+    indexPath: string,
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_unlisted_file(indexPath, filePath);
+  }
+
+  async fixOrphanBinaryFile(
+    indexPath: string,
+    filePath: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_orphan_binary_file(indexPath, filePath);
+  }
+
+  async fixMissingPartOf(
+    filePath: string,
+    indexPath: string,
+  ): Promise<import("./interface").FixResult> {
+    return this.validation.fix_missing_part_of(filePath, indexPath);
+  }
+
+  async fixAll(
+    validationResult: import("./interface").ValidationResult,
+  ): Promise<import("./interface").FixSummary> {
+    return this.validation.fix_all(validationResult);
   }
 
   // --------------------------------------------------------------------------
