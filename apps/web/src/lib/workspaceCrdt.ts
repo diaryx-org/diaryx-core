@@ -18,6 +18,10 @@
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
+import type { Backend } from "./backend/interface";
+
+// Origin marker for local changes (to distinguish from remote)
+const LOCAL_ORIGIN = "local";
 
 // ============================================================================
 // Types
@@ -76,7 +80,10 @@ interface WorkspaceSession {
   provider: HocuspocusProvider | null;
   persistence: IndexeddbPersistence;
   filesMap: Y.Map<FileMetadata>;
+  backend: Backend | null;
   onFilesChange?: (files: Map<string, FileMetadata>) => void;
+  /** Callback when remote sync creates/deletes files */
+  onRemoteFileSync?: (created: string[], deleted: string[]) => void;
 }
 
 /**
@@ -87,12 +94,16 @@ export interface WorkspaceInitOptions {
   workspaceId?: string;
   /** Collaboration server URL (null to disable remote sync) */
   serverUrl?: string | null;
+  /** Backend instance for file operations */
+  backend?: Backend | null;
   /** Callback when files map changes */
   onFilesChange?: (files: Map<string, FileMetadata>) => void;
   /** Callback when a specific file's metadata changes */
   onFileChange?: (path: string, metadata: FileMetadata | null) => void;
   /** Callback when connection status changes */
   onConnectionChange?: (connected: boolean) => void;
+  /** Callback when remote sync creates/deletes files locally */
+  onRemoteFileSync?: (created: string[], deleted: string[]) => void;
 }
 
 // ============================================================================
@@ -105,12 +116,22 @@ let fileChangeCallback:
   | ((path: string, metadata: FileMetadata | null) => void)
   | null = null;
 
-// Default server URL (can be overridden)
-let defaultServerUrl: string | null = "ws://localhost:1234";
+// Default server URL (can be overridden) - load from localStorage
+const SYNC_SERVER_KEY = "diaryx-sync-server";
+const DEFAULT_SERVER_URL = "ws://localhost:1234";
+let defaultServerUrl: string | null = typeof window !== "undefined"
+  ? localStorage.getItem(SYNC_SERVER_KEY) || DEFAULT_SERVER_URL
+  : DEFAULT_SERVER_URL;
 
 // Debounce state for file change callbacks
 let filesChangeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const FILES_CHANGE_DEBOUNCE_MS = 100; // Debounce rapid changes
+
+// Remote file sync callback
+let remoteFileSyncCallback: ((created: string[], deleted: string[]) => void) | null = null;
+
+// Track paths currently being processed to avoid duplicate operations
+let pathsBeingProcessed = new Set<string>();
 
 // ============================================================================
 // Configuration
@@ -119,9 +140,17 @@ const FILES_CHANGE_DEBOUNCE_MS = 100; // Debounce rapid changes
 /**
  * Set the default collaboration server URL for workspace sync.
  * Set to null to disable remote sync (local-only mode).
+ * Persists to localStorage for future sessions.
  */
 export function setWorkspaceServer(url: string | null): void {
   defaultServerUrl = url;
+  if (typeof window !== "undefined") {
+    if (url) {
+      localStorage.setItem(SYNC_SERVER_KEY, url);
+    } else {
+      localStorage.removeItem(SYNC_SERVER_KEY);
+    }
+  }
 }
 
 /**
@@ -159,14 +188,17 @@ export async function initWorkspace(
   const {
     workspaceId = "default",
     serverUrl = defaultServerUrl,
+    backend = null,
     onFilesChange,
     onFileChange,
     onConnectionChange,
+    onRemoteFileSync,
   } = options;
 
   // Store callbacks
   connectionChangeCallback = onConnectionChange ?? null;
   fileChangeCallback = onFileChange ?? null;
+  remoteFileSyncCallback = onRemoteFileSync ?? null;
 
   // Create Y.Doc
   const ydoc = new Y.Doc();
@@ -193,6 +225,7 @@ export async function initWorkspace(
   let provider: HocuspocusProvider | null = null;
 
   if (serverUrl) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     provider = new HocuspocusProvider({
       url: serverUrl,
       name: roomName,
@@ -205,13 +238,12 @@ export async function initWorkspace(
         console.log(`[WorkspaceCRDT] Disconnected from ${roomName}`);
         connectionChangeCallback?.(false);
       },
-      onSynced: ({ state }) => {
-        console.log(
-          `[WorkspaceCRDT] Synced ${roomName}`,
-          state ? "with server" : "from cache",
-        );
+      onSynced: () => {
+        console.log(`[WorkspaceCRDT] Synced ${roomName}`);
+        // Trigger initial sync to local when first synced from server
+        handleInitialServerSync();
       },
-    });
+    } as any);
   }
 
   // Create session
@@ -220,7 +252,9 @@ export async function initWorkspace(
     provider,
     persistence,
     filesMap,
+    backend,
     onFilesChange,
+    onRemoteFileSync,
   };
 
   // Set up change observers with error handling
@@ -899,18 +933,266 @@ function notifyFilesChangeDebounced(): void {
   }, FILES_CHANGE_DEBOUNCE_MS);
 }
 
+/**
+ * Handle initial sync from server - create any files that exist in CRDT but not locally.
+ * Uses batching and throttling to prevent overwhelming the browser.
+ */
+async function handleInitialServerSync(): Promise<void> {
+  if (!workspaceSession?.backend) {
+    console.log("[WorkspaceCRDT] No backend available for file sync");
+    return;
+  }
+
+  const backend = workspaceSession.backend;
+  const filesMap = workspaceSession.filesMap;
+
+  // Skip initial sync if there are no files in the CRDT (nothing to sync)
+  if (filesMap.size === 0) {
+    console.log("[WorkspaceCRDT] No files in CRDT, skipping initial sync");
+    return;
+  }
+
+  // Check how many files need to be created - if too many, skip auto-sync
+  // to avoid overwhelming the browser. User can manually trigger sync.
+  let missingCount = 0;
+  const MAX_AUTO_SYNC_FILES = 50;
+
+  for (const [path, metadata] of filesMap.entries()) {
+    if (metadata.deleted) continue;
+    try {
+      await backend.getEntry(path);
+      // File exists
+    } catch {
+      missingCount++;
+      if (missingCount > MAX_AUTO_SYNC_FILES) {
+        console.log(
+          `[WorkspaceCRDT] Too many files to sync (>${MAX_AUTO_SYNC_FILES}), skipping auto-sync. ` +
+          `Use syncToLocal() to manually trigger sync.`
+        );
+        return;
+      }
+    }
+  }
+
+  if (missingCount === 0) {
+    console.log("[WorkspaceCRDT] All files already exist locally, no sync needed");
+    return;
+  }
+
+  console.log(`[WorkspaceCRDT] Starting initial server sync for ${missingCount} files...`);
+
+  const created: string[] = [];
+  const deleted: string[] = [];
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 100;
+
+  try {
+    // Collect files to process
+    const filesToProcess: Array<[string, FileMetadata]> = [];
+    for (const [path, metadata] of filesMap.entries()) {
+      if (pathsBeingProcessed.has(path)) continue;
+      filesToProcess.push([path, metadata]);
+    }
+
+    // Process in batches
+    for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
+      const batch = filesToProcess.slice(i, i + BATCH_SIZE);
+      
+      // Process batch concurrently
+      await Promise.all(
+        batch.map(async ([path, metadata]) => {
+          if (pathsBeingProcessed.has(path)) return;
+          pathsBeingProcessed.add(path);
+
+          try {
+            if (metadata.deleted) {
+              // File marked deleted in CRDT - try to delete locally
+              try {
+                await backend.deleteEntry(path);
+                deleted.push(path);
+              } catch {
+                // File might not exist locally, that's fine
+              }
+            } else {
+              // File exists in CRDT - check if it exists locally
+              try {
+                await backend.getEntry(path);
+                // File exists, no action needed
+              } catch {
+                // File doesn't exist locally, create it
+                await createLocalFile(backend, path, metadata);
+                created.push(path);
+              }
+            }
+          } finally {
+            pathsBeingProcessed.delete(path);
+          }
+        })
+      );
+
+      // Delay between batches to let browser breathe
+      if (i + BATCH_SIZE < filesToProcess.length) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
+
+    if (created.length > 0 || deleted.length > 0) {
+      console.log(
+        `[WorkspaceCRDT] Initial sync complete: created ${created.length}, deleted ${deleted.length} files`,
+      );
+      remoteFileSyncCallback?.(created, deleted);
+      workspaceSession.onRemoteFileSync?.(created, deleted);
+    }
+  } catch (e) {
+    console.error("[WorkspaceCRDT] Error in initial server sync:", e);
+  }
+}
+
+
+/**
+ * Create a local file from CRDT metadata.
+ */
+async function createLocalFile(
+  backend: Backend,
+  path: string,
+  metadata: FileMetadata,
+): Promise<void> {
+  try {
+    // Create the entry with frontmatter from metadata
+    await backend.createEntry(path, {
+      title: metadata.title ?? undefined,
+      partOf: metadata.partOf ?? undefined,
+    });
+    console.log(`[WorkspaceCRDT] Created local file from remote: ${path}`);
+  } catch (e) {
+    console.warn(`[WorkspaceCRDT] Failed to create local file ${path}:`, e);
+    throw e;
+  }
+}
+
+/**
+ * Sync CRDT state to local filesystem.
+ * Call this when connecting to a new server to pull down all files.
+ * Uses batching to prevent overwhelming the browser.
+ */
+export async function syncToLocal(): Promise<{
+  created: string[];
+  deleted: string[];
+}> {
+  if (!workspaceSession?.backend) {
+    console.warn("[WorkspaceCRDT] Cannot sync to local: no backend");
+    return { created: [], deleted: [] };
+  }
+
+  // Wait for provider to sync if available
+  if (workspaceSession.provider) {
+    await waitForSync(10000);
+  }
+
+  const backend = workspaceSession.backend;
+  const filesMap = workspaceSession.filesMap;
+  const created: string[] = [];
+  const deleted: string[] = [];
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 100;
+
+  console.log(`[WorkspaceCRDT] Syncing CRDT (${filesMap.size} files) to local filesystem...`);
+
+  try {
+    // Collect files to process
+    const filesToProcess: Array<[string, FileMetadata]> = [];
+    for (const [path, metadata] of filesMap.entries()) {
+      if (pathsBeingProcessed.has(path)) continue;
+      filesToProcess.push([path, metadata]);
+    }
+
+    // Process in batches
+    for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
+      const batch = filesToProcess.slice(i, i + BATCH_SIZE);
+      
+      await Promise.all(
+        batch.map(async ([path, metadata]) => {
+          if (pathsBeingProcessed.has(path)) return;
+          pathsBeingProcessed.add(path);
+
+          try {
+            if (metadata.deleted) {
+              // Delete local file if it exists
+              try {
+                await backend.deleteEntry(path);
+                deleted.push(path);
+              } catch {
+                // File doesn't exist, nothing to delete
+              }
+            } else {
+              // Create file if it doesn't exist
+              try {
+                await backend.getEntry(path);
+                // File exists locally
+              } catch {
+                // File doesn't exist, create it
+                await createLocalFile(backend, path, metadata);
+                created.push(path);
+              }
+            }
+          } finally {
+            pathsBeingProcessed.delete(path);
+          }
+        })
+      );
+
+      // Delay between batches
+      if (i + BATCH_SIZE < filesToProcess.length) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
+
+    console.log(
+      `[WorkspaceCRDT] Synced to local: created ${created.length}, deleted ${deleted.length} files`,
+    );
+
+    if (created.length > 0 || deleted.length > 0) {
+      remoteFileSyncCallback?.(created, deleted);
+      workspaceSession.onRemoteFileSync?.(created, deleted);
+    }
+
+    return { created, deleted };
+  } catch (e) {
+    console.error("[WorkspaceCRDT] Error syncing to local:", e);
+    return { created, deleted };
+  }
+}
+
+
+/**
+ * Check if an event origin indicates a remote change.
+ * Local changes use LOCAL_ORIGIN, remote changes come from other sources.
+ */
+function isRemoteChange(transaction: Y.Transaction): boolean {
+  return transaction.origin !== LOCAL_ORIGIN && transaction.origin !== null;
+}
+
 function handleFilesMapChange(event: Y.YMapEvent<FileMetadata>): void {
   if (!workspaceSession) return;
 
   try {
-    // Notify about added/updated/deleted files (individual file callback - not debounced)
+    const isRemote = isRemoteChange(event.transaction);
+
+    // Process file changes
     event.keysChanged.forEach((key) => {
       try {
         const metadata = workspaceSession!.filesMap.get(key) ?? null;
+
+        // Notify callback about file change
         fileChangeCallback?.(key, metadata);
+
+        // Handle remote file sync (create/delete actual files)
+        if (isRemote && workspaceSession?.backend && !pathsBeingProcessed.has(key)) {
+          handleRemoteFileChange(key, metadata);
+        }
       } catch (e) {
         console.error(
-          `[WorkspaceCRDT] Error notifying file change for ${key}:`,
+          `[WorkspaceCRDT] Error processing file change for ${key}:`,
           e,
         );
       }
@@ -923,6 +1205,47 @@ function handleFilesMapChange(event: Y.YMapEvent<FileMetadata>): void {
   }
 }
 
+/**
+ * Handle a remote file change - create or delete the file locally.
+ */
+async function handleRemoteFileChange(
+  path: string,
+  metadata: FileMetadata | null,
+): Promise<void> {
+  if (!workspaceSession?.backend) return;
+
+  const backend = workspaceSession.backend;
+  pathsBeingProcessed.add(path);
+
+  try {
+    if (metadata === null || metadata.deleted) {
+      // File was deleted remotely
+      try {
+        await backend.deleteEntry(path);
+        console.log(`[WorkspaceCRDT] Deleted local file from remote: ${path}`);
+        remoteFileSyncCallback?.([], [path]);
+        workspaceSession.onRemoteFileSync?.([], [path]);
+      } catch {
+        // File might not exist locally
+      }
+    } else {
+      // File was created or updated remotely
+      try {
+        // Check if file exists locally
+        await backend.getEntry(path);
+        // File exists, metadata sync is handled separately
+      } catch {
+        // File doesn't exist locally, create it
+        await createLocalFile(backend, path, metadata);
+        remoteFileSyncCallback?.([path], []);
+        workspaceSession.onRemoteFileSync?.([path], []);
+      }
+    }
+  } finally {
+    pathsBeingProcessed.delete(path);
+  }
+}
+
 function handleFilesDeepChange(_events: Y.YEvent<any>[]): void {
   if (!workspaceSession) return;
 
@@ -930,6 +1253,7 @@ function handleFilesDeepChange(_events: Y.YEvent<any>[]): void {
   // Individual file changes are handled by the map observer
   notifyFilesChangeDebounced();
 }
+
 
 // ============================================================================
 // Utilities
@@ -960,7 +1284,7 @@ export function waitForSync(timeoutMs = 5000): Promise<boolean> {
       resolve(true);
     };
 
-    workspaceSession.provider.on("synced", handler);
+    workspaceSession.provider.on("sync", handler);
   });
 }
 

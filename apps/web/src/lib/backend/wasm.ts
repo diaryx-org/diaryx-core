@@ -874,7 +874,7 @@ export class WasmBackend implements Backend {
     const entries: [string, string][] = this.filesystem.export_files();
 
     if (entries.length > 0) {
-      console.log(`[WasmBackend] Persisting ${entries.length} text files...`);
+      //console.log(`[WasmBackend] Persisting ${entries.length} text files...`);
       await this.storage.saveAllFiles(entries);
     }
 
@@ -883,9 +883,7 @@ export class WasmBackend implements Backend {
       const binaryEntries: { path: string; data: number[] }[] =
         this.filesystem.export_binary_files();
       if (binaryEntries.length > 0) {
-        console.log(
-          `[WasmBackend] Persisting ${binaryEntries.length} binary files...`,
-        );
+        //console.log(`[WasmBackend] Persisting ${binaryEntries.length} binary files...`);
         await this.storage.saveBinaryFiles(binaryEntries);
       }
     } catch (e) {

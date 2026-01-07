@@ -5,110 +5,114 @@
     startAutoPersist,
     stopAutoPersist,
     persistNow,
-    type Backend,
-    type TreeNode,
     type EntryData,
-    type ValidationResult,
   } from "./lib/backend";
   import {
     getCollaborativeDocument,
     disconnectDocument,
+    destroyDocument,
     setWorkspaceId,
     setCollaborationServer,
   } from "./lib/collaborationUtils";
   import {
-    initWorkspace,
     disconnectWorkspace,
     reconnectWorkspace,
     destroyWorkspace,
     getFileMetadata,
-    updateFileMetadata,
     deleteFile as crdtDeleteFile,
-    addToContents,
     removeFromContents,
     moveFile as crdtMoveFile,
     renameFile as crdtRenameFile,
     addAttachment as crdtAddAttachment,
     removeAttachment as crdtRemoveAttachment,
-    syncFromBackend,
-    garbageCollect,
-    getWorkspaceStats,
     setWorkspaceServer,
-    type FileMetadata,
-    type BinaryRef,
   } from "./lib/workspaceCrdt";
-  import type { Doc as YDoc } from "yjs";
-  import type { HocuspocusProvider } from "@hocuspocus/provider";
+  // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
   import RightSidebar from "./lib/RightSidebar.svelte";
   import NewEntryModal from "./lib/NewEntryModal.svelte";
   import CommandPalette from "./lib/CommandPalette.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import ExportDialog from "./lib/ExportDialog.svelte";
+  import EditorHeader from "./views/editor/EditorHeader.svelte";
+  import EditorEmptyState from "./views/editor/EditorEmptyState.svelte";
+  import EditorContent from "./views/editor/EditorContent.svelte";
   import { Toaster } from "$lib/components/ui/sonner";
-  import { Button } from "$lib/components/ui/button";
-  import { Save, Download, PanelLeft, PanelRight, Menu } from "@lucide/svelte";
+  // Note: Button, icons, and LoadingSpinner are now only used in extracted view components
+  
+  // Import stores
+  import { 
+    entryStore, 
+    uiStore, 
+    collaborationStore, 
+    workspaceStore 
+  } from "./models/stores";
+  
+  // Import services
+  import {
+    revokeBlobUrls,
+    transformAttachmentPaths,
+    reverseBlobUrlsToAttachmentPaths,
+    trackBlobUrl,
+    initializeWorkspaceCrdt,
+    updateCrdtFileMetadata,
+    addFileToCrdt,
+    createAttachmentRef,
+  } from "./models/services";
 
   // Dynamically import Editor to avoid SSR issues
   let Editor: typeof import("./lib/Editor.svelte").default | null =
     $state(null);
 
-  // Backend instance
-  let backend: Backend | null = $state(null);
+  // ========================================================================
+  // Store-backed state (using getters for now, will migrate fully later)
+  // This allows gradual migration without breaking the component
+  // ========================================================================
+  
+  // Entry state - proxied from entryStore
+  let currentEntry = $derived(entryStore.currentEntry);
+  let isDirty = $derived(entryStore.isDirty);
+  let isSaving = $derived(entryStore.isSaving);
+  let isLoading = $derived(entryStore.isLoading);
+  let titleError = $derived(entryStore.titleError);
+  let displayContent = $derived(entryStore.displayContent);
+  
+  // UI state - proxied from uiStore
+  let leftSidebarCollapsed = $derived(uiStore.leftSidebarCollapsed);
+  let rightSidebarCollapsed = $derived(uiStore.rightSidebarCollapsed);
+  let showCommandPalette = $derived(uiStore.showCommandPalette);
+  let showSettingsDialog = $derived(uiStore.showSettingsDialog);
+  let showExportDialog = $derived(uiStore.showExportDialog);
+  let showNewEntryModal = $derived(uiStore.showNewEntryModal);
+  let exportPath = $derived(uiStore.exportPath);
+  let error = $derived(uiStore.error);
+  let editorRef = $derived(uiStore.editorRef);
+  
+  // Workspace state - proxied from workspaceStore
+  let tree = $derived(workspaceStore.tree);
+  let expandedNodes = $derived(workspaceStore.expandedNodes);
+  let validationResult = $derived(workspaceStore.validationResult);
+  let workspaceCrdtInitialized = $derived(workspaceStore.workspaceCrdtInitialized);
+  let workspaceId = $derived(workspaceStore.workspaceId);
+  let backend = $derived(workspaceStore.backend);
+  let showUnlinkedFiles = $derived(workspaceStore.showUnlinkedFiles);
+  let showHiddenFiles = $derived(workspaceStore.showHiddenFiles);
+  
+  // Collaboration state - proxied from collaborationStore  
+  let currentYDoc = $derived(collaborationStore.currentYDoc);
+  let currentProvider = $derived(collaborationStore.currentProvider);
+  let currentCollaborationPath = $derived(collaborationStore.currentCollaborationPath);
+  let collaborationEnabled = $derived(collaborationStore.collaborationEnabled);
+  let collaborationConnected = $derived(collaborationStore.collaborationConnected);
+  let collaborationServerUrl = $derived(collaborationStore.collaborationServerUrl);
 
-  // State
-  let tree: TreeNode | null = $state(null);
-  let currentEntry: EntryData | null = $state(null);
-  let isDirty = $state(false);
-  let isLoading = $state(true);
-  let error: string | null = $state(null);
-  let expandedNodes = $state(new Set<string>());
-  let editorRef: any = $state(null);
-  let showNewEntryModal = $state(false);
-  let validationResult: ValidationResult | null = $state(null);
-  let titleError: string | null = $state(null);
-
-  // Sidebar states - collapsed by default on mobile
-  let leftSidebarCollapsed = $state(true);
-  let rightSidebarCollapsed = $state(true);
-
-  // Modal states
-  let showCommandPalette = $state(false);
-  let showSettingsDialog = $state(false);
-  let showExportDialog = $state(false);
-  let exportPath = $state("");
-
-  // Y.js collaboration state
-  let currentYDoc: YDoc | null = $state(null);
-  let currentProvider: HocuspocusProvider | null = $state(null);
-  let currentCollaborationPath: string | null = $state(null); // Track absolute path for cleanup
-  let collaborationEnabled = $state(false); // Toggle for enabling/disabling collaboration (off by default)
-  let collaborationConnected = $state(false); // Track actual connection status
-
-  // Workspace CRDT state
-  let workspaceCrdtInitialized = $state(false);
-  let workspaceId: string | null = $state(null);
-
-  // Collaboration server URL - loaded from localStorage or env variable
-  // null means local-only mode (no server connection)
-  function getInitialServerUrl(): string | null {
-    // First check localStorage
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("diaryx-sync-server");
-      if (saved) return saved;
-    }
-    // Then check environment variable
-    if (
-      typeof import.meta !== "undefined" &&
-      (import.meta as any).env?.VITE_COLLAB_SERVER
-    ) {
-      return (import.meta as any).env.VITE_COLLAB_SERVER;
-    }
-    // Default to null (no server) - user must configure in settings
-    return null;
-  }
-
-  let collaborationServerUrl: string | null = $state(getInitialServerUrl());
+  // ========================================================================
+  // Non-store state (component-specific, not shared)
+  // ========================================================================
+  
+  // Auto-save timer (component-local, not needed in global store)
+  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const AUTO_SAVE_DELAY_MS = 2500; // 2.5 seconds
 
   // Set VITE_DISABLE_WORKSPACE_CRDT=true to disable workspace CRDT for debugging
   // This keeps per-file collaboration working but disables the workspace-level sync
@@ -169,123 +173,11 @@
     await persistNow();
   }
 
-  // Display settings - initialized from localStorage if available
-  let showUnlinkedFiles = $state(
-    typeof window !== "undefined"
-      ? localStorage.getItem("diaryx-show-unlinked-files") === "true"
-      : false,
-  );
-  let showHiddenFiles = $state(
-    typeof window !== "undefined"
-      ? localStorage.getItem("diaryx-show-hidden-files") === "true"
-      : false,
-  );
-
   // Attachment state
   let pendingAttachmentPath = $state("");
   let attachmentError: string | null = $state(null);
   let attachmentFileInput: HTMLInputElement | null = $state(null);
-
-  // Blob URL tracking for attachments
-  let blobUrlMap = $state(new Map<string, string>()); // originalPath -> blobUrl
-  let displayContent = $state(""); // Content with blob URLs for editor
-
-  // Revoke all blob URLs (cleanup)
-  function revokeBlobUrls() {
-    for (const url of blobUrlMap.values()) {
-      URL.revokeObjectURL(url);
-    }
-    blobUrlMap.clear();
-  }
-
-  // Transform attachment paths in content to blob URLs
-  async function transformAttachmentPaths(
-    content: string,
-    entryPath: string,
-  ): Promise<string> {
-    if (!backend) return content;
-
-    // Find all image references: ![alt](...) or ![alt](<...>) for paths with spaces
-    const imageRegex = /!\[([^\]]*)\]\((?:<([^>]+)>|([^)]+))\)/g;
-    let match;
-    const replacements: { original: string; replacement: string }[] = [];
-
-    while ((match = imageRegex.exec(content)) !== null) {
-      const [fullMatch, alt] = match;
-      // Angle bracket path is in group 2, regular path is in group 3
-      const imagePath = match[2] || match[3];
-
-      // Skip external URLs
-      if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
-        continue;
-      }
-
-      // Skip already-transformed blob URLs
-      if (imagePath.startsWith("blob:")) {
-        continue;
-      }
-
-      try {
-        // Try to read the attachment data
-        const data = await backend.getAttachmentData(entryPath, imagePath);
-
-        // Determine MIME type from extension
-        const ext = imagePath.split(".").pop()?.toLowerCase() || "";
-        const mimeTypes: Record<string, string> = {
-          png: "image/png",
-          jpg: "image/jpeg",
-          jpeg: "image/jpeg",
-          gif: "image/gif",
-          webp: "image/webp",
-          svg: "image/svg+xml",
-          pdf: "application/pdf",
-        };
-        const mimeType = mimeTypes[ext] || "application/octet-stream";
-
-        // Create blob and URL
-        const blob = new Blob([new Uint8Array(data)], { type: mimeType });
-        const blobUrl = URL.createObjectURL(blob);
-
-        // Track for cleanup
-        blobUrlMap.set(imagePath, blobUrl);
-
-        // Queue replacement
-        replacements.push({
-          original: fullMatch,
-          replacement: `![${alt}](${blobUrl})`,
-        });
-      } catch (e) {
-        // Attachment not found or error - leave original path
-        console.warn(`[App] Could not load attachment: ${imagePath}`, e);
-      }
-    }
-
-    // Apply replacements
-    let result = content;
-    for (const { original, replacement } of replacements) {
-      result = result.replace(original, replacement);
-    }
-
-    return result;
-  }
-
-  // Reverse-transform blob URLs back to attachment paths (for saving)
-  // Wraps paths with spaces in angle brackets for CommonMark compatibility
-  function reverseBlobUrlsToAttachmentPaths(content: string): string {
-    let result = content;
-
-    // Iterate through blobUrlMap (originalPath -> blobUrl) and replace blob URLs with original paths
-    for (const [originalPath, blobUrl] of blobUrlMap.entries()) {
-      // Wrap path in angle brackets if it contains spaces (CommonMark spec)
-      const pathToUse = originalPath.includes(" ")
-        ? `<${originalPath}>`
-        : originalPath;
-      // Replace all occurrences of the blob URL with the original path
-      result = result.replaceAll(blobUrl, pathToUse);
-    }
-
-    return result;
-  }
+  // Note: Blob URL management is now in attachmentService.ts
 
   // Persist display setting to localStorage when changed
   $effect(() => {
@@ -310,11 +202,11 @@
     if (typeof window !== "undefined") {
       const savedServerUrl = localStorage.getItem("diaryx-sync-server");
       if (savedServerUrl) {
-        collaborationServerUrl = savedServerUrl;
+        collaborationStore.setServerUrl(savedServerUrl);
         setCollaborationServer(savedServerUrl);
         setWorkspaceServer(savedServerUrl);
         // Auto-enable collaboration if we have a saved server
-        collaborationEnabled = true;
+        collaborationStore.setEnabled(true);
       }
     }
 
@@ -324,14 +216,14 @@
       Editor = module.default;
 
       // Initialize the backend (auto-detects Tauri vs WASM)
-      backend = await getBackend();
+      workspaceStore.setBackend(await getBackend());
 
       // Start auto-persist for WASM backend (no-op for Tauri)
       startAutoPersist(5000);
 
       // Initialize workspace CRDT (unless disabled for debugging)
       if (!workspaceCrdtDisabled) {
-        await initializeWorkspaceCrdt();
+        await setupWorkspaceCrdt();
       } else {
         console.log(
           "[App] Workspace CRDT disabled via VITE_DISABLE_WORKSPACE_CRDT",
@@ -362,16 +254,16 @@
         const deltaX = Math.abs(touchEndX - touchStartX);
         // Swipe down from top 100px of screen, mostly vertical
         if (touchStartY < 100 && deltaY > 80 && deltaX < 50) {
-          showCommandPalette = true;
+          uiStore.openCommandPalette();
         }
       };
       document.addEventListener("touchstart", handleTouchStart);
       document.addEventListener("touchend", handleTouchEnd);
     } catch (e) {
       console.error("[App] Initialization error:", e);
-      error = e instanceof Error ? e.message : String(e);
+      uiStore.setError(e instanceof Error ? e.message : String(e));
     } finally {
-      isLoading = false;
+      entryStore.setLoading(false);
     }
   });
 
@@ -386,7 +278,7 @@
   });
 
   // Initialize the workspace CRDT
-  async function initializeWorkspaceCrdt() {
+  async function setupWorkspaceCrdt() {
     if (!backend) return;
 
     try {
@@ -543,137 +435,33 @@
       // If null, rooms will be "doc:{path}" instead of "{id}:doc:{path}"
       setWorkspaceId(workspaceId);
 
-      // Initialize workspace CRDT
-      await initWorkspace({
-        workspaceId: workspaceId ?? undefined,
-        serverUrl: collaborationEnabled ? collaborationServerUrl : null,
-        onFilesChange: (files) => {
-          console.log("[App] Workspace CRDT files changed:", files.size);
-          // NOTE: We intentionally do NOT rebuild the tree from CRDT here.
-          // The tree continues to come from the backend to avoid sync issues.
-          // The CRDT is used only for syncing metadata between clients.
-          // In the future, we can enable CRDT-driven tree once the sync is more robust.
+      // Initialize workspace CRDT using service
+      workspaceCrdtInitialized = await initializeWorkspaceCrdt(
+        workspaceId,
+        collaborationServerUrl,
+        collaborationEnabled,
+        backend,
+        {
+          onFilesChange: (files) => {
+            console.log("[App] Workspace CRDT files changed:", files.size);
+          },
+          onConnectionChange: (connected) => {
+            console.log("[App] Workspace CRDT connection:", connected ? "online" : "offline");
+            collaborationStore.setConnected(connected);
+          },
+          onRemoteFileSync: async (created, deleted) => {
+            console.log(`[App] Remote file sync: created ${created.length}, deleted ${deleted.length}`);
+            if (created.length > 0 || deleted.length > 0) {
+              await refreshTree();
+              await runValidation();
+              await persistNow();
+            }
+          },
         },
-        onConnectionChange: (connected) => {
-          console.log(
-            "[App] Workspace CRDT connection:",
-            connected ? "online" : "offline",
-          );
-          collaborationConnected = connected;
-        },
-      });
-
-      workspaceCrdtInitialized = true;
-
-      // Sync existing files from backend into CRDT
-      await syncFromBackend(backend);
-
-      // Garbage collect old deleted files (older than 7 days)
-      const purged = garbageCollect(7 * 24 * 60 * 60 * 1000);
-      if (purged > 0) {
-        console.log(
-          `[App] Garbage collected ${purged} old deleted files from CRDT`,
-        );
-      }
-
-      const stats = getWorkspaceStats();
-      console.log(
-        `[App] Workspace CRDT initialized: ${stats.activeFiles} files, ${stats.totalAttachments} attachments`,
       );
     } catch (e) {
       console.error("[App] Failed to initialize workspace CRDT:", e);
-      // Continue without CRDT - fall back to backend-only mode
       workspaceCrdtInitialized = false;
-    }
-  }
-
-  // Update CRDT when a file's metadata changes
-  function updateCrdtFileMetadata(
-    path: string,
-    frontmatter: Record<string, unknown>,
-  ) {
-    if (!workspaceCrdtInitialized) return;
-
-    try {
-      updateFileMetadata(path, {
-        title: (frontmatter.title as string) ?? null,
-        partOf: (frontmatter.part_of as string) ?? null,
-        contents: frontmatter.contents
-          ? (frontmatter.contents as string[])
-          : null,
-        audience: (frontmatter.audience as string[]) ?? null,
-        description: (frontmatter.description as string) ?? null,
-        extra: Object.fromEntries(
-          Object.entries(frontmatter).filter(
-            ([key]) =>
-              ![
-                "title",
-                "part_of",
-                "contents",
-                "attachments",
-                "audience",
-                "description",
-              ].includes(key),
-          ),
-        ),
-      });
-    } catch (e) {
-      console.error("[App] Failed to update CRDT metadata:", e);
-      // Don't throw - CRDT errors should not break the app
-    }
-  }
-
-  // Add a new file to CRDT
-  function addFileToCrdt(
-    path: string,
-    frontmatter: Record<string, unknown>,
-    parentPath: string | null,
-  ) {
-    if (!workspaceCrdtInitialized) return;
-
-    try {
-      const metadata: FileMetadata = {
-        title: (frontmatter.title as string) ?? null,
-        partOf: parentPath ?? (frontmatter.part_of as string) ?? null,
-        contents: frontmatter.contents
-          ? (frontmatter.contents as string[])
-          : null,
-        attachments: ((frontmatter.attachments as string[]) ?? []).map((p) => ({
-          path: p,
-          source: "local",
-          hash: "",
-          mimeType: "",
-          size: 0,
-          deleted: false,
-        })),
-        deleted: false,
-        audience: (frontmatter.audience as string[]) ?? null,
-        description: (frontmatter.description as string) ?? null,
-        extra: Object.fromEntries(
-          Object.entries(frontmatter).filter(
-            ([key]) =>
-              ![
-                "title",
-                "part_of",
-                "contents",
-                "attachments",
-                "audience",
-                "description",
-              ].includes(key),
-          ),
-        ),
-        modifiedAt: Date.now(),
-      };
-
-      updateFileMetadata(path, metadata);
-
-      // Add to parent's contents if parent exists
-      if (parentPath) {
-        addToContents(parentPath, path);
-      }
-    } catch (e) {
-      console.error("[App] Failed to add file to CRDT:", e);
-      // Don't throw - CRDT errors should not break the app
     }
   }
 
@@ -681,15 +469,14 @@
   async function openEntry(path: string) {
     if (!backend) return;
 
+    // Auto-save before switching documents
     if (isDirty) {
-      const confirm = window.confirm(
-        "You have unsaved changes. Do you want to discard them?",
-      );
-      if (!confirm) return;
+      cancelAutoSave();
+      await save();
     }
 
     try {
-      isLoading = true;
+      entryStore.setLoading(true);
 
       // Cleanup previous blob URLs
       revokeBlobUrls();
@@ -708,24 +495,27 @@
         displayContent = await transformAttachmentPaths(
           currentEntry.content,
           currentEntry.path,
+          backend,
         );
 
         // Setup Y.js collaboration for this document
-        // Always disconnect previous collaboration session (if any). We keep the session cached
-        // to avoid `ystate.doc` errors from destroying Y.Doc while TipTap plugins are still tearing down.
+        // Destroy the previous collaboration session to prevent stale data from corrupting other clients.
+        // We use destroyDocument with a delay to let TipTap plugins finish tearing down.
         if (currentCollaborationPath) {
-          currentYDoc = null;
-          currentProvider = null;
+          const pathToDestroy = currentCollaborationPath;
+          collaborationStore.clearCollaborationSession();
           await tick();
-          try {
-            disconnectDocument(currentCollaborationPath);
-          } catch (e) {
-            console.warn(
-              "[App] Failed to disconnect collaboration session:",
-              e,
-            );
-          }
-          currentCollaborationPath = null;
+          // Delay destruction to avoid `ystate.doc` errors from TipTap
+          setTimeout(() => {
+            try {
+              destroyDocument(pathToDestroy);
+            } catch (e) {
+              console.warn(
+                "[App] Failed to destroy collaboration session:",
+                e,
+              );
+            }
+          }, 100);
         }
 
         // Connect to collaboration for this entry only if enabled.
@@ -765,54 +555,83 @@
               ")",
             );
 
-            const { ydoc, provider } = getCollaborativeDocument(relativePath);
-            currentYDoc = ydoc;
-            currentProvider = provider;
-            currentCollaborationPath = relativePath;
+            const { ydoc, provider } = getCollaborativeDocument(relativePath, {
+              initialContent: currentEntry.content, // Seed Y.Doc with content on first create
+            });
+            collaborationStore.setCollaborationSession(ydoc, provider, relativePath);
           } catch (e) {
             console.warn("[App] Failed to setup collaboration:", e);
-            currentYDoc = null;
-            currentProvider = null;
-            currentCollaborationPath = null;
+            collaborationStore.clearCollaborationSession();
           }
         }
       } else {
-        displayContent = "";
-        currentYDoc = null;
-        currentProvider = null;
+        entryStore.setDisplayContent("");
+        collaborationStore.clearCollaborationSession();
       }
 
-      isDirty = false;
-      error = null;
+      entryStore.markClean();
+      uiStore.clearError();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      uiStore.setError(e instanceof Error ? e.message : String(e));
     } finally {
-      isLoading = false;
+      entryStore.setLoading(false);
     }
   }
 
   // Save current entry
   async function save() {
     if (!backend || !currentEntry || !editorRef) return;
+    if (isSaving) return; // Prevent concurrent saves
 
     try {
+      entryStore.setSaving(true);
       const markdownWithBlobUrls = editorRef.getMarkdown();
       // Reverse-transform blob URLs back to attachment paths
       const markdown = reverseBlobUrlsToAttachmentPaths(
         markdownWithBlobUrls || "",
       );
       await backend.saveEntry(currentEntry.path, markdown);
-      isDirty = false;
+      entryStore.markClean();
       // Trigger persist for WASM backend
       await persistNow();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      uiStore.setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      entryStore.setSaving(false);
     }
   }
+  
+  // Cancel pending auto-save
+  function cancelAutoSave() {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+  }
+  
+  // Schedule auto-save with debounce
+  function scheduleAutoSave() {
+    cancelAutoSave();
+    autoSaveTimer = setTimeout(() => {
+      autoSaveTimer = null;
+      if (isDirty) {
+        save();
+      }
+    }, AUTO_SAVE_DELAY_MS);
+  }
 
-  // Handle content changes
+  // Handle content changes - triggers debounced auto-save
   function handleContentChange(_markdown: string) {
-    isDirty = true;
+    entryStore.markDirty();
+    scheduleAutoSave();
+  }
+  
+  // Handle editor blur - save immediately if dirty
+  function handleEditorBlur() {
+    cancelAutoSave();
+    if (isDirty) {
+      save();
+    }
   }
 
   // Toggle node expansion
@@ -837,7 +656,7 @@
   // Keyboard shortcuts
   // Collaboration handlers
   async function handleCollaborationToggle(enabled: boolean) {
-    collaborationEnabled = enabled;
+    collaborationStore.setEnabled(enabled);
 
     if (enabled) {
       // Reconnect with the current server URL
@@ -847,7 +666,7 @@
       }
       // Re-initialize workspace CRDT if needed
       if (!workspaceCrdtInitialized && !workspaceCrdtDisabled) {
-        await initializeWorkspaceCrdt();
+        await setupWorkspaceCrdt();
       } else {
         reconnectWorkspace();
       }
@@ -857,13 +676,11 @@
       }
     } else {
       // Disconnect collaboration
-      collaborationConnected = false;
+      collaborationStore.setConnected(false);
       disconnectWorkspace();
       if (currentCollaborationPath) {
         disconnectDocument(currentCollaborationPath);
-        currentYDoc = null;
-        currentProvider = null;
-        currentCollaborationPath = null;
+        collaborationStore.clearCollaborationSession();
       }
       // Refresh current entry without collaboration
       if (currentEntry) {
@@ -878,26 +695,24 @@
     // Reload server URL from localStorage in case it was updated
     const savedUrl = localStorage.getItem("diaryx-sync-server");
     if (savedUrl) {
-      collaborationServerUrl = savedUrl;
+      collaborationStore.setServerUrl(savedUrl);
       setCollaborationServer(savedUrl);
       setWorkspaceServer(savedUrl);
     }
 
     // Disconnect and reconnect
-    collaborationConnected = false;
+    collaborationStore.setConnected(false);
     disconnectWorkspace();
     if (currentCollaborationPath) {
       disconnectDocument(currentCollaborationPath);
-      currentYDoc = null;
-      currentProvider = null;
-      currentCollaborationPath = null;
+      collaborationStore.clearCollaborationSession();
     }
 
     // Re-initialize
     if (!workspaceCrdtDisabled) {
       await destroyWorkspace();
-      workspaceCrdtInitialized = false;
-      await initializeWorkspaceCrdt();
+      workspaceStore.setWorkspaceCrdtInitialized(false);
+      await setupWorkspaceCrdt();
     }
 
     // Refresh current entry
@@ -914,7 +729,7 @@
     // Command palette with Cmd/Ctrl + K
     if ((event.metaKey || event.ctrlKey) && event.key === "k") {
       event.preventDefault();
-      showCommandPalette = true;
+      uiStore.openCommandPalette();
     }
     // Toggle left sidebar with Cmd/Ctrl + B
     if ((event.metaKey || event.ctrlKey) && event.key === "b") {
@@ -963,9 +778,9 @@
       await openEntry(newPath);
       await runValidation();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      uiStore.setError(e instanceof Error ? e.message : String(e));
     } finally {
-      showNewEntryModal = false;
+      uiStore.closeNewEntryModal();
     }
   }
 
@@ -1039,7 +854,7 @@
   async function runValidation() {
     if (!backend) return;
     try {
-      validationResult = await backend.validateWorkspace();
+      workspaceStore.setValidationResult(await backend.validateWorkspace());
       console.log("[App] Validation result:", validationResult);
       console.log("[App] Warnings:", validationResult?.warnings);
     } catch (e) {
@@ -1107,10 +922,10 @@
     try {
       if (showUnlinkedFiles) {
         // "Show All Files" mode - use filesystem tree
-        tree = await backend.getFilesystemTree(undefined, showHiddenFiles);
+        workspaceStore.setTree(await backend.getFilesystemTree(undefined, showHiddenFiles));
       } else {
         // Normal mode - use hierarchy tree
-        tree = await backend.getWorkspaceTree();
+        workspaceStore.setTree(await backend.getWorkspaceTree());
       }
     } catch (e) {
       console.error("[App] Error refreshing tree:", e);
@@ -1154,14 +969,7 @@
       // Update CRDT with new attachment
       if (workspaceCrdtInitialized) {
         try {
-          const attachmentRef: BinaryRef = {
-            path: attachmentPath,
-            source: "local",
-            hash: "", // Could compute hash here if needed
-            mimeType: file.type,
-            size: file.size,
-            deleted: false,
-          };
+          const attachmentRef = createAttachmentRef(attachmentPath, file);
           crdtAddAttachment(entryPath, attachmentRef);
         } catch (e) {
           console.error("[App] Failed to add attachment to CRDT:", e);
@@ -1183,7 +991,7 @@
           const blobUrl = URL.createObjectURL(blob);
 
           // Track for cleanup
-          blobUrlMap.set(attachmentPath, blobUrl);
+          trackBlobUrl(attachmentPath, blobUrl);
 
           // Insert image at cursor using Editor's insertImage method
           editorRef.insertImage(blobUrl, file.name);
@@ -1246,14 +1054,7 @@
       // Update CRDT with new attachment
       if (workspaceCrdtInitialized) {
         try {
-          const attachmentRef: BinaryRef = {
-            path: attachmentPath,
-            source: "local",
-            hash: "",
-            mimeType: file.type,
-            size: file.size,
-            deleted: false,
-          };
+          const attachmentRef = createAttachmentRef(attachmentPath, file);
           crdtAddAttachment(entryPath, attachmentRef);
         } catch (e) {
           console.error("[App] Failed to add attachment to CRDT:", e);
@@ -1284,7 +1085,7 @@
       const blobUrl = URL.createObjectURL(blob);
 
       // Track for cleanup
-      blobUrlMap.set(attachmentPath, blobUrl);
+      trackBlobUrl(attachmentPath, blobUrl);
 
       return { blobUrl, attachmentPath };
     } catch (e) {
@@ -1441,6 +1242,9 @@
           // Update CRDT
           updateCrdtFileMetadata(path, currentEntry.frontmatter);
           titleError = null;
+          
+          // Refresh tree to update title display
+          await refreshTree();
         }
       } else {
         // Non-title properties: update normally
@@ -1453,6 +1257,11 @@
 
         // Update CRDT
         updateCrdtFileMetadata(path, currentEntry.frontmatter);
+        
+        // Refresh tree if contents or part_of changed (affects hierarchy)
+        if (key === 'contents' || key === 'part_of') {
+          await refreshTree();
+        }
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -1726,159 +1535,35 @@
   <!-- Main Content Area -->
   <main class="flex-1 flex flex-col overflow-hidden min-w-0">
     {#if currentEntry}
-      <header
-        class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-border bg-card shrink-0"
-      >
-        <!-- Left side: toggle + title -->
-        <div class="flex items-center gap-2 min-w-0 flex-1">
-          <!-- Mobile menu button -->
-          <Button
-            variant="ghost"
-            size="icon"
-            onclick={toggleLeftSidebar}
-            class="size-8 md:hidden shrink-0"
-            aria-label="Toggle navigation"
-          >
-            <Menu class="size-4" />
-          </Button>
+      <EditorHeader
+        title={getEntryTitle(currentEntry)}
+        path={currentEntry.path}
+        {isDirty}
+        onSave={save}
+        onExport={exportEntry}
+        onToggleLeftSidebar={toggleLeftSidebar}
+        onToggleRightSidebar={toggleRightSidebar}
+      />
 
-          <!-- Desktop left sidebar toggle -->
-          <Button
-            variant="ghost"
-            size="icon"
-            onclick={toggleLeftSidebar}
-            class="size-8 hidden md:flex shrink-0"
-            aria-label="Toggle navigation sidebar"
-          >
-            <PanelLeft class="size-4" />
-          </Button>
-
-          <div class="min-w-0 flex-1">
-            <h2
-              class="text-lg md:text-xl font-semibold text-foreground truncate"
-            >
-              {getEntryTitle(currentEntry)}
-            </h2>
-            <p
-              class="text-xs md:text-sm text-muted-foreground truncate hidden sm:block"
-            >
-              {currentEntry.path}
-            </p>
-          </div>
-        </div>
-
-        <!-- Right side: actions -->
-        <div class="flex items-center gap-1 md:gap-2 ml-2 shrink-0">
-          {#if isDirty}
-            <span
-              class="hidden sm:inline-flex px-2 py-1 text-xs font-medium rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
-            >
-              Unsaved
-            </span>
-          {/if}
-          <Button
-            onclick={save}
-            disabled={!isDirty}
-            size="sm"
-            class="gap-1 md:gap-2"
-          >
-            <Save class="size-4" />
-            <span class="hidden sm:inline">Save</span>
-          </Button>
-          <Button
-            onclick={exportEntry}
-            variant="outline"
-            size="sm"
-            class="gap-1 md:gap-2 hidden sm:flex"
-          >
-            <Download class="size-4" />
-            <span class="hidden md:inline">Export</span>
-          </Button>
-
-          <!-- Properties panel toggle -->
-          <Button
-            variant="ghost"
-            size="icon"
-            onclick={toggleRightSidebar}
-            class="size-8"
-            aria-label="Toggle properties panel"
-          >
-            <PanelRight class="size-4" />
-          </Button>
-        </div>
-      </header>
-
-      <div class="flex-1 overflow-y-auto p-4 md:p-6">
-        {#if Editor}
-          {#key `${currentCollaborationPath ?? currentEntry.path}:${collaborationEnabled ? "collab" : "local"}`}
-            <Editor
-              debugMenus={false}
-              bind:this={editorRef}
-              content={displayContent}
-              onchange={handleContentChange}
-              placeholder="Start writing..."
-              onInsertImage={handleEditorImageInsert}
-              onFileDrop={handleEditorFileDrop}
-              onLinkClick={handleLinkClick}
-              ydoc={collaborationEnabled
-                ? (currentYDoc ?? undefined)
-                : undefined}
-              provider={collaborationEnabled
-                ? (currentProvider ?? undefined)
-                : undefined}
-            />
-          {/key}
-        {:else}
-          <div class="flex items-center justify-center h-full">
-            <div
-              class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"
-            ></div>
-          </div>
-        {/if}
-      </div>
+      <EditorContent
+        {Editor}
+        bind:editorRef
+        content={displayContent}
+        editorKey={`${currentCollaborationPath ?? currentEntry.path}:${collaborationEnabled ? "collab" : "local"}`}
+        {collaborationEnabled}
+        {currentYDoc}
+        {currentProvider}
+        onchange={handleContentChange}
+        onblur={handleEditorBlur}
+        onInsertImage={handleEditorImageInsert}
+        onFileDrop={handleEditorFileDrop}
+        onLinkClick={handleLinkClick}
+      />
     {:else}
-      <!-- Empty state with sidebar toggles -->
-      <header
-        class="flex items-center justify-between px-4 py-3 border-b border-border bg-card shrink-0 md:hidden"
-      >
-        <Button
-          variant="ghost"
-          size="icon"
-          onclick={toggleLeftSidebar}
-          class="size-8"
-          aria-label="Toggle navigation"
-        >
-          <Menu class="size-4" />
-        </Button>
-        <span class="text-lg font-semibold">Diaryx</span>
-        <div class="size-8"></div>
-      </header>
-
-      <div class="flex-1 flex items-center justify-center">
-        <div class="text-center max-w-md px-4">
-          <!-- Desktop sidebar toggle when no entry -->
-          <div class="hidden md:flex justify-center mb-4">
-            {#if leftSidebarCollapsed}
-              <Button
-                variant="outline"
-                size="sm"
-                onclick={toggleLeftSidebar}
-                class="gap-2"
-              >
-                <PanelLeft class="size-4" />
-                Show Sidebar
-              </Button>
-            {/if}
-          </div>
-          <h2 class="text-2xl font-semibold text-foreground mb-2">
-            Welcome to Diaryx
-          </h2>
-          <p class="text-muted-foreground">
-            Select an entry from the sidebar to start editing, or create a new
-            one.
-          </p>
-        </div>
-      </div>
+      <EditorEmptyState
+        {leftSidebarCollapsed}
+        onToggleLeftSidebar={toggleLeftSidebar}
+      />
     {/if}
   </main>
 

@@ -388,84 +388,84 @@ impl<FS: FileSystem> Validator<FS> {
             // Check for unlisted .md files in the same directory
             // Only if this file has contents (is an index)
             if (!contents_list.is_empty() || index.frontmatter.contents.is_some())
-                && let Ok(entries) = std::fs::read_dir(dir) {
-                    let this_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                && let Ok(entries) = std::fs::read_dir(dir)
+            {
+                let this_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                    // Collect all attachments referenced by this index
-                    let referenced_attachments: HashSet<String> = index
-                        .frontmatter
-                        .attachments_list()
-                        .iter()
-                        .filter_map(|p| {
-                            Path::new(p)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.to_string())
-                        })
-                        .collect();
+                // Collect all attachments referenced by this index
+                let referenced_attachments: HashSet<String> = index
+                    .frontmatter
+                    .attachments_list()
+                    .iter()
+                    .filter_map(|p| {
+                        Path::new(p)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect();
 
-                    // Collect other index files in this directory
-                    let mut other_indexes: Vec<PathBuf> = Vec::new();
+                // Collect other index files in this directory
+                let mut other_indexes: Vec<PathBuf> = Vec::new();
 
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let entry_path = entry.path();
-                        if entry_path.is_file() {
-                            let extension = entry_path.extension().and_then(|e| e.to_str());
-                            let filename = entry_path.file_name().and_then(|n| n.to_str());
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let entry_path = entry.path();
+                    if entry_path.is_file() {
+                        let extension = entry_path.extension().and_then(|e| e.to_str());
+                        let filename = entry_path.file_name().and_then(|n| n.to_str());
 
-                            match extension {
-                                Some("md") => {
-                                    if let Some(fname) = filename {
-                                        // Skip the current file
-                                        if fname == this_filename {
-                                            continue;
-                                        }
-                                        // Check if it's an index file (README.md, index.md, or *.index.md)
-                                        let lower = fname.to_lowercase();
-                                        if lower == "readme.md"
-                                            || lower == "index.md"
-                                            || lower.ends_with(".index.md")
-                                        {
-                                            other_indexes.push(entry_path.clone());
-                                        }
-                                        // Check if this markdown file is in contents
-                                        if !listed_files.contains(fname) {
-                                            result.warnings.push(ValidationWarning::UnlistedFile {
-                                                index: path.clone(),
-                                                file: entry_path,
-                                            });
-                                        }
+                        match extension {
+                            Some("md") => {
+                                if let Some(fname) = filename {
+                                    // Skip the current file
+                                    if fname == this_filename {
+                                        continue;
+                                    }
+                                    // Check if it's an index file (README.md, index.md, or *.index.md)
+                                    let lower = fname.to_lowercase();
+                                    if lower == "readme.md"
+                                        || lower == "index.md"
+                                        || lower.ends_with(".index.md")
+                                    {
+                                        other_indexes.push(entry_path.clone());
+                                    }
+                                    // Check if this markdown file is in contents
+                                    if !listed_files.contains(fname) {
+                                        result.warnings.push(ValidationWarning::UnlistedFile {
+                                            index: path.clone(),
+                                            file: entry_path,
+                                        });
                                     }
                                 }
-                                Some(ext) if !ext.eq_ignore_ascii_case("md") => {
-                                    // Binary file - check if it's referenced by attachments
-                                    if let Some(fname) = filename
-                                        && !referenced_attachments.contains(fname) {
-                                            result.warnings.push(
-                                                ValidationWarning::OrphanBinaryFile {
-                                                    file: entry_path,
-                                                    // We can suggest connecting to the current index
-                                                    suggested_index: Some(path.clone()),
-                                                },
-                                            );
-                                        }
-                                }
-                                _ => {}
                             }
+                            Some(ext) if !ext.eq_ignore_ascii_case("md") => {
+                                // Binary file - check if it's referenced by attachments
+                                if let Some(fname) = filename
+                                    && !referenced_attachments.contains(fname)
+                                {
+                                    result.warnings.push(ValidationWarning::OrphanBinaryFile {
+                                        file: entry_path,
+                                        // We can suggest connecting to the current index
+                                        suggested_index: Some(path.clone()),
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
                     }
-
-                    // Report multiple indexes if found
-                    if !other_indexes.is_empty() {
-                        let mut all_indexes = other_indexes;
-                        all_indexes.push(path.clone());
-                        all_indexes.sort();
-                        result.warnings.push(ValidationWarning::MultipleIndexes {
-                            directory: dir.to_path_buf(),
-                            indexes: all_indexes,
-                        });
-                    }
                 }
+
+                // Report multiple indexes if found
+                if !other_indexes.is_empty() {
+                    let mut all_indexes = other_indexes;
+                    all_indexes.push(path.clone());
+                    all_indexes.sort();
+                    result.warnings.push(ValidationWarning::MultipleIndexes {
+                        directory: dir.to_path_buf(),
+                        indexes: all_indexes,
+                    });
+                }
+            }
         }
 
         Ok(result)
@@ -555,38 +555,40 @@ fn find_index_in_directory<FS: FileSystem>(
         for entry_path in entries {
             // Skip the excluded file
             if let Some(excl) = exclude
-                && entry_path == excl {
-                    continue;
-                }
+                && entry_path == excl
+            {
+                continue;
+            }
 
             // Only check markdown files
             if entry_path.extension().is_some_and(|ext| ext == "md") {
                 // If it's a file (not a dir), try to parse it as an index
                 if !ws.fs_ref().is_dir(&entry_path)
-                    && let Ok(index) = ws.parse_index(&entry_path) {
-                        // Check if it has contents (is an index)
-                        let is_index = index.frontmatter.contents.is_some()
-                            || !index.frontmatter.contents_list().is_empty();
+                    && let Ok(index) = ws.parse_index(&entry_path)
+                {
+                    // Check if it has contents (is an index)
+                    let is_index = index.frontmatter.contents.is_some()
+                        || !index.frontmatter.contents_list().is_empty();
 
-                        // Also consider typical index filenames if they could be empty
-                        // but 2025_12.md implies it likely has content.
-                        // For auto-fix, we prefer files that are clearly indexes.
-                        if is_index {
-                            indexes.push(entry_path);
-                        } else {
-                            // Fallback: check typical filenames if contents are empty/missing
-                            // to support newly created index files
-                            if let Some(fname) = entry_path.file_name().and_then(|n| n.to_str()) {
-                                let lower = fname.to_lowercase();
-                                if lower == "readme.md"
-                                    || lower == "index.md"
-                                    || lower.ends_with(".index.md")
-                                {
-                                    indexes.push(entry_path);
-                                }
+                    // Also consider typical index filenames if they could be empty
+                    // but 2025_12.md implies it likely has content.
+                    // For auto-fix, we prefer files that are clearly indexes.
+                    if is_index {
+                        indexes.push(entry_path);
+                    } else {
+                        // Fallback: check typical filenames if contents are empty/missing
+                        // to support newly created index files
+                        if let Some(fname) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            let lower = fname.to_lowercase();
+                            if lower == "readme.md"
+                                || lower == "index.md"
+                                || lower.ends_with(".index.md")
+                            {
+                                indexes.push(entry_path);
                             }
                         }
                     }
+                }
             }
         }
     }
@@ -781,9 +783,10 @@ impl<FS: FileSystem + Clone> ValidationFixer<FS> {
                             .into_iter()
                             .map(|item| {
                                 if let serde_yaml::Value::String(ref s) = item
-                                    && s == old_value {
-                                        return serde_yaml::Value::String(new_value.to_string());
-                                    }
+                                    && s == old_value
+                                {
+                                    return serde_yaml::Value::String(new_value.to_string());
+                                }
                                 item
                             })
                             .collect();

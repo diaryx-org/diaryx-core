@@ -353,7 +353,7 @@
                               class="mt-2 gap-1.5"
                               onclick={(e: MouseEvent) => {
                                 e.stopPropagation();
-                                if (error.index) onRemoveBrokenContentsRef(error.index, error.target);
+                                if (error.index && error.target) onRemoveBrokenContentsRef(error.index, error.target);
                               }}
                             >
                               <Wrench class="size-3" />

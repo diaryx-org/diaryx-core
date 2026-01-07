@@ -28,15 +28,44 @@ interface CollaborationSession {
 const sessions = new Map<string, CollaborationSession>();
 
 // Default configuration
-let serverUrl = "ws://localhost:1234";
+const SYNC_SERVER_KEY = "diaryx-sync-server";
+const DEFAULT_SERVER_URL = "ws://localhost:1234";
+let serverUrl = typeof window !== "undefined"
+  ? localStorage.getItem(SYNC_SERVER_KEY) || DEFAULT_SERVER_URL
+  : DEFAULT_SERVER_URL;
 let currentWorkspaceId: string | null = null;
 const SAVE_DEBOUNCE_MS = 5000; // 5 seconds debounce for markdown saves
 
+// Connection status callback for UI updates
+let connectionStatusCallback: ((connected: boolean) => void) | null = null;
+
+/**
+ * Set callback for connection status changes.
+ * Used by UI to show connected/disconnected indicator.
+ */
+export function setConnectionStatusCallback(
+  callback: ((connected: boolean) => void) | null
+): void {
+  connectionStatusCallback = callback;
+}
+
 /**
  * Configure the collaboration server URL.
+ * Persists to localStorage for future sessions.
+ * Clears document cache when URL changes to prevent content mixing.
  */
 export function setCollaborationServer(url: string): void {
+  const previousUrl = serverUrl;
   serverUrl = url;
+  if (typeof window !== "undefined") {
+    localStorage.setItem(SYNC_SERVER_KEY, url);
+  }
+  
+  // Clear document cache when server URL changes to prevent content mixing
+  if (previousUrl !== url) {
+    console.log(`[Y.js] Server URL changed from ${previousUrl} to ${url}, clearing document cache`);
+    clearAllDocumentCache();
+  }
 }
 
 /**
@@ -50,9 +79,17 @@ export function getCollaborationServer(): string {
  * Set the current workspace ID for room naming.
  * This prefixes all room names with "{workspaceId}:doc:" for multi-tenant scenarios.
  * Set to null to disable prefixing (local-only mode).
+ * Clears document cache when workspace changes to prevent content mixing.
  */
 export function setWorkspaceId(workspaceId: string | null): void {
+  const previousId = currentWorkspaceId;
   currentWorkspaceId = workspaceId;
+  
+  // Clear document cache when workspace ID changes to prevent content mixing
+  if (previousId !== workspaceId) {
+    console.log(`[Y.js] Workspace ID changed from ${previousId} to ${workspaceId}, clearing document cache`);
+    clearAllDocumentCache();
+  }
 }
 
 /**
@@ -138,6 +175,10 @@ export function setUserInfo(name: string, color: string): void {
 /**
  * Get or create a collaborative document session.
  * Includes offline persistence and change tracking.
+ * 
+ * @param documentPath - Path to the document
+ * @param options.onMarkdownSave - Callback when content should be saved
+ * @param options.initialContent - Initial markdown content for first-time sync
  */
 export function getCollaborativeDocument(
   documentPath: string,
@@ -170,35 +211,51 @@ export function getCollaborativeDocument(
 
   // Create IndexedDB persistence for offline support
   // This persists the Y.Doc state locally so it survives page refreshes
-  const persistence = new IndexeddbPersistence(`diaryx-${documentPath}`, ydoc);
+  // Include workspaceId in key to prevent content mixing between workspaces
+  const dbName = currentWorkspaceId 
+    ? `diaryx-${currentWorkspaceId}-${documentPath}` 
+    : `diaryx-local-${documentPath}`;
+  const persistence = new IndexeddbPersistence(dbName, ydoc);
 
-  persistence.on("synced", () => {
-    console.log(`[Y.js] IndexedDB synced for ${documentPath}`);
-  });
-
-  // Create Hocuspocus provider for real-time sync
+  // Create Hocuspocus provider but DON'T connect yet
+  // We'll connect after IndexedDB syncs and we've seeded initial content if needed
   const userInfo = getUserInfo();
   const roomName = getDocumentRoomName(documentPath);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const provider = new HocuspocusProvider({
     url: serverUrl,
     name: roomName,
     document: ydoc,
+    connect: false, // Important: don't connect immediately (valid at runtime)
     onConnect: () => {
-      console.log(`[Y.js] Connected to ${roomName} (path: ${documentPath})`);
+      console.log(`[Y.js] Connected to ${roomName}`);
+      connectionStatusCallback?.(true);
     },
     onDisconnect: () => {
       console.log(`[Y.js] Disconnected from ${roomName}`);
+      connectionStatusCallback?.(false);
     },
-    onSynced: ({ state }) => {
-      console.log(
-        `[Y.js] Synced ${roomName}`,
-        state ? "with server" : "from cache",
-      );
+    onSynced: () => {
+      console.log(`[Y.js] Synced ${roomName}`);
     },
-  });
+  } as any);
 
-  // Set user awareness for cursors
+  // Set user info for awareness (collaborative cursors)
   provider.awareness?.setLocalStateField("user", userInfo);
+
+  // Wait for IndexedDB to sync, then connect to server
+  persistence.on("synced", () => {
+    console.log(`[Y.js] IndexedDB synced for ${documentPath}`);
+    
+    // NOTE: We do NOT seed content here - let the Editor handle it.
+    // The Editor uses a proper TipTap temporary editor to seed content,
+    // which correctly parses markdown into ProseMirror nodes.
+    // Seeding raw text here causes "# Heading" to appear as plain text.
+    
+    // NOW connect to server
+    console.log(`[Y.js] Connecting to server for ${documentPath}`);
+    provider.connect();
+  });
 
   // Create session
   const session: CollaborationSession = {
@@ -230,6 +287,7 @@ export function getCollaborativeDocument(
 
   return { ydoc, provider };
 }
+
 
 /**
  * Update the markdown save callback for a document.
@@ -362,4 +420,43 @@ export function getActiveSessions(): string[] {
  */
 export function getSessionCount(): number {
   return sessions.size;
+}
+
+/**
+ * Clear all document caches from IndexedDB.
+ * This destroys all active sessions and deletes all diaryx-* document databases.
+ * Call this when switching servers or workspaces to prevent content mixing.
+ */
+export async function clearAllDocumentCache(): Promise<number> {
+  console.log("[Y.js] Clearing all document cache...");
+  
+  // First destroy all active sessions
+  destroyAll();
+  
+  // Then delete all diaryx-* IndexedDB databases (but NOT diaryx-workspace-*)
+  let deletedCount = 0;
+  
+  if (typeof window !== "undefined" && window.indexedDB) {
+    try {
+      const databases = await window.indexedDB.databases();
+      for (const db of databases) {
+        if (db.name && 
+            db.name.startsWith("diaryx-") && 
+            !db.name.startsWith("diaryx-workspace-")) {
+          try {
+            window.indexedDB.deleteDatabase(db.name);
+            deletedCount++;
+            console.log(`[Y.js] Deleted IndexedDB: ${db.name}`);
+          } catch (e) {
+            console.warn(`[Y.js] Failed to delete ${db.name}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[Y.js] Failed to enumerate IndexedDB databases:", e);
+    }
+  }
+  
+  console.log(`[Y.js] Cleared ${deletedCount} document caches`);
+  return deletedCount;
 }

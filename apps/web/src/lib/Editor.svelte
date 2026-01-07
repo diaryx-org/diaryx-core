@@ -34,6 +34,7 @@
     content?: string;
     placeholder?: string;
     onchange?: (markdown: string) => void;
+    onblur?: () => void;
     readonly?: boolean;
     onInsertImage?: () => void;
     onFileDrop?: (
@@ -54,6 +55,7 @@
     content = "",
     placeholder = "Start writing...",
     onchange,
+    onblur,
     readonly = false,
     onInsertImage,
     onFileDrop,
@@ -89,7 +91,6 @@
 
   // Track what kind of editor we built last, so we only rebuild when it truly changes.
   // This avoids constantly recreating the editor (which can lead to blank content/races).
-  let lastCollabKey: string | null = null;
   let lastReadonly: boolean | null = null;
   let lastPlaceholder: string | null = null;
   let lastCollabReady: boolean | null = null;
@@ -105,14 +106,16 @@
     cleanupProviderSyncedHook();
     if (!provider || collabReady) return;
 
-    // HocuspocusProvider is an EventEmitter-like object.
-    // We listen once for "synced" and then flip collabReady.
     const anyProvider = provider as any;
 
-    if (
-      typeof anyProvider?.on === "function" &&
-      typeof anyProvider?.off === "function"
-    ) {
+    // HocuspocusProvider: check if already synced
+    if (anyProvider.synced === true) {
+      collabReady = true;
+      return;
+    }
+
+    // HocuspocusProvider uses 'synced' event (not 'sync')
+    if (typeof anyProvider.on === "function" && typeof anyProvider.off === "function") {
       const handler = () => {
         collabReady = true;
         anyProvider.off("synced", handler);
@@ -130,9 +133,9 @@
     }
 
     // Fallback: poll provider.synced boolean
-    if (typeof (provider as any).synced === "boolean") {
+    if (typeof anyProvider.synced === "boolean") {
       const interval = window.setInterval(() => {
-        if ((provider as any)?.synced) {
+        if (anyProvider?.synced) {
           window.clearInterval(interval);
           collabReady = true;
           providerSyncedUnsub = null;
@@ -302,6 +305,40 @@
     // Only enable Collaboration after provider has reported initial sync.
     // Until then, show the local markdown `content` in a regular editor.
     if (ydoc && provider && collabReady) {
+      // CRITICAL: If the Y.Doc fragment is empty after sync, we need to populate it
+      // with the local markdown content. Without this, switching to Collaboration mode
+      // would show empty content because TipTap ignores the `content` prop when
+      // Collaboration is enabled.
+      const fragment = ydoc.getXmlFragment("default");
+      
+      // Only seed content if:
+      // 1. Fragment is truly empty (no content from server or cache)
+      // 2. We have local content to seed
+      // If server already has content, we should NOT seed - just use server content
+      if (fragment.length === 0 && content) {
+        console.log("[Editor] Y.Doc is empty after sync, initializing with local content");
+        // We'll initialize the Y.Doc by creating a temporary editor and syncing it
+        // This is done BEFORE we create our main editor
+        const tempEditor = new Editor({
+          extensions: [
+            StarterKit.configure({
+              codeBlock: false,
+              link: false,
+            }),
+            Markdown,
+            Collaboration.configure({
+              document: ydoc,
+            }),
+          ],
+          content: content,
+          contentType: "markdown",
+        });
+        // Content is now in the Y.Doc, destroy temp editor
+        tempEditor.destroy();
+      } else if (fragment.length > 0) {
+        console.log("[Editor] Y.Doc has content from sync, using that instead of local content");
+      }
+
       extensions.push(
         Collaboration.configure({
           document: ydoc,
@@ -319,13 +356,17 @@
       );
     }
 
+    // Determine what content to use:
+    // - If Collaboration is NOT enabled: use local markdown content
+    // - If Collaboration IS enabled: don't pass content prop (Y.Doc is source of truth)
+    const useCollaboration = ydoc && provider && collabReady;
+    
     editor = new Editor({
       element,
       extensions,
-      // Always start by showing local content; once collabReady flips,
-      // the editor will be rebuilt with Collaboration enabled.
-      content: content,
-      contentType: "markdown",
+      // Only pass content when NOT using collaboration
+      // When using collaboration, Y.Doc is the source of truth
+      ...(useCollaboration ? {} : { content: content, contentType: "markdown" }),
       editable: !readonly,
       onCreate: () => {
         // Track the initial content so we don't reset it on the first effect run
@@ -342,6 +383,7 @@
       },
       onBlur: () => {
         editorHasFocus = false;
+        onblur?.();
       },
       editorProps: {
         attributes: {
@@ -426,7 +468,6 @@
         }
         createEditor();
         editorInitialized = true;
-        lastCollabKey = ydoc ? "yjs" : "local";
         lastReadonly = readonly;
         lastPlaceholder = placeholder;
         lastCollabReady = collabReady;
@@ -443,7 +484,6 @@
       }
       createEditor();
       editorInitialized = true;
-      lastCollabKey = ydoc ? "yjs" : "local";
       lastReadonly = readonly;
       lastPlaceholder = placeholder;
       lastCollabReady = collabReady;
@@ -462,8 +502,8 @@
   });
 
   // Scope rebuild:
-  // - Rebuild when switching between local <-> Yjs, or when readonly/placeholder changes,
-  //   OR when collabReady flips after initial provider sync.
+  // - Rebuild when collabReady flips (after sync completes), or when readonly/placeholder changes.
+  // - Do NOT rebuild just because ydoc prop arrived - that happens before sync and would lose content.
   $effect(() => {
     if (!element) return;
     // Skip if we haven't done initial creation yet
@@ -472,16 +512,18 @@
     // Keep the sync hook current when switching providers/docs.
     hookProviderSyncedOnce();
 
-    const collabKey = ydoc ? "yjs" : "local";
+    // Only rebuild when collabReady actually changes (after sync),
+    // or when readonly/placeholder changes.
+    // The key insight: we DON'T want to rebuild just because ydoc arrived -
+    // we want to keep showing local content until sync completes.
     const needsRebuild =
-      collabKey !== lastCollabKey ||
       readonly !== lastReadonly ||
       placeholder !== lastPlaceholder ||
       collabReady !== lastCollabReady;
 
     if (!needsRebuild) return;
 
-    lastCollabKey = collabKey;
+    // Update tracking for what we're about to build
     lastReadonly = readonly;
     lastPlaceholder = placeholder;
     lastCollabReady = collabReady;
