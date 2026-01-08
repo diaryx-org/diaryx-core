@@ -200,6 +200,16 @@
       <Button
         variant="ghost"
         size="icon"
+        onclick={() => tree && onExport(tree.path)}
+        class="size-8"
+        aria-label="Export workspace"
+        disabled={!tree}
+      >
+        <Download class="size-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
         onclick={onOpenSettings}
         class="size-8"
         aria-label="Open settings"

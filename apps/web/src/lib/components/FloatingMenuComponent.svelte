@@ -261,6 +261,7 @@
 <style>
   .floating-menu {
     z-index: 9999;
+    display: none;
   }
 
   .trigger-button {

@@ -12,6 +12,8 @@
     ChevronRight,
     ChevronDown,
     Loader2,
+    Image,
+    Paperclip,
   } from "@lucide/svelte";
 
   interface Props {
@@ -273,9 +275,17 @@
                   <FolderOpen class="size-4 text-muted-foreground" />
                 {:else}
                   <span class="w-3"></span>
-                  <FileText class="size-4 text-muted-foreground" />
+                  {#if node.isBinary}
+                    {#if /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)}
+                      <Image class="size-4 text-blue-500" />
+                    {:else}
+                      <Paperclip class="size-4 text-amber-500" />
+                    {/if}
+                  {:else}
+                    <FileText class="size-4 text-muted-foreground" />
+                  {/if}
                 {/if}
-                <span class="truncate">{node.name}</span>
+                <span class="truncate" class:text-blue-600={node.isBinary && /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)} class:text-amber-600={node.isBinary && !/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)}>{node.name}</span>
               </button>
               {#if node.children.length > 0 && expandedNodes.has(node.path)}
                 {#each node.children as child}
