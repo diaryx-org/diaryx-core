@@ -563,7 +563,7 @@
          md:border md:border-border md:rounded-lg"
 >
   <!-- Desktop inline toolbar: fixed at top, hidden on mobile -->
-  {#if !readonly && !mobileState.isMobile}
+  {#if !readonly && (!mobileState.isMobile || (mobileState.isMobile && !mobileState.keyboardVisible))}
     <InlineToolbar {editor} position="top" />
   {/if}
 

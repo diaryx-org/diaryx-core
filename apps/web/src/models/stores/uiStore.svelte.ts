@@ -41,8 +41,9 @@ export function getUIStore() {
     get leftSidebarCollapsed() { return leftSidebarCollapsed; },
     get rightSidebarCollapsed() { return rightSidebarCollapsed; },
     
-    // Modal getters
+    // Modal getters/setters
     get showCommandPalette() { return showCommandPalette; },
+    set showCommandPalette(value: boolean) { showCommandPalette = value; },
     get showSettingsDialog() { return showSettingsDialog; },
     get showExportDialog() { return showExportDialog; },
     get showNewEntryModal() { return showNewEntryModal; },

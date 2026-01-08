@@ -120,124 +120,112 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="menu-expanded" onclick={(e) => e.stopPropagation()}>
       <div class="menu-section">
-        <span class="menu-section-label">Headings</span>
-        <div class="menu-row">
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, () => handleHeading(1))}
-            class="menu-item"
-            title="Heading 1"
-          >
-            <Heading1 class="size-4" />
-            <span>H1</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, () => handleHeading(2))}
-            class="menu-item"
-            title="Heading 2"
-          >
-            <Heading2 class="size-4" />
-            <span>H2</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, () => handleHeading(3))}
-            class="menu-item"
-            title="Heading 3"
-          >
-            <Heading3 class="size-4" />
-            <span>H3</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, () => handleHeading(1))}
+          class="menu-item"
+          title="Heading 1"
+        >
+          <Heading1 class="size-4" />
+          <span>Heading 1</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, () => handleHeading(2))}
+          class="menu-item"
+          title="Heading 2"
+        >
+          <Heading2 class="size-4" />
+          <span>Heading 2</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, () => handleHeading(3))}
+          class="menu-item"
+          title="Heading 3"
+        >
+          <Heading3 class="size-4" />
+          <span>Heading 3</span>
+        </button>
       </div>
 
       <div class="menu-divider"></div>
 
       <div class="menu-section">
-        <span class="menu-section-label">Lists</span>
-        <div class="menu-row">
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleBulletList)}
-            class="menu-item"
-            title="Bullet List"
-          >
-            <List class="size-4" />
-            <span>Bullet</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleOrderedList)}
-            class="menu-item"
-            title="Numbered List"
-          >
-            <ListOrdered class="size-4" />
-            <span>Numbered</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleTaskList)}
-            class="menu-item"
-            title="Task List"
-          >
-            <CheckSquare class="size-4" />
-            <span>Tasks</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleBulletList)}
+          class="menu-item"
+          title="Bullet List"
+        >
+          <List class="size-4" />
+          <span>Bullet List</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleOrderedList)}
+          class="menu-item"
+          title="Numbered List"
+        >
+          <ListOrdered class="size-4" />
+          <span>Numbered List</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleTaskList)}
+          class="menu-item"
+          title="Task List"
+        >
+          <CheckSquare class="size-4" />
+          <span>Task List</span>
+        </button>
       </div>
 
       <div class="menu-divider"></div>
 
       <div class="menu-section">
-        <span class="menu-section-label">Blocks</span>
-        <div class="menu-row">
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleBlockquote)}
-            class="menu-item"
-            title="Quote"
-          >
-            <Quote class="size-4" />
-            <span>Quote</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleCodeBlock)}
-            class="menu-item"
-            title="Code Block"
-          >
-            <Braces class="size-4" />
-            <span>Code</span>
-          </button>
-          <button
-            type="button"
-            onclick={(e) => handleMenuItemClick(e, handleHorizontalRule)}
-            class="menu-item"
-            title="Horizontal Rule"
-          >
-            <Minus class="size-4" />
-            <span>Divider</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleBlockquote)}
+          class="menu-item"
+          title="Quote"
+        >
+          <Quote class="size-4" />
+          <span>Blockquote</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleCodeBlock)}
+          class="menu-item"
+          title="Code Block"
+        >
+          <Braces class="size-4" />
+          <span>Code Block</span>
+        </button>
+        <button
+          type="button"
+          onclick={(e) => handleMenuItemClick(e, handleHorizontalRule)}
+          class="menu-item"
+          title="Horizontal Rule"
+        >
+          <Minus class="size-4" />
+          <span>Divider</span>
+        </button>
       </div>
 
       {#if onInsertImage}
         <div class="menu-divider"></div>
 
         <div class="menu-section">
-          <span class="menu-section-label">Media</span>
-          <div class="menu-row">
-            <button
-              type="button"
-              onclick={(e) => handleMenuItemClick(e, handleImage)}
-              class="menu-item"
-              title="Insert Image"
-            >
-              <ImageIcon class="size-4" />
-              <span>Image</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onclick={(e) => handleMenuItemClick(e, handleImage)}
+            class="menu-item"
+            title="Insert Image"
+          >
+            <ImageIcon class="size-4" />
+            <span>Image</span>
+          </button>
         </div>
       {/if}
     </div>
@@ -260,23 +248,23 @@
 
 <style>
   .floating-menu {
-    z-index: 9999;
-    display: none;
+    z-index: 20;
+    /* TipTap will handle the display/positioning */
   }
 
   .trigger-button {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     border-radius: 6px;
     background: var(--card);
     border: 1px solid var(--border);
     color: var(--muted-foreground);
     cursor: pointer;
     transition: all 0.15s ease;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
     /* Prevent text selection on touch */
     -webkit-user-select: none;
     user-select: none;
@@ -291,58 +279,51 @@
   }
 
   .trigger-button:active {
-    transform: scale(0.95);
+    transform: scale(0.9);
   }
 
   .menu-expanded {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    flex-direction: row;
+    align-items: center;
+    padding: 2px;
     background: var(--popover);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     box-shadow:
-      0 4px 16px rgba(0, 0, 0, 0.15),
-      0 0 0 1px rgba(0, 0, 0, 0.05);
-    min-width: 200px;
+      0 10px 15px -3px rgba(0, 0, 0, 0.1),
+      0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    min-width: max-content;
+    max-width: 90vw;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .menu-expanded::-webkit-scrollbar {
+    display: none;
   }
 
   .menu-section {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .menu-section-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted-foreground);
-    padding-left: 4px;
-  }
-
-  .menu-row {
-    display: flex;
-    gap: 4px;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
   }
 
   .menu-item {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: 4px;
-    padding: 8px 12px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
     border-radius: 6px;
     background: transparent;
-    border: 1px solid transparent;
+    border: none;
     color: var(--foreground);
     cursor: pointer;
-    transition: all 0.15s ease;
-    flex: 1;
-    min-width: 60px;
+    transition: all 0.1s ease;
     /* Prevent text selection on touch */
     -webkit-user-select: none;
     user-select: none;
@@ -351,42 +332,38 @@
   }
 
   .menu-item span {
-    font-size: 11px;
-    font-weight: 500;
+    display: none;
   }
 
   .menu-item:hover {
     background: var(--accent);
     color: var(--accent-foreground);
-    border-color: var(--border);
   }
 
   .menu-item:active {
-    transform: scale(0.97);
     background: var(--accent);
+    transform: scale(0.95);
   }
 
   .menu-divider {
-    height: 1px;
+    width: 1px;
+    height: 20px;
     background: var(--border);
-    margin: 4px 0;
+    margin: 0 4px;
+    opacity: 0.5;
+    flex-shrink: 0;
   }
 
   /* Mobile-specific adjustments */
   @media (max-width: 767px) {
     .trigger-button {
-      width: 32px;
-      height: 32px;
-    }
-
-    .menu-expanded {
-      min-width: 180px;
-      padding: 10px;
+      width: 28px;
+      height: 28px;
     }
 
     .menu-item {
-      padding: 10px 8px;
-      min-width: 54px;
+      width: 36px;
+      height: 36px;
     }
   }
 </style>

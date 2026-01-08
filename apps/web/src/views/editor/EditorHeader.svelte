@@ -10,26 +10,30 @@
    */
   
   import { Button } from "$lib/components/ui/button";
-  import { Save, Download, PanelLeft, PanelRight, Menu } from "@lucide/svelte";
+  import { Save, Download, PanelLeft, PanelRight, Menu, Loader2, Search } from "@lucide/svelte";
 
   interface Props {
     title: string;
     path: string;
     isDirty: boolean;
+    isSaving: boolean;
     onSave: () => void;
     onExport: () => void;
     onToggleLeftSidebar: () => void;
     onToggleRightSidebar: () => void;
+    onOpenCommandPalette: () => void;
   }
 
   let {
     title,
     path,
     isDirty,
+    isSaving,
     onSave,
     onExport,
     onToggleLeftSidebar,
     onToggleRightSidebar,
+    onOpenCommandPalette,
   }: Props = $props();
 </script>
 
@@ -72,22 +76,43 @@
 
   <!-- Right side: actions -->
   <div class="flex items-center gap-1 md:gap-2 ml-2 shrink-0">
-    {#if isDirty}
+    {#if isDirty && !isSaving}
       <span
         class="hidden sm:inline-flex px-2 py-1 text-xs font-medium rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
       >
         Unsaved
       </span>
     {/if}
+
     <Button
       onclick={onSave}
-      disabled={!isDirty}
+      disabled={!isDirty || isSaving}
+      variant={!isDirty && !isSaving ? "ghost" : "default"}
       size="sm"
-      class="gap-1 md:gap-2"
+      class="gap-1 md:gap-2 min-w-[80px]"
     >
-      <Save class="size-4" />
-      <span class="hidden sm:inline">Save</span>
+      {#if isSaving}
+        <Loader2 class="size-4 animate-spin" />
+        <span class="hidden sm:inline">Saving...</span>
+      {:else if !isDirty}
+        <Save class="size-4 opacity-50" />
+        <span class="hidden sm:inline opacity-50">Saved</span>
+      {:else}
+        <Save class="size-4" />
+        <span class="hidden sm:inline">Save</span>
+      {/if}
     </Button>
+
+    <Button
+      variant="ghost"
+      size="icon"
+      onclick={onOpenCommandPalette}
+      class="size-8"
+      aria-label="Open command palette"
+    >
+      <Search class="size-4" />
+    </Button>
+
     <Button
       onclick={onExport}
       variant="outline"

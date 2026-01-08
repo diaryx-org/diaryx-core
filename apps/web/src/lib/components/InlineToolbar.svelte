@@ -282,7 +282,7 @@
     align-items: center;
     background: var(--card);
     border-color: var(--border);
-    z-index: 40;
+    z-index: 20;
     /* Prevent text selection on toolbar */
     -webkit-user-select: none;
     user-select: none;

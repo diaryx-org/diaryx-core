@@ -72,7 +72,6 @@
   // UI state - proxied from uiStore
   let leftSidebarCollapsed = $derived(uiStore.leftSidebarCollapsed);
   let rightSidebarCollapsed = $derived(uiStore.rightSidebarCollapsed);
-  let showCommandPalette = $derived(uiStore.showCommandPalette);
   let showSettingsDialog = $derived(uiStore.showSettingsDialog);
   let showExportDialog = $derived(uiStore.showExportDialog);
   let showNewEntryModal = $derived(uiStore.showNewEntryModal);
@@ -1403,7 +1402,7 @@
 
 <!-- Command Palette -->
 <CommandPalette
-  bind:open={showCommandPalette}
+  bind:open={uiStore.showCommandPalette}
   {tree}
   {backend}
   onOpenEntry={openEntry}
@@ -1484,10 +1483,12 @@
         title={getEntryTitle(currentEntry)}
         path={currentEntry.path}
         {isDirty}
+        {isSaving}
         onSave={save}
         onExport={exportEntry}
         onToggleLeftSidebar={toggleLeftSidebar}
         onToggleRightSidebar={toggleRightSidebar}
+        onOpenCommandPalette={uiStore.openCommandPalette}
       />
 
       <EditorContent
