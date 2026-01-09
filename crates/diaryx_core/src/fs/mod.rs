@@ -11,6 +11,9 @@ mod memory;
 mod native;
 
 pub use async_fs::{AsyncFileSystem, BoxFuture, SyncToAsyncFs};
+
+#[cfg(test)]
+pub(crate) use async_fs::block_on_test;
 pub use memory::InMemoryFileSystem;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::RealFileSystem;

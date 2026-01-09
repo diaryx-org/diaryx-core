@@ -78,9 +78,11 @@ async function initializeBackend(): Promise<Backend> {
       const { TauriBackend } = await import("./tauri");
       backendInstance = new TauriBackend();
     } else if (isBrowser()) {
-      console.log("[Backend] Using WASM backend");
-      const { WasmBackend } = await import("./wasm");
-      backendInstance = new WasmBackend();
+      // Use WorkerBackend which runs WasmBackend in a Web Worker
+      // This enables OPFS with createSyncAccessHandle() for Safari
+      console.log("[Backend] Using WorkerBackend (WASM in Web Worker)");
+      const { WorkerBackendNew } = await import("./workerBackendNew");
+      backendInstance = new WorkerBackendNew();
     } else {
       throw new Error("Unsupported runtime environment");
     }
@@ -132,46 +134,7 @@ export function getBackendSync(): Backend {
 }
 
 // ============================================================================
-// Auto-Persist Hook (for WASM backend)
+// Auto-Persist Hook (Deprecated/Removed)
 // ============================================================================
 
-let persistInterval: ReturnType<typeof setInterval> | null = null;
-
-/**
- * Start auto-persisting changes to IndexedDB.
- * Only has an effect when using the WASM backend.
- *
- * @param intervalMs How often to persist (default: 5000ms)
- */
-export function startAutoPersist(intervalMs = 5000): void {
-  if (persistInterval) return;
-
-  persistInterval = setInterval(async () => {
-    if (backendInstance?.isReady()) {
-      try {
-        await backendInstance.persist();
-      } catch (e) {
-        console.error("[Backend] Auto-persist failed:", e);
-      }
-    }
-  }, intervalMs);
-}
-
-/**
- * Stop auto-persisting.
- */
-export function stopAutoPersist(): void {
-  if (persistInterval) {
-    clearInterval(persistInterval);
-    persistInterval = null;
-  }
-}
-
-/**
- * Manually trigger a persist operation.
- */
-export async function persistNow(): Promise<void> {
-  if (backendInstance?.isReady()) {
-    await backendInstance.persist();
-  }
-}
+// startAutoPersist/persistNow removed - persistence is handled automatically by the backend

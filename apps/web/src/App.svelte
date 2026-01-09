@@ -2,9 +2,6 @@
   import { onMount, onDestroy, tick } from "svelte";
   import {
     getBackend,
-    startAutoPersist,
-    stopAutoPersist,
-    persistNow,
     type EntryData,
   } from "./lib/backend";
   import {
@@ -161,7 +158,6 @@
     // For safety, if frontmatter is empty, re-save to ensure frontmatter is created
     // The save_content function in core preserves frontmatter and creates it if missing
     await backend.saveEntry(indexPath, body);
-    await persistNow();
   }
 
   // Attachment state
@@ -210,7 +206,7 @@
       workspaceStore.setBackend(await getBackend());
 
       // Start auto-persist for WASM backend (no-op for Tauri)
-      startAutoPersist(5000);
+      //startAutoPersist(5000);
 
       // Initialize workspace CRDT (unless disabled for debugging)
       if (!workspaceCrdtDisabled) {
@@ -223,9 +219,10 @@
 
       await refreshTree();
 
-      // Expand root by default
-      if (tree) {
+      // Expand root and open it by default
+      if (tree && !currentEntry) {
         expandedNodes.add(tree.path);
+        await openEntry(tree.path);
       }
 
       // Run initial validation
@@ -259,9 +256,6 @@
   });
 
   onDestroy(() => {
-    // Stop auto-persist and do a final persist
-    stopAutoPersist();
-    persistNow();
     // Cleanup blob URLs
     revokeBlobUrls();
     // Disconnect workspace CRDT (keeps local state for quick reconnect)
@@ -381,8 +375,6 @@
                 sharedWorkspaceId,
               );
 
-              await persistNow();
-
               // Re-read to confirm it actually persisted (especially important in WASM mode)
               const verifyFrontmatter = await backend.getFrontmatter(
                 rootTree.path,
@@ -414,6 +406,21 @@
             }
           }
         } catch (e) {
+          const errStr = e instanceof Error ? e.message : String(e);
+          if (errStr.includes("No workspace found")) {
+            console.log("[App] Default workspace missing, creating...");
+            try {
+              await backend.createWorkspace("workspace", "My Journal");
+              // Recursively try again to setup workspace_id and CRDT
+              return await setupWorkspaceCrdt();
+            } catch (createErr) {
+              console.error(
+                "[App] Failed to create default workspace:",
+                createErr,
+              );
+            }
+          }
+
           console.warn("[App] Could not get/set workspace_id from index:", e);
           // Fall back to null - will use simple room names without workspace prefix
           console.log("[App] Using no workspace_id prefix (simple room names)");
@@ -455,7 +462,6 @@
             if (created.length > 0 || deleted.length > 0) {
               await refreshTree();
               await runValidation();
-              await persistNow();
             }
           },
         },
@@ -591,8 +597,6 @@
       );
       await backend.saveEntry(currentEntry.path, markdown);
       entryStore.markClean();
-      // Trigger persist for WASM backend
-      await persistNow();
     } catch (e) {
       uiStore.setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -750,7 +754,6 @@
     if (!backend) return;
     try {
       const newPath = await backend.createChildEntry(parentPath);
-      await persistNow();
 
       // Update CRDT with new file
       const entry = await backend.getEntry(newPath);
@@ -770,7 +773,6 @@
       const newPath = await backend.createEntry(path, { title });
 
       // Persist to IndexedDB immediately so file survives refresh
-      await persistNow();
 
       // Update CRDT with new file
       const entry = await backend.getEntry(newPath);
@@ -806,7 +808,6 @@
 
     try {
       await backend.deleteEntry(path);
-      await persistNow();
 
       // CRDT is now automatically updated via backend event subscription
       // (file:deleted event triggers crdtDeleteFile and removeFromContents)
@@ -856,8 +857,7 @@
   async function handleRemoveBrokenPartOf(filePath: string) {
     if (!backend) return;
     try {
-      await backend.removeFrontmatterProperty(filePath, "part_of");
-      await persistNow();
+       await backend.removeFrontmatterProperty(filePath, "part_of");
       await runValidation();
       // Refresh current entry if it's the fixed file
       if (currentEntry?.path === filePath) {
@@ -878,8 +878,7 @@
       if (Array.isArray(contents)) {
         // Filter out the broken target
         const newContents = contents.filter((item: string) => item !== target);
-        await backend.setFrontmatterProperty(indexPath, "contents", newContents);
-        await persistNow();
+         await backend.setFrontmatterProperty(indexPath, "contents", newContents);
         await refreshTree();
         await runValidation();
         // Refresh current entry if it's the fixed file
@@ -896,9 +895,8 @@
   async function handleAttachUnlinkedEntry(entryPath: string) {
     if (!backend || !tree) return;
     try {
-      // Attach to the workspace root (tree.path is the root index)
+       // Attach to the workspace root (tree.path is the root index)
       await backend.attachEntryToParent(entryPath, tree.path);
-      await persistNow();
       await refreshTree();
       await runValidation();
     } catch (e) {
@@ -953,7 +951,6 @@
         file.name,
         dataBase64,
       );
-      await persistNow();
 
       // Attachments are synced as part of file metadata via CRDT events
 
@@ -1033,8 +1030,6 @@
 
       // Attachments are synced as part of file metadata via CRDT events
 
-      await persistNow();
-
       // Refresh the entry to update attachments list
       currentEntry = await backend.getEntry(currentEntry.path);
 
@@ -1072,7 +1067,6 @@
 
     try {
       await backend.deleteAttachment(currentEntry.path, attachmentPath);
-      await persistNow();
 
       // Attachments are synced as part of file metadata via CRDT events
 
@@ -1099,7 +1093,6 @@
       // - Add entry to newParent's `contents`
       // - Set entry's `part_of` to point to newParent
       await backend.attachEntryToParent(entryPath, newParentPath);
-      await persistNow();
 
       // CRDT is now automatically updated via backend event subscription
       // (file:moved event triggers CRDT updates)
@@ -1137,7 +1130,6 @@
             const newPath = await backend.renameEntry(oldPath, newFilename);
             // Rename succeeded, now update title in frontmatter (at new path)
             await backend.setFrontmatterProperty(newPath, key, value);
-            await persistNow();
 
             // Transfer expanded state from old path to new path
             if (expandedNodes.has(oldPath)) {
@@ -1177,7 +1169,6 @@
         } else {
           // No rename needed, just update title
           await backend.setFrontmatterProperty(currentEntry.path, key, value);
-          await persistNow();
           currentEntry = {
             ...currentEntry,
             frontmatter: { ...currentEntry.frontmatter, [key]: value },
@@ -1193,7 +1184,6 @@
       } else {
         // Non-title properties: update normally
         await backend.setFrontmatterProperty(currentEntry.path, key, value);
-        await persistNow();
         currentEntry = {
           ...currentEntry,
           frontmatter: { ...currentEntry.frontmatter, [key]: value },
@@ -1217,7 +1207,6 @@
     try {
       const path = currentEntry.path;
       await backend.removeFrontmatterProperty(currentEntry.path, key);
-      await persistNow();
       // Update local state
       const newFrontmatter = { ...currentEntry.frontmatter };
       delete newFrontmatter[key];
@@ -1235,7 +1224,6 @@
     try {
       const path = currentEntry.path;
       await backend.setFrontmatterProperty(currentEntry.path, key, value);
-      await persistNow();
       // Update local state
       currentEntry = {
         ...currentEntry,

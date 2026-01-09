@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::error::{DiaryxError, Result};
-use crate::fs::FileSystem;
+use crate::fs::{AsyncFileSystem, FileSystem, SyncToAsyncFs};
 
 /// `Config` is a data structure that represents the parts of Diaryx that the user can configure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,40 +76,81 @@ impl Config {
     }
 
     // ========================================================================
-    // FileSystem-based methods (work on all platforms including WASM)
+    // AsyncFileSystem-based methods (work on all platforms including WASM)
     // ========================================================================
 
-    /// Load config from a specific path using a FileSystem
-    pub fn load_from<FS: FileSystem>(fs: &FS, path: &std::path::Path) -> Result<Self> {
-        let contents = FS::read_to_string(fs, path).map_err(|e| DiaryxError::FileRead {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    /// Load config from a specific path using an AsyncFileSystem.
+    pub async fn load_from<FS: AsyncFileSystem>(fs: &FS, path: &std::path::Path) -> Result<Self> {
+        let contents = fs
+            .read_to_string(path)
+            .await
+            .map_err(|e| DiaryxError::FileRead {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+
         let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
 
-    /// Save config to a specific path using a FileSystem
-    pub fn save_to<FS: FileSystem>(&self, fs: &FS, path: &std::path::Path) -> Result<()> {
+    /// Save config to a specific path using an AsyncFileSystem.
+    pub async fn save_to<FS: AsyncFileSystem>(&self, fs: &FS, path: &std::path::Path) -> Result<()> {
         // Create parent directory if needed
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            fs.create_dir_all(parent)?;
+            fs.create_dir_all(parent).await?;
         }
 
         let contents = toml::to_string_pretty(self)?;
-        fs.write_file(path, &contents)?;
+        fs.write_file(path, &contents).await?;
         Ok(())
     }
 
-    /// Load config from a FileSystem, returning default if not found
-    pub fn load_from_or_default<FS: FileSystem>(
+    /// Load config from an AsyncFileSystem, returning default if not found.
+    pub async fn load_from_or_default<FS: AsyncFileSystem>(
         fs: &FS,
         path: &std::path::Path,
         default_workspace: PathBuf,
     ) -> Self {
-        Self::load_from(fs, path).unwrap_or_else(|_| Self::new(default_workspace))
+        match Self::load_from(fs, path).await {
+            Ok(config) => config,
+            Err(_) => Self::new(default_workspace),
+        }
+    }
+
+    // ========================================================================
+    // Sync wrappers (compatibility layer). Prefer the async APIs above.
+    // ========================================================================
+    //
+    // IMPORTANT:
+    // These wrappers are only available on non-WASM targets because they require a
+    // blocking executor. On WASM, filesystem access is expected to be async.
+
+    /// Sync wrapper for [`Config::load_from`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_from_sync<FS: FileSystem>(fs: FS, path: &std::path::Path) -> Result<Self> {
+        futures_lite::future::block_on(Self::load_from(&SyncToAsyncFs::new(fs), path))
+    }
+
+    /// Sync wrapper for [`Config::save_to`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_sync<FS: FileSystem>(&self, fs: FS, path: &std::path::Path) -> Result<()> {
+        futures_lite::future::block_on(self.save_to(&SyncToAsyncFs::new(fs), path))
+    }
+
+    /// Sync wrapper for [`Config::load_from_or_default`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_from_or_default_sync<FS: FileSystem>(
+        fs: FS,
+        path: &std::path::Path,
+        default_workspace: PathBuf,
+    ) -> Self {
+        futures_lite::future::block_on(Self::load_from_or_default(
+            &SyncToAsyncFs::new(fs),
+            path,
+            default_workspace,
+        ))
     }
 }
 

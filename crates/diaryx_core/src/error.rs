@@ -8,6 +8,11 @@ use thiserror::Error;
 /// Many of these are necessary because of the abstracted FileSystem in `fs.rs`.
 #[derive(Debug, Error)]
 pub enum DiaryxError {
+    /// Error for functionality that's intentionally not supported in the current mode/API.
+    ///
+    /// Used during the async filesystem refactor for features that aren't yet migrated.
+    #[error("Unsupported operation: {0}")]
+    Unsupported(String),
     /// General error for any kind of I/O issue not otherwise documented here.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -176,6 +181,7 @@ impl From<&DiaryxError> for SerializableError {
             DiaryxError::TemplateNotFound(_) => "TemplateNotFound",
             DiaryxError::TemplateAlreadyExists(_) => "TemplateAlreadyExists",
             DiaryxError::InvalidPath { .. } => "InvalidPath",
+            DiaryxError::Unsupported(_) => "Unsupported",
         }
         .to_string();
 

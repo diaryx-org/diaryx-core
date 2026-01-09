@@ -7,15 +7,35 @@
 //! - WASM environments where JavaScript APIs (like IndexedDB) are inherently async
 //! - Native environments using async runtimes like tokio
 //! - Code that needs to await filesystem operations
+//!
+//! ## Object safety
+//!
+//! `AsyncFileSystem` is designed to be object-safe so it can be used behind
+//! `dyn AsyncFileSystem` (e.g. inside trait objects like backup targets).
+//! To enable this, all methods return boxed futures.
 
 use std::future::Future;
 use std::io::Result;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-/// A boxed future that is Send.
-/// Used for recursive async methods where we need type erasure.
+#[cfg(test)]
+pub(crate) fn block_on_test<F: Future>(f: F) -> F::Output {
+    futures_lite::future::block_on(f)
+}
+
+/// A boxed future for object-safe async methods.
+///
+/// On native targets, futures are `Send` for compatibility with multi-threaded runtimes.
+/// On WASM, there's no `Send` requirement since JavaScript is single-threaded.
+#[cfg(not(target_arch = "wasm32"))]
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// A boxed future for object-safe async methods.
+///
+/// WASM version without `Send` requirement - JavaScript is single-threaded.
+#[cfg(target_arch = "wasm32")]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Async abstraction over filesystem operations.
 ///
@@ -28,86 +48,81 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// ```ignore
 /// use diaryx_core::fs::AsyncFileSystem;
 ///
-/// async fn example<F: AsyncFileSystem>(fs: &F) {
+/// async fn example(fs: &dyn AsyncFileSystem) {
 ///     let content = fs.read_to_string(Path::new("file.md")).await.unwrap();
 ///     fs.write_file(Path::new("output.md"), &content).await.unwrap();
 /// }
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub trait AsyncFileSystem: Send + Sync {
     /// Reads the file content as a string.
-    fn read_to_string(&self, path: &Path) -> impl Future<Output = Result<String>> + Send;
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>>;
 
     /// Overwrites an existing file with new content.
-    fn write_file(&self, path: &Path, content: &str) -> impl Future<Output = Result<()>> + Send;
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>>;
 
     /// Creates a file ONLY if it doesn't exist.
     /// Should return an error if file exists.
-    fn create_new(&self, path: &Path, content: &str) -> impl Future<Output = Result<()>> + Send;
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>>;
 
     /// Deletes a file.
-    fn delete_file(&self, path: &Path) -> impl Future<Output = Result<()>> + Send;
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>>;
 
     /// Finds markdown files in a folder.
-    fn list_md_files(&self, dir: &Path) -> impl Future<Output = Result<Vec<PathBuf>>> + Send;
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>>;
 
     /// Checks if a file or directory exists.
-    fn exists(&self, path: &Path) -> impl Future<Output = bool> + Send;
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
 
     /// Creates a directory and all parent directories.
-    fn create_dir_all(&self, path: &Path) -> impl Future<Output = Result<()>> + Send;
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>>;
 
     /// Checks if a path is a directory.
-    fn is_dir(&self, path: &Path) -> impl Future<Output = bool> + Send;
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
 
     /// Move/rename a file from `from` to `to`.
     ///
     /// Implementations should treat this as an atomic-ish move when possible,
     /// and should error if the source does not exist or if the destination already exists.
-    fn move_file(&self, from: &Path, to: &Path) -> impl Future<Output = Result<()>> + Send;
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>>;
 
     // ==================== Binary File Methods ====================
     // These methods support binary files (attachments) without base64 overhead
 
     /// Read binary file content.
-    fn read_binary(&self, path: &Path) -> impl Future<Output = Result<Vec<u8>>> + Send {
-        async move {
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
             // Default implementation: read as string and convert to bytes
             self.read_to_string(path).await.map(|s| s.into_bytes())
-        }
+        })
     }
 
     /// Write binary content to a file.
-    fn write_binary(&self, _path: &Path, _content: &[u8]) -> impl Future<Output = Result<()>> + Send {
-        async move {
+    fn write_binary<'a>(&'a self, _path: &'a Path, _content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
             // Default implementation: not supported
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Binary write not supported",
             ))
-        }
+        })
     }
 
     /// List all files in a directory (not recursive).
-    fn list_files(&self, _dir: &Path) -> impl Future<Output = Result<Vec<PathBuf>>> + Send {
-        async move {
+    fn list_files<'a>(&'a self, _dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move {
             // Default: return empty
             Ok(vec![])
-        }
+        })
     }
 
     /// Recursively list all markdown files in a directory and its subdirectories.
-    ///
-    /// This method returns a boxed future to allow for recursive calls.
-    fn list_md_files_recursive(&self, dir: &Path) -> BoxFuture<'_, Result<Vec<PathBuf>>>
-    where
-        Self: Sized,
-    {
-        let dir = dir.to_path_buf();
+    fn list_md_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move {
-            let mut all_files = self.list_md_files(&dir).await?;
+            let mut all_files = self.list_md_files(dir).await?;
 
             // Get subdirectories and recurse
-            if let Ok(entries) = self.list_files(&dir).await {
+            if let Ok(entries) = self.list_files(dir).await {
                 for entry in entries {
                     if self.is_dir(&entry).await {
                         if let Ok(subdir_files) = self.list_md_files_recursive(&entry).await {
@@ -122,17 +137,119 @@ pub trait AsyncFileSystem: Send + Sync {
     }
 
     /// Recursively list ALL files and directories in a directory.
-    ///
-    /// This method returns a boxed future to allow for recursive calls.
-    fn list_all_files_recursive(&self, dir: &Path) -> BoxFuture<'_, Result<Vec<PathBuf>>>
-    where
-        Self: Sized,
-    {
-        let dir = dir.to_path_buf();
+    fn list_all_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move {
             let mut all_entries = Vec::new();
 
-            if let Ok(entries) = self.list_files(&dir).await {
+            if let Ok(entries) = self.list_files(dir).await {
+                for entry in entries {
+                    all_entries.push(entry.clone());
+                    if self.is_dir(&entry).await {
+                        if let Ok(subdir_entries) = self.list_all_files_recursive(&entry).await {
+                            all_entries.extend(subdir_entries);
+                        }
+                    }
+                }
+            }
+
+            Ok(all_entries)
+        })
+    }
+}
+
+/// Async abstraction over filesystem operations (WASM version).
+///
+/// This is the WASM-specific version without Send + Sync bounds since
+/// JavaScript environments are single-threaded.
+#[cfg(target_arch = "wasm32")]
+pub trait AsyncFileSystem {
+    /// Reads the file content as a string.
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>>;
+
+    /// Overwrites an existing file with new content.
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>>;
+
+    /// Creates a file ONLY if it doesn't exist.
+    /// Should return an error if file exists.
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>>;
+
+    /// Deletes a file.
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>>;
+
+    /// Finds markdown files in a folder.
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>>;
+
+    /// Checks if a file or directory exists.
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
+
+    /// Creates a directory and all parent directories.
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>>;
+
+    /// Checks if a path is a directory.
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
+
+    /// Move/rename a file from `from` to `to`.
+    ///
+    /// Implementations should treat this as an atomic-ish move when possible,
+    /// and should error if the source does not exist or if the destination already exists.
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>>;
+
+    // ==================== Binary File Methods ====================
+    // These methods support binary files (attachments) without base64 overhead
+
+    /// Read binary file content.
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            // Default implementation: read as string and convert to bytes
+            self.read_to_string(path).await.map(|s| s.into_bytes())
+        })
+    }
+
+    /// Write binary content to a file.
+    fn write_binary<'a>(&'a self, _path: &'a Path, _content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            // Default implementation: not supported
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Binary write not supported",
+            ))
+        })
+    }
+
+    /// List all files in a directory (not recursive).
+    fn list_files<'a>(&'a self, _dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move {
+            // Default: return empty
+            Ok(vec![])
+        })
+    }
+
+    /// Recursively list all markdown files in a directory and its subdirectories.
+    fn list_md_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move {
+            let mut all_files = self.list_md_files(dir).await?;
+
+            // Get subdirectories and recurse
+            if let Ok(entries) = self.list_files(dir).await {
+                for entry in entries {
+                    if self.is_dir(&entry).await {
+                        if let Ok(subdir_files) = self.list_md_files_recursive(&entry).await {
+                            all_files.extend(subdir_files);
+                        }
+                    }
+                }
+            }
+
+            Ok(all_files)
+        })
+    }
+
+    /// Recursively list ALL files and directories in a directory.
+    fn list_all_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move {
+            let mut all_entries = Vec::new();
+
+            if let Ok(entries) = self.list_files(dir).await {
                 for entry in entries {
                     all_entries.push(entry.clone());
                     if self.is_dir(&entry).await {
@@ -195,65 +312,209 @@ impl<F: FileSystem> SyncToAsyncFs<F> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<F: FileSystem + Send + Sync> AsyncFileSystem for SyncToAsyncFs<F> {
-    fn read_to_string(&self, path: &Path) -> impl Future<Output = Result<String>> + Send {
-        let result = self.inner.read_to_string(path);
-        async move { result }
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move { self.inner.read_to_string(path) })
     }
 
-    fn write_file(&self, path: &Path, content: &str) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.write_file(path, content);
-        async move { result }
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.write_file(path, content) })
     }
 
-    fn create_new(&self, path: &Path, content: &str) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.create_new(path, content);
-        async move { result }
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.create_new(path, content) })
     }
 
-    fn delete_file(&self, path: &Path) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.delete_file(path);
-        async move { result }
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.delete_file(path) })
     }
 
-    fn list_md_files(&self, dir: &Path) -> impl Future<Output = Result<Vec<PathBuf>>> + Send {
-        let result = self.inner.list_md_files(dir);
-        async move { result }
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move { self.inner.list_md_files(dir) })
     }
 
-    fn exists(&self, path: &Path) -> impl Future<Output = bool> + Send {
-        let result = self.inner.exists(path);
-        async move { result }
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.exists(path) })
     }
 
-    fn create_dir_all(&self, path: &Path) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.create_dir_all(path);
-        async move { result }
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.create_dir_all(path) })
     }
 
-    fn is_dir(&self, path: &Path) -> impl Future<Output = bool> + Send {
-        let result = self.inner.is_dir(path);
-        async move { result }
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.is_dir(path) })
     }
 
-    fn move_file(&self, from: &Path, to: &Path) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.move_file(from, to);
-        async move { result }
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.move_file(from, to) })
     }
 
-    fn read_binary(&self, path: &Path) -> impl Future<Output = Result<Vec<u8>>> + Send {
-        let result = self.inner.read_binary(path);
-        async move { result }
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move { self.inner.read_binary(path) })
     }
 
-    fn write_binary(&self, path: &Path, content: &[u8]) -> impl Future<Output = Result<()>> + Send {
-        let result = self.inner.write_binary(path, content);
-        async move { result }
+    fn write_binary<'a>(&'a self, path: &'a Path, content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.write_binary(path, content) })
     }
 
-    fn list_files(&self, dir: &Path) -> impl Future<Output = Result<Vec<PathBuf>>> + Send {
-        let result = self.inner.list_files(dir);
-        async move { result }
+    fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move { self.inner.list_files(dir) })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<F: FileSystem> AsyncFileSystem for SyncToAsyncFs<F> {
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move { self.inner.read_to_string(path) })
+    }
+
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.write_file(path, content) })
+    }
+
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.create_new(path, content) })
+    }
+
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.delete_file(path) })
+    }
+
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move { self.inner.list_md_files(dir) })
+    }
+
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.exists(path) })
+    }
+
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.create_dir_all(path) })
+    }
+
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.is_dir(path) })
+    }
+
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.move_file(from, to) })
+    }
+
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move { self.inner.read_binary(path) })
+    }
+
+    fn write_binary<'a>(&'a self, path: &'a Path, content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.inner.write_binary(path, content) })
+    }
+
+    fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        Box::pin(async move { self.inner.list_files(dir) })
+    }
+}
+
+// Blanket implementation for references to AsyncFileSystem (native)
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>> {
+        (*self).read_to_string(path)
+    }
+
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        (*self).write_file(path, content)
+    }
+
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        (*self).create_new(path, content)
+    }
+
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).delete_file(path)
+    }
+
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        (*self).list_md_files(dir)
+    }
+
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).exists(path)
+    }
+
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).create_dir_all(path)
+    }
+
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).is_dir(path)
+    }
+
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).move_file(from, to)
+    }
+
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        (*self).read_binary(path)
+    }
+
+    fn write_binary<'a>(&'a self, path: &'a Path, content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        (*self).write_binary(path, content)
+    }
+
+    fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        (*self).list_files(dir)
+    }
+}
+
+// Blanket implementation for references to AsyncFileSystem (WASM)
+#[cfg(target_arch = "wasm32")]
+impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
+    fn read_to_string<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<String>> {
+        (*self).read_to_string(path)
+    }
+
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        (*self).write_file(path, content)
+    }
+
+    fn create_new<'a>(&'a self, path: &'a Path, content: &'a str) -> BoxFuture<'a, Result<()>> {
+        (*self).create_new(path, content)
+    }
+
+    fn delete_file<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).delete_file(path)
+    }
+
+    fn list_md_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        (*self).list_md_files(dir)
+    }
+
+    fn exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).exists(path)
+    }
+
+    fn create_dir_all<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).create_dir_all(path)
+    }
+
+    fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).is_dir(path)
+    }
+
+    fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
+        (*self).move_file(from, to)
+    }
+
+    fn read_binary<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<Vec<u8>>> {
+        (*self).read_binary(path)
+    }
+
+    fn write_binary<'a>(&'a self, path: &'a Path, content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+        (*self).write_binary(path, content)
+    }
+
+    fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+        (*self).list_files(dir)
     }
 }
 

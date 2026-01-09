@@ -1,13 +1,12 @@
 //! Normalize filename command - renames files to match their title property
 
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
 use serde_yaml::Value;
 use std::path::PathBuf;
 
 use crate::cli::util::{
     ConfirmResult, load_config, prompt_confirm, rename_file_with_refs, resolve_paths,
 };
+use crate::cli::{block_on, CliDiaryxAppSync};
 
 /// Convert a filename (without extension) to a human-readable title
 /// Replaces underscores and hyphens with spaces, applies title case
@@ -52,7 +51,7 @@ pub fn slugify(title: &str) -> String {
 
 /// Handle the normalize-filename command
 pub fn handle_normalize_filename(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     path: &str,
     new_title: Option<String>,
     yes: bool,

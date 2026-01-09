@@ -1,6 +1,12 @@
 //! Publishing functionality for diaryx workspaces
 //!
 //! Converts workspace markdown files to HTML for sharing.
+//!
+//! # Async-first Design
+//!
+//! This module uses `AsyncFileSystem` for all filesystem operations.
+//! For synchronous contexts (CLI, tests), wrap a sync filesystem with
+//! `SyncToAsyncFs` and use `futures_lite::future::block_on()`.
 
 mod types;
 
@@ -14,15 +20,15 @@ use crate::entry::slugify;
 use crate::error::{DiaryxError, Result};
 use crate::export::{ExportPlan, Exporter};
 use crate::frontmatter;
-use crate::fs::FileSystem;
+use crate::fs::AsyncFileSystem;
 use crate::workspace::Workspace;
 
-/// Publisher for converting workspace to HTML
-pub struct Publisher<FS: FileSystem + Clone> {
+/// Publisher for converting workspace to HTML (async-first)
+pub struct Publisher<FS: AsyncFileSystem> {
     fs: FS,
 }
 
-impl<FS: FileSystem + Clone> Publisher<FS> {
+impl<FS: AsyncFileSystem + Clone> Publisher<FS> {
     /// Create a new publisher
     pub fn new(fs: FS) -> Self {
         Self { fs }
@@ -31,7 +37,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     /// Publish a workspace to HTML
     /// Only available on native platforms (not WASM) since it writes to the filesystem
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn publish(
+    pub async fn publish(
         &self,
         workspace_root: &Path,
         destination: &Path,
@@ -39,9 +45,10 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     ) -> Result<PublishResult> {
         // Collect files to publish
         let pages = if let Some(ref audience) = options.audience {
-            self.collect_with_audience(workspace_root, destination, audience)?
+            self.collect_with_audience(workspace_root, destination, audience)
+                .await?
         } else {
-            self.collect_all(workspace_root)?
+            self.collect_all(workspace_root).await?
         };
 
         if pages.is_empty() {
@@ -55,9 +62,9 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         // Generate output
         if options.single_file {
-            self.write_single_file(&pages, destination, options)?;
+            self.write_single_file(&pages, destination, options).await?;
         } else {
-            self.write_multi_file(&pages, destination, options)?;
+            self.write_multi_file(&pages, destination, options).await?;
         }
 
         Ok(PublishResult {
@@ -67,9 +74,9 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Collect all workspace files without audience filtering
-    fn collect_all(&self, workspace_root: &Path) -> Result<Vec<PublishedPage>> {
+    async fn collect_all(&self, workspace_root: &Path) -> Result<Vec<PublishedPage>> {
         let workspace = Workspace::new(self.fs.clone());
-        let mut files = workspace.collect_workspace_files(workspace_root)?;
+        let mut files = workspace.collect_workspace_files(workspace_root).await?;
 
         // Ensure the workspace root is always first (it becomes index.html)
         // collect_workspace_files sorts alphabetically, so we need to move root to front
@@ -79,10 +86,11 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
         if let Some(pos) = files
             .iter()
             .position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == root_canonical)
-            && pos != 0
         {
-            let root_file = files.remove(pos);
-            files.insert(0, root_file);
+            if pos != 0 {
+                let root_file = files.remove(pos);
+                files.insert(0, root_file);
+            }
         }
 
         let mut pages = Vec::new();
@@ -95,13 +103,14 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             } else {
                 self.path_to_html_filename(file_path)
             };
-            path_to_filename.insert(file_path.clone(), filename);
+            path_to_filename.insert(file_path.to_path_buf(), filename);
         }
 
         // Second pass: process files
         for (idx, file_path) in files.iter().enumerate() {
-            if let Some(page) =
-                self.process_file(file_path, idx == 0, &path_to_filename, workspace_root)?
+            if let Some(page) = self
+                .process_file(file_path, idx == 0, &path_to_filename, workspace_root)
+                .await?
             {
                 pages.push(page);
             }
@@ -111,14 +120,16 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Collect files with audience filtering
-    fn collect_with_audience(
+    async fn collect_with_audience(
         &self,
         workspace_root: &Path,
         destination: &Path,
         audience: &str,
     ) -> Result<Vec<PublishedPage>> {
         let exporter = Exporter::new(self.fs.clone());
-        let plan = exporter.plan_export(workspace_root, audience, destination)?;
+        let plan = exporter
+            .plan_export(workspace_root, audience, destination)
+            .await?;
 
         let mut pages = Vec::new();
         let mut path_to_filename: HashMap<PathBuf, String> = HashMap::new();
@@ -135,12 +146,15 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         // Second pass: process files
         for (idx, export_file) in plan.included.iter().enumerate() {
-            if let Some(page) = self.process_file(
-                &export_file.source_path,
-                idx == 0,
-                &path_to_filename,
-                workspace_root,
-            )? {
+            if let Some(page) = self
+                .process_file(
+                    &export_file.source_path,
+                    idx == 0,
+                    &path_to_filename,
+                    workspace_root,
+                )
+                .await?
+            {
                 // Filter out excluded children from contents_links
                 let filtered_page = self.filter_contents_links(page, &plan);
                 pages.push(filtered_page);
@@ -169,14 +183,14 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Process a single file into a PublishedPage
-    fn process_file(
+    async fn process_file(
         &self,
         path: &Path,
         is_root: bool,
         path_to_filename: &HashMap<PathBuf, String>,
         _workspace_root: &Path,
     ) -> Result<Option<PublishedPage>> {
-        let content = match self.fs.read_to_string(path) {
+        let content = match self.fs.read_to_string(path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
@@ -203,10 +217,14 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
             .unwrap_or_else(|| self.path_to_html_filename(path));
 
         // Build contents links
-        let contents_links = self.build_contents_links(&parsed.frontmatter, path, path_to_filename);
+        let contents_links = self
+            .build_contents_links(&parsed.frontmatter, path, path_to_filename)
+            .await;
 
         // Build parent link
-        let parent_link = self.build_parent_link(&parsed.frontmatter, path, path_to_filename);
+        let parent_link = self
+            .build_parent_link(&parsed.frontmatter, path, path_to_filename)
+            .await;
 
         // Convert markdown to HTML
         let html_body = self.markdown_to_html(&parsed.body);
@@ -224,7 +242,7 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
     }
 
     /// Build navigation links from contents property
-    fn build_contents_links(
+    async fn build_contents_links(
         &self,
         fm: &indexmap::IndexMap<String, serde_yaml::Value>,
         current_path: &Path,
@@ -233,31 +251,31 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
         let contents = frontmatter::get_string_array(fm, "contents");
         let current_dir = current_path.parent();
 
-        contents
-            .into_iter()
-            .map(|child_ref| {
-                let child_path = current_dir
-                    .map(|d| d.join(&child_ref))
-                    .unwrap_or_else(|| PathBuf::from(&child_ref));
+        let mut links = Vec::new();
+        for child_ref in contents {
+            let child_path = current_dir
+                .map(|d| d.join(&child_ref))
+                .unwrap_or_else(|| PathBuf::from(&child_ref));
 
-                // Try to find the HTML filename for this path
-                let href = path_to_filename
-                    .get(&child_path)
-                    .cloned()
-                    .unwrap_or_else(|| self.path_to_html_filename(&child_path));
+            // Try to find the HTML filename for this path
+            let href = path_to_filename
+                .get(&child_path)
+                .cloned()
+                .unwrap_or_else(|| self.path_to_html_filename(&child_path));
 
-                // Try to get the title from the file
-                let title = self
-                    .get_title_from_file(&child_path)
-                    .unwrap_or_else(|| self.filename_to_title(&child_ref));
+            // Try to get the title from the file
+            let title = self
+                .get_title_from_file(&child_path)
+                .await
+                .unwrap_or_else(|| self.filename_to_title(&child_ref));
 
-                NavLink { href, title }
-            })
-            .collect()
+            links.push(NavLink { href, title });
+        }
+        links
     }
 
     /// Build parent navigation link from part_of property
-    fn build_parent_link(
+    async fn build_parent_link(
         &self,
         fm: &indexmap::IndexMap<String, serde_yaml::Value>,
         current_path: &Path,
@@ -277,14 +295,15 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         let title = self
             .get_title_from_file(&parent_path)
+            .await
             .unwrap_or_else(|| self.filename_to_title(part_of));
 
         Some(NavLink { href, title })
     }
 
     /// Get title from a file's frontmatter
-    fn get_title_from_file(&self, path: &Path) -> Option<String> {
-        let content = self.fs.read_to_string(path).ok()?;
+    async fn get_title_from_file(&self, path: &Path) -> Option<String> {
+        let content = self.fs.read_to_string(path).await.ok()?;
         let parsed = frontmatter::parse_or_empty(&content).ok()?;
         frontmatter::get_string(&parsed.frontmatter, "title").map(String::from)
     }
@@ -340,14 +359,14 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
     /// Write multiple HTML files
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_multi_file(
+    async fn write_multi_file(
         &self,
         pages: &[PublishedPage],
         destination: &Path,
         options: &PublishOptions,
     ) -> Result<()> {
         // Create destination directory
-        self.fs.create_dir_all(destination)?;
+        self.fs.create_dir_all(destination).await?;
 
         let site_title = options.title.clone().unwrap_or_else(|| {
             pages
@@ -359,19 +378,19 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
         for page in pages {
             let html = self.render_page(page, &site_title, false);
             let dest_path = destination.join(&page.dest_filename);
-            self.fs.write_file(&dest_path, &html)?;
+            self.fs.write_file(&dest_path, &html).await?;
         }
 
         // Write CSS file
         let css_path = destination.join("style.css");
-        self.fs.write_file(&css_path, Self::get_css())?;
+        self.fs.write_file(&css_path, Self::get_css()).await?;
 
         Ok(())
     }
 
     /// Write a single HTML file containing all pages
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_single_file(
+    async fn write_single_file(
         &self,
         pages: &[PublishedPage],
         destination: &Path,
@@ -388,10 +407,10 @@ impl<FS: FileSystem + Clone> Publisher<FS> {
 
         // Ensure parent directory exists
         if let Some(parent) = destination.parent() {
-            self.fs.create_dir_all(parent)?;
+            self.fs.create_dir_all(parent).await?;
         }
 
-        self.fs.write_file(destination, &html)?;
+        self.fs.write_file(destination, &html).await?;
 
         Ok(())
     }

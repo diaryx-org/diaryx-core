@@ -1,8 +1,8 @@
 //! Workspace command handlers
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::{DiaryxApp, prettify_filename, slugify};
-use diaryx_core::fs::{FileSystem, RealFileSystem};
+use diaryx_core::entry::{prettify_filename, slugify, DiaryxAppSync};
+use diaryx_core::fs::{FileSystem, RealFileSystem, SyncToAsyncFs};
 use diaryx_core::template::TemplateContext;
 use diaryx_core::validate::ValidationFixer;
 use diaryx_core::workspace::Workspace;
@@ -11,13 +11,14 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::args::WorkspaceCommands;
 use crate::cli::util::{calculate_relative_path, rename_file_with_refs, resolve_paths};
+use crate::cli::{block_on, CliDiaryxAppSync, CliWorkspace};
 use crate::editor::launch_editor;
 
 pub fn handle_workspace_command(
     command: WorkspaceCommands,
     workspace_override: Option<PathBuf>,
-    ws: &Workspace<RealFileSystem>,
-    app: &DiaryxApp<RealFileSystem>,
+    ws: &CliWorkspace,
+    app: &CliDiaryxAppSync,
 ) {
     let config = Config::load().ok();
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -156,7 +157,7 @@ pub fn handle_workspace_command(
 /// Validates workspace link integrity (part_of and contents references)
 fn handle_validate(
     workspace_override: Option<PathBuf>,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     config: &Option<Config>,
     current_dir: &Path,
     file_path: Option<String>,
@@ -170,9 +171,10 @@ fn handle_validate(
         ValidationError, ValidationFixer, ValidationResult, ValidationWarning, Validator,
     };
 
-    let validator = Validator::new(CoreRealFileSystem);
-    let fixer = ValidationFixer::new(CoreRealFileSystem);
-    let app = DiaryxApp::new(CoreRealFileSystem);
+    let async_fs = SyncToAsyncFs::new(CoreRealFileSystem);
+    let validator = Validator::new(async_fs.clone());
+    let fixer = ValidationFixer::new(async_fs);
+    let app = DiaryxAppSync::new(CoreRealFileSystem);
 
     // If a specific path is provided, validate it (file or directory)
     if let Some(ref path_str) = file_path {
@@ -208,7 +210,7 @@ fn handle_validate(
             let mut total_result = ValidationResult::default();
 
             for file in &files {
-                match validator.validate_file(file) {
+                match block_on(validator.validate_file(file)) {
                     Ok(result) => {
                         total_result.files_checked += result.files_checked;
                         total_result.errors.extend(result.errors);
@@ -232,7 +234,7 @@ fn handle_validate(
             println!("Validating file: {}", resolved_path.display());
         }
 
-        let result = match validator.validate_file(&resolved_path) {
+        let result = match block_on(validator.validate_file(&resolved_path)) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("✗ Error validating file: {}", e);
@@ -248,10 +250,10 @@ fn handle_validate(
     // Find workspace root
     let root_path = if let Some(override_path) = workspace_override {
         override_path.clone()
-    } else if let Ok(Some(detected)) = ws.detect_workspace(current_dir) {
+    } else if let Ok(Some(detected)) = block_on(ws.detect_workspace(current_dir)) {
         detected
     } else if let Some(cfg) = config {
-        if let Ok(Some(root)) = ws.find_root_index_in_dir(&cfg.default_workspace) {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&cfg.default_workspace)) {
             root
         } else {
             eprintln!("✗ No workspace found");
@@ -268,7 +270,7 @@ fn handle_validate(
         println!("Validating workspace: {}", root_path.display());
     }
 
-    let result = match validator.validate_workspace(&root_path) {
+    let result = match block_on(validator.validate_workspace(&root_path)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("✗ Error validating workspace: {}", e);
@@ -293,7 +295,7 @@ fn handle_validate(
             match err {
                 ValidationError::BrokenPartOf { file, target } => {
                     if fix {
-                        let result = fixer.fix_broken_part_of(file);
+                        let result = block_on(fixer.fix_broken_part_of(file));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken part_of '{}' from {}",
@@ -314,7 +316,7 @@ fn handle_validate(
                 }
                 ValidationError::BrokenContentsRef { index, target } => {
                     if fix {
-                        let result = fixer.fix_broken_contents_ref(index, target);
+                        let result = block_on(fixer.fix_broken_contents_ref(index, target));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken contents ref '{}' from {}",
@@ -335,7 +337,7 @@ fn handle_validate(
                 }
                 ValidationError::BrokenAttachment { file, attachment } => {
                     if fix {
-                        let result = fixer.fix_broken_attachment(file, attachment);
+                        let result = block_on(fixer.fix_broken_attachment(file, attachment));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken attachment '{}' from {}",
@@ -379,7 +381,7 @@ fn handle_validate(
                 }
                 ValidationWarning::UnlistedFile { index, file } => {
                     if fix {
-                        let result = fixer.fix_unlisted_file(index, file);
+                        let result = block_on(fixer.fix_unlisted_file(index, file));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Added '{}' to {}",
@@ -401,7 +403,7 @@ fn handle_validate(
                     suggested,
                 } => {
                     if fix {
-                        let result = fixer.fix_non_portable_path(file, property, value, suggested);
+                        let result = block_on(fixer.fix_non_portable_path(file, property, value, suggested));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Normalized {} '{}' -> '{}' in {}",
@@ -447,7 +449,7 @@ fn handle_validate(
                 } => {
                     if fix {
                         if let Some(index) = suggested_index {
-                            let result = fixer.fix_orphan_binary_file(index, file);
+                            let result = block_on(fixer.fix_orphan_binary_file(index, file));
                             if result.success {
                                 println!(
                                     "  ✓ Fixed: Added '{}' to attachments in {}",
@@ -481,8 +483,8 @@ fn handle_validate(
                         } else {
                             // Check if directory has ANY index
                             let dir = file.parent().unwrap_or(Path::new("."));
-                            let ws = Workspace::new(RealFileSystem);
-                            if let Ok(None) = ws.find_any_index_in_dir(dir) {
+                            let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
+                            if let Ok(None) = block_on(ws.find_any_index_in_dir(dir)) {
                                 // No index exists. Create one.
                                 create_new_index(&app, dir)
                             } else {
@@ -491,7 +493,7 @@ fn handle_validate(
                         };
 
                         if let Some(index) = index_to_use {
-                            let result = fixer.fix_missing_part_of(file, &index);
+                            let result = block_on(fixer.fix_missing_part_of(file, &index));
                             if result.success {
                                 println!(
                                     "  ✓ Fixed: Set part_of to '{}' in {}",
@@ -534,8 +536,8 @@ fn handle_validate(
 
 /// Helper function to report validation results and optionally fix issues
 fn report_and_fix_validation(
-    fixer: &ValidationFixer<diaryx_core::fs::RealFileSystem>,
-    app: &DiaryxApp<diaryx_core::fs::RealFileSystem>,
+    fixer: &ValidationFixer<SyncToAsyncFs<RealFileSystem>>,
+    app: &CliDiaryxAppSync,
     result: &diaryx_core::validate::ValidationResult,
     fix: bool,
     context_path: &Path,
@@ -563,7 +565,7 @@ fn report_and_fix_validation(
             match err {
                 ValidationError::BrokenPartOf { file, target } => {
                     if fix {
-                        let fix_result = fixer.fix_broken_part_of(file);
+                        let fix_result = block_on(fixer.fix_broken_part_of(file));
                         if fix_result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken part_of '{}' from {}",
@@ -584,7 +586,7 @@ fn report_and_fix_validation(
                 }
                 ValidationError::BrokenContentsRef { index, target } => {
                     if fix {
-                        let fix_result = fixer.fix_broken_contents_ref(index, target);
+                        let fix_result = block_on(fixer.fix_broken_contents_ref(index, target));
                         if fix_result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken contents ref '{}' from {}",
@@ -605,7 +607,7 @@ fn report_and_fix_validation(
                 }
                 ValidationError::BrokenAttachment { file, attachment } => {
                     if fix {
-                        let fix_result = fixer.fix_broken_attachment(file, attachment);
+                        let fix_result = block_on(fixer.fix_broken_attachment(file, attachment));
                         if fix_result.success {
                             println!(
                                 "  ✓ Fixed: Removed broken attachment '{}' from {}",
@@ -641,7 +643,7 @@ fn report_and_fix_validation(
             match warn {
                 ValidationWarning::UnlistedFile { index, file } => {
                     if fix {
-                        let fix_result = fixer.fix_unlisted_file(index, file);
+                        let fix_result = block_on(fixer.fix_unlisted_file(index, file));
                         if fix_result.success {
                             println!(
                                 "  ✓ Fixed: Added '{}' to {}",
@@ -664,7 +666,7 @@ fn report_and_fix_validation(
                 } => {
                     if fix {
                         let fix_result =
-                            fixer.fix_non_portable_path(file, property, value, suggested);
+                            block_on(fixer.fix_non_portable_path(file, property, value, suggested));
                         if fix_result.success {
                             println!(
                                 "  ✓ Fixed: Normalized {} '{}' -> '{}' in {}",
@@ -719,7 +721,7 @@ fn report_and_fix_validation(
                 } => {
                     if fix {
                         if let Some(index) = suggested_index {
-                            let fix_result = fixer.fix_orphan_binary_file(index, file);
+                            let fix_result = block_on(fixer.fix_orphan_binary_file(index, file));
                             if fix_result.success {
                                 println!(
                                     "  ✓ Fixed: Added '{}' to attachments in {}",
@@ -753,8 +755,8 @@ fn report_and_fix_validation(
                         } else {
                             // Check if directory has ANY index
                             let dir = file.parent().unwrap_or(Path::new("."));
-                            let ws = Workspace::new(RealFileSystem);
-                            if let Ok(None) = ws.find_any_index_in_dir(dir) {
+                            let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
+                            if let Ok(None) = block_on(ws.find_any_index_in_dir(dir)) {
                                 // No index exists. Create one.
                                 create_new_index(app, dir)
                             } else {
@@ -763,7 +765,7 @@ fn report_and_fix_validation(
                         };
 
                         if let Some(index) = index_to_use {
-                            let fix_result = fixer.fix_missing_part_of(file, &index);
+                            let fix_result = block_on(fixer.fix_missing_part_of(file, &index));
                             if fix_result.success {
                                 println!(
                                     "  ✓ Fixed: Set part_of to '{}' in {}",
@@ -811,9 +813,9 @@ fn report_and_fix_validation(
 /// Handle the 'workspace mv' command
 /// Moves/renames a file while updating workspace hierarchy references
 fn handle_mv(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     source: &str,
     dest: &str,
     new_index: Option<String>,
@@ -919,8 +921,8 @@ fn handle_mv(
 
 /// Set a new or existing index as the parent of a file
 fn set_new_index_as_parent(
-    app: &DiaryxApp<RealFileSystem>,
-    ws: &Workspace<RealFileSystem>,
+    app: &CliDiaryxAppSync,
+    ws: &CliWorkspace,
     file_path: &Path,
     index_name: &str,
 ) {
@@ -969,7 +971,7 @@ fn set_new_index_as_parent(
         }
 
         // Find parent index for the new index
-        if let Ok(Some(parent_index)) = ws.find_any_index_in_dir(file_dir) {
+        if let Ok(Some(parent_index)) = block_on(ws.find_any_index_in_dir(file_dir)) {
             // Don't set parent if it's the same as the new index
             if parent_index != index_path {
                 let relative_parent = calculate_relative_path(&index_path, &parent_index);
@@ -1103,7 +1105,7 @@ fn collect_md_files_recursive_helper(dir: &Path, files: &mut Vec<PathBuf>) {
 
 /// Resolve parent and child arguments, using local index as default parent if only one arg provided
 fn resolve_parent_child(
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     current_dir: &Path,
     parent_or_child: &str,
     child: Option<String>,
@@ -1112,7 +1114,7 @@ fn resolve_parent_child(
         // Two arguments provided: parent_or_child is parent, child is child
         Some(c) => (Some(parent_or_child.to_string()), Some(c)),
         // One argument provided: find local index as parent, parent_or_child is child
-        None => match ws.find_any_index_in_dir(current_dir) {
+        None => match block_on(ws.find_any_index_in_dir(current_dir)) {
             Ok(Some(index_path)) => {
                 let parent = index_path.to_string_lossy().to_string();
                 (Some(parent), Some(parent_or_child.to_string()))
@@ -1132,7 +1134,7 @@ fn resolve_parent_child(
 
 /// Resolve parent and name arguments for create, using local index as default parent if only one arg provided
 fn resolve_parent_name(
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     current_dir: &Path,
     parent_or_name: &str,
     name: Option<String>,
@@ -1141,7 +1143,7 @@ fn resolve_parent_name(
         // Two arguments provided: parent_or_name is parent, name is name
         Some(n) => (Some(parent_or_name.to_string()), Some(n)),
         // One argument provided: find local index as parent, parent_or_name is name
-        None => match ws.find_any_index_in_dir(current_dir) {
+        None => match block_on(ws.find_any_index_in_dir(current_dir)) {
             Ok(Some(index_path)) => {
                 let parent = index_path.to_string_lossy().to_string();
                 (Some(parent), Some(parent_or_name.to_string()))
@@ -1162,7 +1164,7 @@ fn resolve_parent_name(
 /// Handle the 'workspace info' command
 fn handle_info(
     workspace_override: Option<PathBuf>,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     config: &Option<Config>,
     current_dir: &Path,
     path: Option<String>,
@@ -1172,7 +1174,7 @@ fn handle_info(
     let root_path = if let Some(ref p) = path {
         if p == "." {
             // Resolve to local index in current directory
-            match ws.find_any_index_in_dir(current_dir) {
+            match block_on(ws.find_any_index_in_dir(current_dir)) {
                 Ok(Some(index)) => index,
                 Ok(None) => {
                     eprintln!("✗ No index found in current directory");
@@ -1190,7 +1192,7 @@ fn handle_info(
                 path_buf.to_path_buf()
             } else if path_buf.is_dir() {
                 // Find index in that directory
-                match ws.find_any_index_in_dir(path_buf) {
+                match block_on(ws.find_any_index_in_dir(path_buf)) {
                     Ok(Some(index)) => index,
                     Ok(None) => {
                         eprintln!("✗ No index found in directory: {}", p);
@@ -1208,10 +1210,10 @@ fn handle_info(
         }
     } else if let Some(override_path) = workspace_override {
         override_path.clone()
-    } else if let Ok(Some(detected)) = ws.detect_workspace(current_dir) {
+    } else if let Ok(Some(detected)) = block_on(ws.detect_workspace(current_dir)) {
         detected
     } else if let Some(cfg) = config {
-        if let Ok(Some(root)) = ws.find_root_index_in_dir(&cfg.default_workspace) {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&cfg.default_workspace)) {
             root
         } else {
             eprintln!("✗ No workspace found");
@@ -1231,7 +1233,7 @@ fn handle_info(
         Some(max_depth)
     };
 
-    match ws.workspace_info_with_depth(&root_path, depth_limit) {
+    match block_on(ws.workspace_info_with_depth(&root_path, depth_limit)) {
         Ok(tree_output) => {
             println!("{}", tree_output);
         }
@@ -1241,7 +1243,7 @@ fn handle_info(
 
 /// Handle the 'workspace init' command
 fn handle_init(
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     dir: Option<PathBuf>,
     title: Option<String>,
     description: Option<String>,
@@ -1249,7 +1251,7 @@ fn handle_init(
 ) {
     let target_dir = dir.unwrap_or_else(|| current_dir.to_path_buf());
 
-    match ws.init_workspace(&target_dir, title.as_deref(), description.as_deref()) {
+    match block_on(ws.init_workspace(&target_dir, title.as_deref(), description.as_deref())) {
         Ok(readme_path) => {
             println!("✓ Initialized workspace");
             println!("  Index file: {}", readme_path.display());
@@ -1261,16 +1263,16 @@ fn handle_init(
 /// Handle the 'workspace path' command
 fn handle_path(
     workspace_override: Option<PathBuf>,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     config: &Option<Config>,
     current_dir: &Path,
 ) {
     let root_path = if let Some(override_path) = workspace_override {
         Some(override_path.clone())
-    } else if let Ok(Some(detected)) = ws.detect_workspace(current_dir) {
+    } else if let Ok(Some(detected)) = block_on(ws.detect_workspace(current_dir)) {
         Some(detected)
     } else if let Some(cfg) = config {
-        ws.find_root_index_in_dir(&cfg.default_workspace)
+        block_on(ws.find_root_index_in_dir(&cfg.default_workspace))
             .ok()
             .flatten()
     } else {
@@ -1295,9 +1297,9 @@ fn handle_path(
 /// Handle the 'workspace add --recursive' command
 /// Recursively creates indexes for a directory hierarchy and connects them
 fn handle_add_recursive(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     current_dir: &Path,
     dir_path: &str,
     yes: bool,
@@ -1413,7 +1415,7 @@ fn handle_add_recursive(
     if let Some(root_plan) = plan.directories.first() {
         // Find parent index for the root directory
         if let Some(parent_dir) = root_plan.dir.parent()
-            && let Ok(Some(parent_index)) = ws.find_any_index_in_dir(parent_dir)
+            && let Ok(Some(parent_index)) = block_on(ws.find_any_index_in_dir(parent_dir))
         {
             // Check if root index is already in parent's contents
             let parent_str = parent_index.to_string_lossy();
@@ -1512,7 +1514,7 @@ impl RecursiveAddPlan {
 }
 
 /// Build a plan for recursive directory processing
-fn build_recursive_plan(dir: &Path, plan: &mut RecursiveAddPlan, ws: &Workspace<RealFileSystem>) {
+fn build_recursive_plan(dir: &Path, plan: &mut RecursiveAddPlan, ws: &CliWorkspace) {
     // Determine index path for this directory
     let dir_name = dir
         .file_name()
@@ -1522,7 +1524,7 @@ fn build_recursive_plan(dir: &Path, plan: &mut RecursiveAddPlan, ws: &Workspace<
     let index_path = dir.join(&index_filename);
 
     // Check if an index already exists
-    let (final_index_path, index_exists) = match ws.find_any_index_in_dir(dir) {
+    let (final_index_path, index_exists) = match block_on(ws.find_any_index_in_dir(dir)) {
         Ok(Some(existing)) => (existing, true),
         _ => (index_path, false),
     };
@@ -1566,9 +1568,9 @@ fn build_recursive_plan(dir: &Path, plan: &mut RecursiveAddPlan, ws: &Workspace<
 
 /// Execute the plan for a single directory
 fn execute_dir_plan(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     _config: &Config,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     dir_plan: &DirPlan,
 ) {
     let index_str = dir_plan.index_path.to_string_lossy();
@@ -1650,7 +1652,7 @@ fn execute_dir_plan(
     // Add subdirectory indexes
     for subdir in &dir_plan.subdirs {
         // Find the index in the subdirectory
-        if let Ok(Some(subdir_index)) = ws.find_any_index_in_dir(subdir) {
+        if let Ok(Some(subdir_index)) = block_on(ws.find_any_index_in_dir(subdir)) {
             let relative = calculate_relative_path(&dir_plan.index_path, &subdir_index);
             if !contents.contains(&relative) {
                 contents.push(relative.clone());
@@ -1727,9 +1729,9 @@ fn execute_dir_plan(
 /// Creates a new index file and adds files to it
 #[allow(clippy::too_many_arguments)]
 fn handle_add_with_new_index(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
-    ws: &Workspace<RealFileSystem>,
+    ws: &CliWorkspace,
     current_dir: &Path,
     file_pattern: &str,
     additional_pattern: Option<String>,
@@ -1802,7 +1804,7 @@ fn handle_add_with_new_index(
     }
 
     // Find parent index for the new index (local index in that directory)
-    let parent_index = ws.find_any_index_in_dir(index_dir).ok().flatten();
+    let parent_index = block_on(ws.find_any_index_in_dir(index_dir)).ok().flatten();
 
     if dry_run {
         println!("Would create new index: {}", index_path.display());
@@ -1964,7 +1966,7 @@ fn handle_add_with_new_index(
 /// Handle the 'workspace add' command
 /// Adds existing file(s) as children of a parent index
 fn handle_add(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     parent: &str,
     child_pattern: &str,
@@ -2074,7 +2076,7 @@ fn handle_add(
 
 /// Add a single child to a parent index
 fn add_single_child(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     parent_path: &Path,
     child_path: &Path,
     relative_child: &str,
@@ -2155,7 +2157,7 @@ fn add_single_child(
 /// Creates a new child file under a parent index
 #[allow(clippy::too_many_arguments)]
 fn handle_create(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     parent: &str,
     name: &str,
@@ -2323,7 +2325,7 @@ fn handle_create(
 /// Handle the 'workspace remove' command
 /// Removes a child from a parent's hierarchy (does not delete the file)
 fn handle_remove(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     parent: &str,
     child: &str,
@@ -2428,7 +2430,7 @@ fn handle_remove(
 
 /// Create a new index file in the given directory if none exists.
 /// Returns the path to the created index.
-fn create_new_index(app: &DiaryxApp<RealFileSystem>, dir: &Path) -> Option<PathBuf> {
+fn create_new_index(app: &CliDiaryxAppSync, dir: &Path) -> Option<PathBuf> {
     // 1. Determine name
     let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("index");
     let safe_name = slugify(dir_name);

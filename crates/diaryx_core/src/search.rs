@@ -1,12 +1,18 @@
 //! Search functionality for diaryx workspaces
 //!
 //! Provides searching through workspace files by content or frontmatter properties.
+//!
+//! # Async-first Design
+//!
+//! This module uses `AsyncFileSystem` for all filesystem operations.
+//! For synchronous contexts (CLI, tests), wrap a sync filesystem with
+//! `SyncToAsyncFs` and use `futures_lite::future::block_on()`.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::fs::FileSystem;
+use crate::fs::AsyncFileSystem;
 use crate::workspace::Workspace;
 
 /// Represents a search query configuration
@@ -137,34 +143,37 @@ impl Default for SearchResults {
     }
 }
 
-/// Searcher for workspace files
-pub struct Searcher<FS: FileSystem> {
+/// Searcher for workspace files (async-first)
+pub struct Searcher<FS: AsyncFileSystem> {
     fs: FS,
 }
 
-impl<FS: FileSystem + Clone> Searcher<FS> {
+impl<FS: AsyncFileSystem> Searcher<FS> {
     /// Create a new searcher
     pub fn new(fs: FS) -> Self {
         Self { fs }
     }
 
     /// Search the entire workspace starting from the root index
-    pub fn search_workspace(
+    pub async fn search_workspace(
         &self,
         workspace_root: &Path,
         query: &SearchQuery,
-    ) -> crate::error::Result<SearchResults> {
+    ) -> crate::error::Result<SearchResults>
+    where
+        FS: Clone,
+    {
         let workspace = Workspace::new(self.fs.clone());
-        let files = workspace.collect_workspace_files(workspace_root)?;
+        let files = workspace.collect_workspace_files(workspace_root).await?;
 
         let mut results = SearchResults::new();
         results.files_searched = files.len();
 
         for file_path in files {
-            if let Some(file_result) = self.search_file(&file_path, query)?
-                && file_result.has_matches()
-            {
-                results.files.push(file_result);
+            if let Some(file_result) = self.search_file(&file_path, query).await? {
+                if file_result.has_matches() {
+                    results.files.push(file_result);
+                }
             }
         }
 
@@ -172,12 +181,12 @@ impl<FS: FileSystem + Clone> Searcher<FS> {
     }
 
     /// Search a single file
-    pub fn search_file(
+    pub async fn search_file(
         &self,
         path: &Path,
         query: &SearchQuery,
     ) -> crate::error::Result<Option<FileSearchResult>> {
-        let content = match self.fs.read_to_string(path) {
+        let content = match self.fs.read_to_string(path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
@@ -376,34 +385,33 @@ impl<FS: FileSystem + Clone> Searcher<FS> {
     }
 }
 
-impl<FS: FileSystem + Clone> Clone for Searcher<FS> {
-    fn clone(&self) -> Self {
-        Self {
-            fs: self.fs.clone(),
-        }
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::MockFileSystem;
+    use crate::fs::{block_on_test, FileSystem, InMemoryFileSystem, SyncToAsyncFs};
 
-    // Type alias for backwards compatibility with existing tests
-    type MockFs = MockFileSystem;
+    type TestFs = SyncToAsyncFs<InMemoryFileSystem>;
+
+    fn make_test_fs() -> InMemoryFileSystem {
+        InMemoryFileSystem::new()
+    }
 
     #[test]
     fn test_search_content() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: Test Entry\n---\n\nThis is some content.\nWith multiple lines.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::content("content");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -415,16 +423,18 @@ mod tests {
 
     #[test]
     fn test_search_content_case_insensitive() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: Test\n---\n\nHello WORLD and world.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::content("world");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -434,16 +444,18 @@ mod tests {
 
     #[test]
     fn test_search_content_case_sensitive() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: Test\n---\n\nHello WORLD and world.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::content("world").case_sensitive(true);
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -453,16 +465,18 @@ mod tests {
 
     #[test]
     fn test_search_frontmatter() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: Important Meeting\ndescription: A very important meeting\n---\n\nBody content here.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::frontmatter("important");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -472,16 +486,18 @@ mod tests {
 
     #[test]
     fn test_search_specific_property() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: Meeting Notes\ntags:\n  - important\n  - work\n---\n\nSome important content.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::property("important", "tags");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -492,14 +508,18 @@ mod tests {
 
     #[test]
     fn test_search_no_frontmatter() {
-        let fs =
-            MockFs::new().with_file("/test/entry.md", "Just plain content.\nNo frontmatter.\n");
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
+            "Just plain content.\nNo frontmatter.\n",
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::content("plain");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 
@@ -509,16 +529,18 @@ mod tests {
 
     #[test]
     fn test_extract_title_with_quotes() {
-        let fs = MockFs::new().with_file(
-            "/test/entry.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/test/entry.md"),
             "---\ntitle: \"Quoted Title\"\n---\n\nContent.\n",
-        );
+        )
+        .unwrap();
 
-        let searcher = Searcher::new(fs);
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let searcher = Searcher::new(async_fs);
         let query = SearchQuery::content("Content");
 
-        let result = searcher
-            .search_file(Path::new("/test/entry.md"), &query)
+        let result = block_on_test(searcher.search_file(Path::new("/test/entry.md"), &query))
             .unwrap()
             .unwrap();
 

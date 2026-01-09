@@ -2,9 +2,14 @@
 
 use std::path::PathBuf;
 
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use diaryx_core::search::{SearchMode, SearchQuery, SearchResults, Searcher};
 use diaryx_core::workspace::Workspace;
+
+/// Helper to run async operations in sync context
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    futures_lite::future::block_on(f)
+}
 
 /// Handle the search command
 #[allow(clippy::too_many_arguments)]
@@ -31,10 +36,10 @@ pub fn handle_search(
     let query = build_query(&pattern, frontmatter, property.as_deref(), case_sensitive);
 
     // Execute search
-    let fs = RealFileSystem;
+    let fs = SyncToAsyncFs::new(RealFileSystem);
     let searcher = Searcher::new(fs);
 
-    let results = match searcher.search_workspace(&workspace_root, &query) {
+    let results = match block_on(searcher.search_workspace(&workspace_root, &query)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("✗ Search failed: {}", e);
@@ -268,7 +273,7 @@ fn display_count_results(results: &SearchResults) {
 
 /// Resolve the workspace root for search
 fn resolve_workspace_for_search(workspace_override: Option<PathBuf>) -> Result<PathBuf, String> {
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     // If workspace is explicitly provided, use it
     if let Some(workspace_path) = workspace_override {
@@ -276,7 +281,7 @@ fn resolve_workspace_for_search(workspace_override: Option<PathBuf>) -> Result<P
             return Ok(workspace_path);
         }
         // If it's a directory, find the root index in it
-        if let Ok(Some(root)) = ws.find_root_index_in_dir(&workspace_path) {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&workspace_path)) {
             return Ok(root);
         }
         return Err(format!(
@@ -289,7 +294,7 @@ fn resolve_workspace_for_search(workspace_override: Option<PathBuf>) -> Result<P
     let current_dir =
         std::env::current_dir().map_err(|e| format!("Cannot get current directory: {}", e))?;
 
-    if let Ok(Some(root)) = ws.detect_workspace(&current_dir) {
+    if let Ok(Some(root)) = block_on(ws.detect_workspace(&current_dir)) {
         return Ok(root);
     }
 
@@ -297,7 +302,7 @@ fn resolve_workspace_for_search(workspace_override: Option<PathBuf>) -> Result<P
     let config =
         diaryx_core::config::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 
-    if let Ok(Some(root)) = ws.find_root_index_in_dir(&config.default_workspace) {
+    if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&config.default_workspace)) {
         return Ok(root);
     }
 

@@ -3,9 +3,14 @@
 use std::path::PathBuf;
 
 use diaryx_core::export::{ExportOptions, ExportPlan, Exporter};
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use diaryx_core::workspace::Workspace;
 use std::path::Path;
+
+/// Helper to run async operations in sync context
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    futures_lite::future::block_on(f)
+}
 
 /// Handle the export command
 pub fn handle_export(
@@ -17,11 +22,11 @@ pub fn handle_export(
     verbose: bool,
     dry_run: bool,
 ) {
-    let fs = RealFileSystem;
+    let fs = SyncToAsyncFs::new(RealFileSystem);
     let exporter = Exporter::new(fs);
 
     // Plan the export
-    let plan = match exporter.plan_export(&workspace_root, audience, destination) {
+    let plan = match block_on(exporter.plan_export(&workspace_root, audience, destination)) {
         Ok(plan) => plan,
         Err(e) => {
             eprintln!("✗ Failed to plan export: {}", e);
@@ -71,7 +76,7 @@ pub fn handle_export(
         keep_audience,
     };
 
-    match exporter.execute_export(&plan, &options) {
+    match block_on(exporter.execute_export(&plan, &options)) {
         Ok(stats) => {
             println!("✓ {}", stats);
             println!("  Exported to: {}", destination.display());
@@ -112,7 +117,7 @@ fn print_verbose_plan(plan: &ExportPlan) {
 pub fn resolve_workspace_for_export(
     workspace_override: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     // If workspace is explicitly provided, use it
     if let Some(workspace_path) = workspace_override {
@@ -120,7 +125,7 @@ pub fn resolve_workspace_for_export(
             return Ok(workspace_path);
         }
         // If it's a directory, find the root index in it
-        if let Ok(Some(root)) = ws.find_root_index_in_dir(&workspace_path) {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&workspace_path)) {
             return Ok(root);
         }
         return Err(format!(
@@ -133,7 +138,7 @@ pub fn resolve_workspace_for_export(
     let current_dir =
         std::env::current_dir().map_err(|e| format!("Cannot get current directory: {}", e))?;
 
-    if let Ok(Some(root)) = ws.detect_workspace(&current_dir) {
+    if let Ok(Some(root)) = block_on(ws.detect_workspace(&current_dir)) {
         return Ok(root);
     }
 
@@ -141,7 +146,7 @@ pub fn resolve_workspace_for_export(
     let config =
         diaryx_core::config::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 
-    if let Ok(Some(root)) = ws.find_root_index_in_dir(&config.default_workspace) {
+    if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&config.default_workspace)) {
         return Ok(root);
     }
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
-use crate::state::with_fs;
+use crate::state::{block_on, with_async_fs};
 
 // ============================================================================
 // Types
@@ -70,17 +70,16 @@ impl DiaryxSearch {
             serde_wasm_bindgen::from_value(options).js_err()?
         };
 
-        with_fs(|fs| {
-            let searcher = Searcher::new(fs);
+        with_async_fs(|fs| {
+            let searcher = Searcher::new(fs.clone());
             let ws = Workspace::new(fs);
 
             let workspace_path = opts.workspace_path.as_deref().unwrap_or("workspace");
             let root_path = PathBuf::from(workspace_path);
 
-            let root_index = ws
-                .find_root_index_in_dir(&root_path)
+            let root_index = block_on(ws.find_root_index_in_dir(&root_path))
                 .js_err()?
-                .or_else(|| ws.find_any_index_in_dir(&root_path).ok().flatten())
+                .or_else(|| block_on(ws.find_any_index_in_dir(&root_path)).ok().flatten())
                 .ok_or_else(|| {
                     JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
                 })?;
@@ -95,7 +94,7 @@ impl DiaryxSearch {
 
             let query = query.case_sensitive(opts.case_sensitive.unwrap_or(false));
 
-            let results = searcher.search_workspace(&root_index, &query).js_err()?;
+            let results = block_on(searcher.search_workspace(&root_index, &query)).js_err()?;
 
             let js_results = JsSearchResults {
                 files_searched: results.files_searched as u32,

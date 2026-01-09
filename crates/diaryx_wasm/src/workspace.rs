@@ -3,13 +3,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use diaryx_core::fs::FileSystem;
+use diaryx_core::fs::{AsyncFileSystem, FileSystem};
 use diaryx_core::workspace::Workspace;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
-use crate::state::with_fs;
+use crate::state::{block_on, with_async_fs, with_fs};
 
 // ============================================================================
 // Types
@@ -54,15 +54,14 @@ impl DiaryxWorkspace {
     /// Get the workspace tree structure.
     #[wasm_bindgen]
     pub fn get_tree(&self, workspace_path: &str, depth: Option<u32>) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let ws = Workspace::new(fs);
             let root_path = PathBuf::from(workspace_path);
 
             // Find root index in the workspace
-            let root_index = ws
-                .find_root_index_in_dir(&root_path)
+            let root_index = block_on(ws.find_root_index_in_dir(&root_path))
                 .js_err()?
-                .or_else(|| ws.find_any_index_in_dir(&root_path).ok().flatten())
+                .or_else(|| block_on(ws.find_any_index_in_dir(&root_path)).ok().flatten())
                 .ok_or_else(|| {
                     JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
                 })?;
@@ -70,8 +69,7 @@ impl DiaryxWorkspace {
             let max_depth = depth.map(|d| d as usize);
             let mut visited = HashSet::new();
 
-            let tree = ws
-                .build_tree_with_depth(&root_index, max_depth, &mut visited)
+            let tree = block_on(ws.build_tree_with_depth(&root_index, max_depth, &mut visited))
                 .js_err()?;
 
             let js_tree: JsTreeNode = tree.into();
@@ -110,11 +108,11 @@ impl DiaryxWorkspace {
         workspace_path: &str,
         show_hidden: bool,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let root_path = PathBuf::from(workspace_path);
 
-            fn build_tree(
-                fs: &dyn FileSystem,
+            fn build_tree<FS: AsyncFileSystem>(
+                fs: &FS,
                 path: &Path,
                 show_hidden: bool,
             ) -> Result<JsTreeNode, String> {
@@ -129,8 +127,8 @@ impl DiaryxWorkspace {
 
                 let mut children = Vec::new();
 
-                if fs.is_dir(path) {
-                    if let Ok(entries) = fs.list_files(path) {
+                if block_on(fs.is_dir(path)) {
+                    if let Ok(entries) = block_on(fs.list_files(path)) {
                         for entry in entries {
                             if let Ok(child) = build_tree(fs, &entry, show_hidden) {
                                 children.push(child);
@@ -157,7 +155,7 @@ impl DiaryxWorkspace {
             }
 
             let tree =
-                build_tree(fs, &root_path, show_hidden).map_err(|e| JsValue::from_str(&e))?;
+                build_tree(&fs, &root_path, show_hidden).map_err(|e| JsValue::from_str(&e))?;
 
             serde_wasm_bindgen::to_value(&tree).js_err()
         })

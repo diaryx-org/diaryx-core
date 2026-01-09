@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use diaryx_core::export::Exporter;
-use diaryx_core::fs::FileSystem;
+use diaryx_core::fs::{AsyncFileSystem, FileSystem};
 use diaryx_core::workspace::Workspace;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
 use crate::frontmatter::extract_body;
-use crate::state::with_fs;
+use crate::state::{block_on, with_async_fs, with_fs};
 
 // ============================================================================
 // Types
@@ -67,11 +67,11 @@ impl DiaryxExport {
     /// Get all available audience tags from the workspace.
     #[wasm_bindgen]
     pub fn get_audiences(&self, root_path: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let ws = Workspace::new(fs);
             let mut audiences: HashSet<String> = HashSet::new();
 
-            fn collect_audiences<FS: FileSystem>(
+            fn collect_audiences<FS: AsyncFileSystem>(
                 ws: &Workspace<FS>,
                 path: &Path,
                 audiences: &mut HashSet<String>,
@@ -82,7 +82,7 @@ impl DiaryxExport {
                 }
                 visited.insert(path.to_path_buf());
 
-                if let Ok(index) = ws.parse_index(path) {
+                if let Ok(index) = block_on(ws.parse_index(path)) {
                     if let Some(file_audiences) = &index.frontmatter.audience {
                         for a in file_audiences {
                             if a.to_lowercase() != "private" {
@@ -94,7 +94,7 @@ impl DiaryxExport {
                     if index.frontmatter.is_index() {
                         for child_rel in index.frontmatter.contents_list() {
                             let child_path = index.resolve_path(child_rel);
-                            if ws.fs_ref().exists(&child_path) {
+                            if block_on(ws.fs_ref().exists(&child_path)) {
                                 collect_audiences(ws, &child_path, audiences, visited);
                             }
                         }
@@ -115,14 +115,14 @@ impl DiaryxExport {
     /// Plan an export operation.
     #[wasm_bindgen]
     pub fn plan(&self, root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             if audience == "*" {
                 let ws = Workspace::new(fs);
                 let mut included = Vec::new();
                 let root = Path::new(root_path);
                 let root_dir = root.parent().unwrap_or(root);
 
-                fn collect_all<FS: FileSystem>(
+                fn collect_all<FS: AsyncFileSystem>(
                     ws: &Workspace<FS>,
                     path: &Path,
                     root_dir: &Path,
@@ -134,7 +134,7 @@ impl DiaryxExport {
                     }
                     visited.insert(path.to_path_buf());
 
-                    if let Ok(index) = ws.parse_index(path) {
+                    if let Ok(index) = block_on(ws.parse_index(path)) {
                         let relative_path = pathdiff::diff_paths(path, root_dir)
                             .unwrap_or_else(|| path.to_path_buf());
 
@@ -146,7 +146,7 @@ impl DiaryxExport {
                         if index.frontmatter.is_index() {
                             for child_rel in index.frontmatter.contents_list() {
                                 let child_path = index.resolve_path(child_rel);
-                                if ws.fs_ref().exists(&child_path) {
+                                if block_on(ws.fs_ref().exists(&child_path)) {
                                     collect_all(ws, &child_path, root_dir, included, visited);
                                 }
                             }
@@ -168,8 +168,8 @@ impl DiaryxExport {
 
             let exporter = Exporter::new(fs);
 
-            let plan = exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export"))
+            let plan = block_on(exporter
+                .plan_export(Path::new(root_path), audience, Path::new("/export")))
                 .js_err()?;
 
             let result = ExportPlanJs {
@@ -199,14 +199,14 @@ impl DiaryxExport {
     /// Export files to memory as markdown.
     #[wasm_bindgen]
     pub fn to_memory(&self, root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             if audience == "*" {
                 let ws = Workspace::new(fs);
                 let mut files: Vec<ExportedFile> = Vec::new();
                 let root = Path::new(root_path);
                 let root_dir = root.parent().unwrap_or(root);
 
-                fn collect_all<FS: FileSystem>(
+                fn collect_all<FS: AsyncFileSystem>(
                     ws: &Workspace<FS>,
                     path: &Path,
                     root_dir: &Path,
@@ -218,11 +218,11 @@ impl DiaryxExport {
                     }
                     visited.insert(path.to_path_buf());
 
-                    if let Ok(index) = ws.parse_index(path) {
+                    if let Ok(index) = block_on(ws.parse_index(path)) {
                         let relative_path = pathdiff::diff_paths(path, root_dir)
                             .unwrap_or_else(|| path.to_path_buf());
 
-                        if let Ok(content) = ws.fs_ref().read_to_string(path) {
+                        if let Ok(content) = block_on(ws.fs_ref().read_to_string(path)) {
                             let processed = remove_audience_from_content(&content);
                             files.push(ExportedFile {
                                 path: relative_path.to_string_lossy().to_string(),
@@ -233,7 +233,7 @@ impl DiaryxExport {
                         if index.frontmatter.is_index() {
                             for child_rel in index.frontmatter.contents_list() {
                                 let child_path = index.resolve_path(child_rel);
-                                if ws.fs_ref().exists(&child_path) {
+                                if block_on(ws.fs_ref().exists(&child_path)) {
                                     collect_all(ws, &child_path, root_dir, files, visited);
                                 }
                             }
@@ -247,16 +247,16 @@ impl DiaryxExport {
                 return serde_wasm_bindgen::to_value(&files).js_err();
             }
 
-            let exporter = Exporter::new(fs);
+            let exporter = Exporter::new(fs.clone());
 
-            let plan = exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export"))
+            let plan = block_on(exporter
+                .plan_export(Path::new(root_path), audience, Path::new("/export")))
                 .js_err()?;
 
             let mut files: Vec<ExportedFile> = Vec::new();
 
             for export_file in &plan.included {
-                let content = fs.read_to_string(&export_file.source_path).js_err()?;
+                let content = block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
 
                 let processed = if !export_file.filtered_contents.is_empty() {
                     filter_contents_and_audience(&content, &export_file.filtered_contents)
@@ -279,7 +279,7 @@ impl DiaryxExport {
     pub fn to_html(&self, root_path: &str, audience: &str) -> Result<JsValue, JsValue> {
         use comrak::{Options, markdown_to_html};
 
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             fn convert_md_to_html(markdown: &str) -> String {
                 let mut options = Options::default();
                 options.extension.strikethrough = true;
@@ -319,7 +319,7 @@ impl DiaryxExport {
                 let root = Path::new(root_path);
                 let root_dir = root.parent().unwrap_or(root);
 
-                fn collect_all<FS: FileSystem>(
+                fn collect_all<FS: AsyncFileSystem>(
                     ws: &Workspace<FS>,
                     path: &Path,
                     root_dir: &Path,
@@ -332,11 +332,11 @@ impl DiaryxExport {
                     }
                     visited.insert(path.to_path_buf());
 
-                    if let Ok(index) = ws.parse_index(path) {
+                    if let Ok(index) = block_on(ws.parse_index(path)) {
                         let relative_path = pathdiff::diff_paths(path, root_dir)
                             .unwrap_or_else(|| path.to_path_buf());
 
-                        if let Ok(content) = ws.fs_ref().read_to_string(path) {
+                        if let Ok(content) = block_on(ws.fs_ref().read_to_string(path)) {
                             let body = extract_body(&content);
                             let html = convert_fn(&body);
                             let html_path = relative_path.to_string_lossy().replace(".md", ".html");
@@ -350,7 +350,7 @@ impl DiaryxExport {
                         if index.frontmatter.is_index() {
                             for child_rel in index.frontmatter.contents_list() {
                                 let child_path = index.resolve_path(child_rel);
-                                if ws.fs_ref().exists(&child_path) {
+                                if block_on(ws.fs_ref().exists(&child_path)) {
                                     collect_all(
                                         ws,
                                         &child_path,
@@ -378,16 +378,16 @@ impl DiaryxExport {
                 return serde_wasm_bindgen::to_value(&files).js_err();
             }
 
-            let exporter = Exporter::new(fs);
+            let exporter = Exporter::new(fs.clone());
 
-            let plan = exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export"))
+            let plan = block_on(exporter
+                .plan_export(Path::new(root_path), audience, Path::new("/export")))
                 .js_err()?;
 
             let mut files: Vec<ExportedFile> = Vec::new();
 
             for export_file in &plan.included {
-                let content = fs.read_to_string(&export_file.source_path).js_err()?;
+                let content = block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
                 let body = extract_body(&content);
                 let html = convert_md_to_html(&body);
                 let html_path = export_file
@@ -408,7 +408,7 @@ impl DiaryxExport {
     /// Export binary attachment files.
     #[wasm_bindgen]
     pub fn binary_attachments(&self, root_path: &str, _audience: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let ws = Workspace::new(fs);
             let root = Path::new(root_path);
             let root_dir = root.parent().unwrap_or(root);
@@ -416,7 +416,7 @@ impl DiaryxExport {
             let mut visited_entries: HashSet<PathBuf> = HashSet::new();
             let mut visited_attachment_dirs: HashSet<PathBuf> = HashSet::new();
 
-            fn collect_attachments<FS: FileSystem>(
+            fn collect_attachments<FS: AsyncFileSystem>(
                 ws: &Workspace<FS>,
                 entry_path: &Path,
                 root_dir: &Path,
@@ -429,19 +429,19 @@ impl DiaryxExport {
                 }
                 visited_entries.insert(entry_path.to_path_buf());
 
-                if let Ok(index) = ws.parse_index(entry_path) {
+                if let Ok(index) = block_on(ws.parse_index(entry_path)) {
                     let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
                     let attachments_dir = entry_dir.join("_attachments");
 
-                    if ws.fs_ref().is_dir(&attachments_dir)
+                    if block_on(ws.fs_ref().is_dir(&attachments_dir))
                         && !visited_attachment_dirs.contains(&attachments_dir)
                     {
                         visited_attachment_dirs.insert(attachments_dir.clone());
 
-                        if let Ok(files) = ws.fs_ref().list_files(&attachments_dir) {
+                        if let Ok(files) = block_on(ws.fs_ref().list_files(&attachments_dir)) {
                             for file_path in files {
-                                if !ws.fs_ref().is_dir(&file_path)
-                                    && let Ok(data) = ws.fs_ref().read_binary(&file_path)
+                                if !block_on(ws.fs_ref().is_dir(&file_path))
+                                    && let Ok(data) = block_on(ws.fs_ref().read_binary(&file_path))
                                 {
                                     let relative_path = pathdiff::diff_paths(&file_path, root_dir)
                                         .unwrap_or_else(|| file_path.clone());
@@ -458,7 +458,7 @@ impl DiaryxExport {
                     if index.frontmatter.is_index() {
                         for child_rel in index.frontmatter.contents_list() {
                             let child_path = index.resolve_path(child_rel);
-                            if ws.fs_ref().exists(&child_path) {
+                            if block_on(ws.fs_ref().exists(&child_path)) {
                                 collect_attachments(
                                     ws,
                                     &child_path,

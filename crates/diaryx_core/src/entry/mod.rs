@@ -5,6 +5,12 @@
 //! - Content operations (get, set, append, prepend)
 //! - Attachment management
 //! - Daily entry creation with index hierarchy
+//!
+//! ## Async-first refactor
+//!
+//! `DiaryxApp` is now async-first and uses `AsyncFileSystem`.
+//! The prior sync implementation is preserved as `DiaryxAppSync`
+//! (temporary compatibility during the refactor).
 
 mod helpers;
 
@@ -14,24 +20,410 @@ pub use helpers::{prettify_filename, slugify, slugify_title};
 use crate::config::Config;
 use crate::date::{date_to_path, parse_date};
 use crate::error::{DiaryxError, Result};
-use crate::fs::FileSystem;
+use crate::fs::{AsyncFileSystem, FileSystem};
 use crate::template::{Template, TemplateContext, TemplateManager};
 use chrono::{NaiveDate, Utc};
 use indexmap::IndexMap;
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
-/// This is the struct representing a Diaryx app. It takes a filesystem interface so Diaryx operations
-/// can be performed in multiple clients.
-pub struct DiaryxApp<FS: FileSystem> {
+/// Async-first Diaryx entry operations.
+///
+/// This is the main entry API going forward.
+pub struct DiaryxApp<FS: AsyncFileSystem> {
     fs: FS,
 }
 
-/// This is the implementation of a Diaryx app. Given a filesytem, it can do various operations in any filesystem environment.
-impl<FS: FileSystem> DiaryxApp<FS> {
+/// Legacy synchronous Diaryx entry operations.
+///
+/// This preserves the prior `FileSystem`-based implementation during the async refactor.
+/// Prefer [`DiaryxApp`].
+pub struct DiaryxAppSync<FS: FileSystem> {
+    fs: FS,
+}
+
+impl<FS: AsyncFileSystem> DiaryxApp<FS> {
     /// DiaryxApp constructor
     pub fn new(fs: FS) -> Self {
         Self { fs }
+    }
+
+    /// Access the underlying filesystem.
+    pub fn fs(&self) -> &FS {
+        &self.fs
+    }
+
+    /// Create a new entry.
+    pub async fn create_entry(&self, path: &str) -> Result<()> {
+        let content = format!("---\ntitle: {}\n---\n\n# {}\n\n", path, path);
+        self.fs
+            .create_new(std::path::Path::new(path), &content)
+            .await
+            .map_err(|e| DiaryxError::FileWrite {
+                path: PathBuf::from(path),
+                source: e,
+            })?;
+        Ok(())
+    }
+
+    /// Template-based entry creation is temporarily disabled for the async-first API.
+    ///
+    /// `TemplateManager` is still `FileSystem`-based. Once it is refactored to `AsyncFileSystem`,
+    /// these methods can be re-enabled.
+    #[allow(dead_code)]
+    pub fn template_manager(&self, _workspace_dir: Option<&Path>) -> TemplateManager<&FS> {
+        unimplemented!("TemplateManager is not yet refactored to AsyncFileSystem");
+    }
+
+    /// Template-based entry creation is temporarily disabled for the async-first API.
+    #[allow(dead_code)]
+    pub async fn create_entry_with_template(
+        &self,
+        _path: &Path,
+        _template: &Template,
+        _context: &TemplateContext,
+    ) -> Result<()> {
+        Err(DiaryxError::Unsupported(
+            "Template-based entry creation is not yet supported for AsyncFileSystem".to_string(),
+        ))
+    }
+
+    /// Template-based entry creation is temporarily disabled for the async-first API.
+    #[allow(dead_code)]
+    pub async fn create_entry_from_template(
+        &self,
+        _path: &Path,
+        _template_name: Option<&str>,
+        _title: Option<&str>,
+        _workspace_dir: Option<&Path>,
+    ) -> Result<()> {
+        Err(DiaryxError::Unsupported(
+            "Template-based entry creation is not yet supported for AsyncFileSystem".to_string(),
+        ))
+    }
+
+    /// Parses a markdown file and extracts frontmatter and body.
+    /// Returns an error if no frontmatter is found.
+    async fn parse_file(&self, path: &str) -> Result<(IndexMap<String, Value>, String)> {
+        let path_buf = PathBuf::from(path);
+        let content = self
+            .fs
+            .read_to_string(std::path::Path::new(path))
+            .await
+            .map_err(|e| DiaryxError::FileRead {
+                path: path_buf.clone(),
+                source: e,
+            })?;
+
+        // Check if content starts with frontmatter delimiter
+        if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+            return Err(DiaryxError::NoFrontmatter(path_buf));
+        }
+
+        // Find the closing delimiter
+        let rest = &content[4..]; // Skip first "---\n"
+        let end_idx = rest
+            .find("\n---\n")
+            .or_else(|| rest.find("\n---\r\n"))
+            .ok_or_else(|| DiaryxError::NoFrontmatter(path_buf.clone()))?;
+
+        let frontmatter_str = &rest[..end_idx];
+        let body = &rest[end_idx + 5..]; // Skip "\n---\n"
+
+        // Parse YAML frontmatter into IndexMap to preserve order
+        let frontmatter: IndexMap<String, Value> = serde_yaml::from_str(frontmatter_str)?;
+
+        Ok((frontmatter, body.to_string()))
+    }
+
+    /// Parses a markdown file, creating empty frontmatter if none exists.
+    /// Creates the file if it doesn't exist.
+    /// Use this for operations that should create frontmatter when missing (like set).
+    async fn parse_file_or_create_frontmatter(
+        &self,
+        path: &str,
+    ) -> Result<(IndexMap<String, Value>, String)> {
+        let path_buf = PathBuf::from(path);
+
+        // Try to read the file, if it doesn't exist, return empty frontmatter and body
+        let content = match self.fs.read_to_string(std::path::Path::new(path)).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // File doesn't exist - return empty frontmatter and body
+                // The file will be created when reconstruct_file is called
+                return Ok((IndexMap::new(), String::new()));
+            }
+            Err(e) => {
+                return Err(DiaryxError::FileRead {
+                    path: path_buf,
+                    source: e,
+                });
+            }
+        };
+
+        // Check if content starts with frontmatter delimiter
+        if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+            // No frontmatter - return empty frontmatter and entire content as body
+            return Ok((IndexMap::new(), content));
+        }
+
+        // Find the closing delimiter
+        let rest = &content[4..]; // Skip first "---\n"
+        let end_idx = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n"));
+
+        match end_idx {
+            Some(idx) => {
+                let frontmatter_str = &rest[..idx];
+                let body = &rest[idx + 5..]; // Skip "\n---\n"
+
+                // Parse YAML frontmatter into IndexMap to preserve order
+                let frontmatter: IndexMap<String, Value> = serde_yaml::from_str(frontmatter_str)?;
+
+                Ok((frontmatter, body.to_string()))
+            }
+            None => {
+                // Malformed frontmatter (no closing delimiter) - treat as no frontmatter
+                Ok((IndexMap::new(), content))
+            }
+        }
+    }
+
+    /// Reconstructs a markdown file with updated frontmatter.
+    async fn reconstruct_file(
+        &self,
+        path: &str,
+        frontmatter: &IndexMap<String, Value>,
+        body: &str,
+    ) -> Result<()> {
+        let yaml_str = serde_yaml::to_string(frontmatter)?;
+        let content = format!("---\n{}---\n{}", yaml_str, body);
+        self.fs
+            .write_file(std::path::Path::new(path), &content)
+            .await
+            .map_err(|e| DiaryxError::FileWrite {
+                path: PathBuf::from(path),
+                source: e,
+            })?;
+        Ok(())
+    }
+
+    // ==================== Frontmatter Methods ====================
+
+    /// Adds or updates a frontmatter property.
+    /// Creates frontmatter if none exists.
+    pub async fn set_frontmatter_property(&self, path: &str, key: &str, value: Value) -> Result<()> {
+        let (mut frontmatter, body) = self.parse_file_or_create_frontmatter(path).await?;
+        frontmatter.insert(key.to_string(), value);
+        self.reconstruct_file(path, &frontmatter, &body).await
+    }
+
+    /// Removes a frontmatter property.
+    /// Does nothing if no frontmatter exists or key is not found.
+    pub async fn remove_frontmatter_property(&self, path: &str, key: &str) -> Result<()> {
+        match self.parse_file(path).await {
+            Ok((mut frontmatter, body)) => {
+                frontmatter.shift_remove(key);
+                self.reconstruct_file(path, &frontmatter, &body).await
+            }
+            Err(DiaryxError::NoFrontmatter(_)) => Ok(()), // No frontmatter, nothing to remove
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Renames a frontmatter property key.
+    /// Returns Ok(true) if the key was found and renamed, Ok(false) if key was not found or no frontmatter.
+    pub async fn rename_frontmatter_property(
+        &self,
+        path: &str,
+        old_key: &str,
+        new_key: &str,
+    ) -> Result<bool> {
+        let (frontmatter, body) = match self.parse_file(path).await {
+            Ok(result) => result,
+            Err(DiaryxError::NoFrontmatter(_)) => return Ok(false), // No frontmatter, key not found
+            Err(e) => return Err(e),
+        };
+
+        if !frontmatter.contains_key(old_key) {
+            return Ok(false);
+        }
+
+        // Rebuild the map, replacing old_key with new_key at the same position
+        let mut result: IndexMap<String, Value> = IndexMap::new();
+        for (k, v) in frontmatter {
+            if k == old_key {
+                result.insert(new_key.to_string(), v);
+            } else {
+                result.insert(k, v);
+            }
+        }
+
+        self.reconstruct_file(path, &result, &body).await?;
+        Ok(true)
+    }
+
+    /// Gets a frontmatter property value.
+    /// Returns Ok(None) if no frontmatter exists or key is not found.
+    pub async fn get_frontmatter_property(&self, path: &str, key: &str) -> Result<Option<Value>> {
+        match self.parse_file(path).await {
+            Ok((frontmatter, _)) => Ok(frontmatter.get(key).cloned()),
+            Err(DiaryxError::NoFrontmatter(_)) => Ok(None), // No frontmatter, key not found
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Gets all frontmatter properties.
+    /// Returns empty map if no frontmatter exists.
+    pub async fn get_all_frontmatter(&self, path: &str) -> Result<IndexMap<String, Value>> {
+        match self.parse_file(path).await {
+            Ok((frontmatter, _)) => Ok(frontmatter),
+            Err(DiaryxError::NoFrontmatter(_)) => Ok(IndexMap::new()), // No frontmatter, return empty
+            Err(e) => Err(e),
+        }
+    }
+
+    // ==================== Content Methods ====================
+
+    /// Get the content (body) of a file, excluding frontmatter.
+    pub async fn get_content(&self, path: &str) -> Result<String> {
+        let (_, body) = self.parse_file_or_create_frontmatter(path).await?;
+        Ok(body)
+    }
+
+    /// Set the content (body) of a file, preserving frontmatter.
+    /// Creates frontmatter if none exists.
+    pub async fn set_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, _) = self.parse_file_or_create_frontmatter(path).await?;
+        self.reconstruct_file(path, &frontmatter, content).await
+    }
+
+    /// Clear the content (body) of a file, preserving frontmatter.
+    pub async fn clear_content(&self, path: &str) -> Result<()> {
+        self.set_content(path, "").await
+    }
+
+    /// Update the 'updated' frontmatter property with the current timestamp (RFC 3339 format).
+    /// Creates frontmatter if none exists.
+    pub async fn touch_updated(&self, path: &str) -> Result<()> {
+        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.set_frontmatter_property(path, "updated", Value::String(timestamp))
+            .await
+    }
+
+    /// Save content and update the 'updated' timestamp in one operation.
+    /// This is a convenience method that combines set_content and touch_updated.
+    pub async fn save_content(&self, path: &str, content: &str) -> Result<()> {
+        self.set_content(path, content).await?;
+        self.touch_updated(path).await
+    }
+
+    /// Append content to the end of a file's body.
+    pub async fn append_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path).await?;
+        let new_body = if body.is_empty() {
+            content.to_string()
+        } else if body.ends_with('\n') {
+            format!("{}{}", body, content)
+        } else {
+            format!("{}\n{}", body, content)
+        };
+        self.reconstruct_file(path, &frontmatter, &new_body).await
+    }
+
+    /// Prepend content to the beginning of a file's body.
+    pub async fn prepend_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path).await?;
+        let new_body = if body.is_empty() {
+            content.to_string()
+        } else if content.ends_with('\n') {
+            format!("{}{}", content, body)
+        } else {
+            format!("{}\n{}", content, body)
+        };
+        self.reconstruct_file(path, &frontmatter, &new_body).await
+    }
+
+    // ==================== Attachment Methods ====================
+
+    /// Add an attachment path to the entry's attachments list.
+    /// Creates the attachments property if it doesn't exist.
+    pub async fn add_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let (mut frontmatter, body) = self.parse_file_or_create_frontmatter(path).await?;
+
+        let attachments = frontmatter
+            .entry("attachments".to_string())
+            .or_insert(Value::Sequence(vec![]));
+
+        if let Value::Sequence(list) = attachments {
+            let new_attachment = Value::String(attachment_path.to_string());
+            if !list.contains(&new_attachment) {
+                list.push(new_attachment);
+            }
+        }
+
+        self.reconstruct_file(path, &frontmatter, &body).await
+    }
+
+    /// Remove an attachment path from the entry's attachments list.
+    /// Does nothing if the attachment isn't found.
+    pub async fn remove_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let (mut frontmatter, body) = match self.parse_file(path).await {
+            Ok(result) => result,
+            Err(DiaryxError::NoFrontmatter(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+
+        if let Some(Value::Sequence(list)) = frontmatter.get_mut("attachments") {
+            list.retain(|item| {
+                if let Value::String(s) = item {
+                    s != attachment_path
+                } else {
+                    true
+                }
+            });
+
+            // Remove empty attachments array
+            if list.is_empty() {
+                frontmatter.shift_remove("attachments");
+            }
+        }
+
+        self.reconstruct_file(path, &frontmatter, &body).await
+    }
+
+    /// Get the list of attachments directly declared in this entry.
+    pub async fn get_attachments(&self, path: &str) -> Result<Vec<String>> {
+        let (frontmatter, _) = match self.parse_file(path).await {
+            Ok(result) => result,
+            Err(DiaryxError::NoFrontmatter(_)) => return Ok(vec![]),
+            Err(e) => return Err(e),
+        };
+
+        match frontmatter.get("attachments") {
+            Some(Value::Sequence(list)) => Ok(list
+                .iter()
+                .filter_map(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()),
+            _ => Ok(vec![]),
+        }
+    }
+}
+
+impl<FS: FileSystem> DiaryxAppSync<FS> {
+    /// DiaryxAppSync constructor
+    pub fn new(fs: FS) -> Self {
+        Self { fs }
+    }
+
+    /// Access the underlying filesystem.
+    pub fn fs(&self) -> &FS {
+        &self.fs
     }
 
     /// Create a new entry
@@ -143,9 +535,9 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         Ok((frontmatter, body.to_string()))
     }
 
-    /// Parses a markdown file, creating empty frontmatter if none exists
-    /// Creates the file if it doesn't exist
-    /// Use this for operations that should create frontmatter when missing (like set)
+    /// Parses a markdown file, creating empty frontmatter if none exists.
+    /// Creates the file if it doesn't exist.
+    /// Use this for operations that should create frontmatter when missing (like set).
     fn parse_file_or_create_frontmatter(
         &self,
         path: &str,
@@ -195,7 +587,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         }
     }
 
-    /// Reconstructs a markdown file with updated frontmatter
+    /// Reconstructs a markdown file with updated frontmatter.
     fn reconstruct_file(
         &self,
         path: &str,
@@ -266,6 +658,55 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         Ok(true)
     }
 
+
+    /// Get body content (excluding frontmatter). If no frontmatter exists, returns entire file.
+    pub fn get_content(&self, path: &str) -> Result<String> {
+        match self.parse_file_or_create_frontmatter(path) {
+            Ok((_frontmatter, body)) => Ok(body),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Set body content, preserving (or creating) frontmatter.
+    pub fn set_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, _old_body) = self.parse_file_or_create_frontmatter(path)?;
+        self.reconstruct_file(path, &frontmatter, content)
+    }
+
+    /// Clear file body content.
+    pub fn clear_content(&self, path: &str) -> Result<()> {
+        self.set_content(path, "")
+    }
+
+    /// Append content to end of body.
+    pub fn append_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, mut body) = self.parse_file_or_create_frontmatter(path)?;
+
+        if body.is_empty() {
+            body = content.to_string();
+        } else if body.ends_with('\n') {
+            body.push_str(content);
+        } else {
+            body.push('\n');
+            body.push_str(content);
+        }
+
+        self.reconstruct_file(path, &frontmatter, &body)
+    }
+
+    /// Prepend content to start of body.
+    pub fn prepend_content(&self, path: &str, content: &str) -> Result<()> {
+        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
+        let new_body = if body.is_empty() {
+            content.to_string()
+        } else if content.ends_with('\n') {
+            format!("{}{}", content, body)
+        } else {
+            format!("{}\n{}", content, body)
+        };
+        self.reconstruct_file(path, &frontmatter, &new_body)
+    }
+
     /// Gets a frontmatter property value.
     /// Returns Ok(None) if no frontmatter exists or key is not found.
     pub fn get_frontmatter_property(&self, path: &str, key: &str) -> Result<Option<Value>> {
@@ -284,66 +725,6 @@ impl<FS: FileSystem> DiaryxApp<FS> {
             Err(DiaryxError::NoFrontmatter(_)) => Ok(IndexMap::new()), // No frontmatter, return empty
             Err(e) => Err(e),
         }
-    }
-
-    // ==================== Content Methods ====================
-
-    /// Get the content (body) of a file, excluding frontmatter.
-    pub fn get_content(&self, path: &str) -> Result<String> {
-        let (_, body) = self.parse_file_or_create_frontmatter(path)?;
-        Ok(body)
-    }
-
-    /// Set the content (body) of a file, preserving frontmatter.
-    /// Creates frontmatter if none exists.
-    pub fn set_content(&self, path: &str, content: &str) -> Result<()> {
-        let (frontmatter, _) = self.parse_file_or_create_frontmatter(path)?;
-        self.reconstruct_file(path, &frontmatter, content)
-    }
-
-    /// Clear the content (body) of a file, preserving frontmatter.
-    pub fn clear_content(&self, path: &str) -> Result<()> {
-        self.set_content(path, "")
-    }
-
-    /// Update the 'updated' frontmatter property with the current timestamp (RFC 3339 format).
-    /// Creates frontmatter if none exists.
-    pub fn touch_updated(&self, path: &str) -> Result<()> {
-        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        self.set_frontmatter_property(path, "updated", Value::String(timestamp))
-    }
-
-    /// Save content and update the 'updated' timestamp in one operation.
-    /// This is a convenience method that combines set_content and touch_updated.
-    pub fn save_content(&self, path: &str, content: &str) -> Result<()> {
-        self.set_content(path, content)?;
-        self.touch_updated(path)
-    }
-
-    /// Append content to the end of a file's body.
-    pub fn append_content(&self, path: &str, content: &str) -> Result<()> {
-        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
-        let new_body = if body.is_empty() {
-            content.to_string()
-        } else if body.ends_with('\n') {
-            format!("{}{}", body, content)
-        } else {
-            format!("{}\n{}", body, content)
-        };
-        self.reconstruct_file(path, &frontmatter, &new_body)
-    }
-
-    /// Prepend content to the beginning of a file's body.
-    pub fn prepend_content(&self, path: &str, content: &str) -> Result<()> {
-        let (frontmatter, body) = self.parse_file_or_create_frontmatter(path)?;
-        let new_body = if body.is_empty() {
-            content.to_string()
-        } else if content.ends_with('\n') {
-            format!("{}{}", content, body)
-        } else {
-            format!("{}\n{}", content, body)
-        };
-        self.reconstruct_file(path, &frontmatter, &new_body)
     }
 
     // ==================== Attachment Methods ====================
@@ -424,39 +805,59 @@ impl<FS: FileSystem> DiaryxApp<FS> {
         entry_path: &str,
         attachment_name: &str,
     ) -> Result<Option<PathBuf>> {
-        use crate::workspace::Workspace;
+        use crate::workspace::IndexFrontmatter;
 
-        let ws = Workspace::new(&self.fs);
         let entry_path = Path::new(entry_path);
         let entry_dir = entry_path.parent().unwrap_or(Path::new("."));
 
+        // Parse the file's frontmatter inline (to avoid async Workspace dependency)
+        let content = match self.fs.read_to_string(entry_path) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+
+        // Parse frontmatter
+        if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+            return Ok(None);
+        }
+
+        let rest = &content[4..];
+        let end_idx = match rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
+
+        let frontmatter_str = &rest[..end_idx];
+        let frontmatter: IndexFrontmatter = match serde_yaml::from_str(frontmatter_str) {
+            Ok(fm) => fm,
+            Err(_) => return Ok(None),
+        };
+
         // First, check attachments directly on this entry
-        if let Ok(index) = ws.parse_index(entry_path) {
-            for att_path in index.frontmatter.attachments_list() {
+        for att_path in frontmatter.attachments_list() {
+            let resolved = entry_dir.join(att_path);
+            if resolved.file_name().map(|n| n.to_string_lossy()) == Some(attachment_name.into())
+                && self.fs.exists(&resolved)
+            {
+                return Ok(Some(resolved));
+            }
+            // Also check if the path itself matches
+            if att_path == attachment_name
+                || att_path.ends_with(&format!("/{}", attachment_name))
+            {
                 let resolved = entry_dir.join(att_path);
-                if resolved.file_name().map(|n| n.to_string_lossy()) == Some(attachment_name.into())
-                    && self.fs.exists(&resolved)
-                {
+                if self.fs.exists(&resolved) {
                     return Ok(Some(resolved));
                 }
-                // Also check if the path itself matches
-                if att_path == attachment_name
-                    || att_path.ends_with(&format!("/{}", attachment_name))
-                {
-                    let resolved = entry_dir.join(att_path);
-                    if self.fs.exists(&resolved) {
-                        return Ok(Some(resolved));
-                    }
-                }
             }
+        }
 
-            // Traverse up via part_of
-            if let Some(ref parent_rel) = index.frontmatter.part_of {
-                let parent_path = entry_dir.join(parent_rel);
-                if self.fs.exists(&parent_path) {
-                    return self
-                        .resolve_attachment(&parent_path.to_string_lossy(), attachment_name);
-                }
+        // Traverse up via part_of
+        if let Some(ref parent_rel) = frontmatter.part_of {
+            let parent_path = entry_dir.join(parent_rel);
+            if self.fs.exists(&parent_path) {
+                return self
+                    .resolve_attachment(&parent_path.to_string_lossy(), attachment_name);
             }
         }
 
@@ -618,7 +1019,7 @@ impl<FS: FileSystem> DiaryxApp<FS> {
     ) -> Result<PathBuf> {
         let path = date_to_path(&config.daily_entry_dir(), date);
 
-        // Check if file already exists using FileSystem trait
+        // Check if file already exists using filesystem trait
         if self.fs.exists(&path) {
             return Ok(path);
         }
@@ -868,41 +1269,42 @@ impl<FS: FileSystem> DiaryxApp<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::SyncToAsyncFs;
     use crate::test_utils::MockFileSystem;
 
     #[test]
     fn test_get_content() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nHello, world!");
-        let app = DiaryxApp::new(fs);
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs));
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert_eq!(content, "Hello, world!");
     }
 
     #[test]
     fn test_get_content_empty_body() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\n");
-        let app = DiaryxApp::new(fs);
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs));
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert_eq!(content, "");
     }
 
     #[test]
     fn test_get_content_no_frontmatter() {
         let fs = MockFileSystem::new().with_file("test.md", "Just plain content");
-        let app = DiaryxApp::new(fs);
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs));
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert_eq!(content, "Just plain content");
     }
 
     #[test]
     fn test_set_content() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nOld content");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.set_content("test.md", "New content").unwrap();
+        crate::fs::block_on_test(app.set_content("test.md", "New content")).unwrap();
 
         let result = fs.get_content("test.md").unwrap();
         assert!(result.contains("title: Test"));
@@ -916,9 +1318,9 @@ mod tests {
             "test.md",
             "---\ntitle: My Title\ndescription: A description\n---\nOld",
         );
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.set_content("test.md", "New body").unwrap();
+        crate::fs::block_on_test(app.set_content("test.md", "New body")).unwrap();
 
         let result = fs.get_content("test.md").unwrap();
         assert!(result.contains("title: My Title"));
@@ -930,9 +1332,9 @@ mod tests {
     fn test_clear_content() {
         let fs =
             MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nSome content here");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.clear_content("test.md").unwrap();
+        crate::fs::block_on_test(app.clear_content("test.md")).unwrap();
 
         let result = fs.get_content("test.md").unwrap();
         assert!(result.contains("title: Test"));
@@ -943,9 +1345,9 @@ mod tests {
     #[test]
     fn test_append_content() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nFirst line");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.append_content("test.md", "Second line").unwrap();
+        crate::fs::block_on_test(app.append_content("test.md", "Second line")).unwrap();
 
         let result = fs.get_content("test.md").unwrap();
         assert!(result.contains("First line"));
@@ -960,22 +1362,22 @@ mod tests {
     fn test_append_content_adds_newline() {
         let fs = MockFileSystem::new()
             .with_file("test.md", "---\ntitle: Test\n---\nNo trailing newline");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.append_content("test.md", "Appended").unwrap();
+        crate::fs::block_on_test(app.append_content("test.md", "Appended")).unwrap();
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert!(content.contains("No trailing newline\nAppended"));
     }
 
     #[test]
     fn test_append_content_to_empty_body() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\n");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.append_content("test.md", "New content").unwrap();
+        crate::fs::block_on_test(app.append_content("test.md", "New content")).unwrap();
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert_eq!(content, "New content");
     }
 
@@ -983,9 +1385,9 @@ mod tests {
     fn test_prepend_content() {
         let fs =
             MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nExisting content");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.prepend_content("test.md", "# Header").unwrap();
+        crate::fs::block_on_test(app.prepend_content("test.md", "# Header")).unwrap();
 
         let result = fs.get_content("test.md").unwrap();
         assert!(result.contains("# Header"));
@@ -999,32 +1401,32 @@ mod tests {
     #[test]
     fn test_prepend_content_adds_newline() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\nExisting");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.prepend_content("test.md", "Prepended").unwrap();
+        crate::fs::block_on_test(app.prepend_content("test.md", "Prepended")).unwrap();
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert!(content.contains("Prepended\nExisting"));
     }
 
     #[test]
     fn test_prepend_content_to_empty_body() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\n");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.prepend_content("test.md", "New content").unwrap();
+        crate::fs::block_on_test(app.prepend_content("test.md", "New content")).unwrap();
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert_eq!(content, "New content");
     }
 
     #[test]
     fn test_content_operations_on_nonexistent_file() {
         let fs = MockFileSystem::new();
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
         // set_content should create the file
-        app.set_content("new.md", "Content").unwrap();
+        crate::fs::block_on_test(app.set_content("new.md", "Content")).unwrap();
 
         let result = fs.get_content("new.md").unwrap();
         assert!(result.contains("Content"));
@@ -1033,13 +1435,13 @@ mod tests {
     #[test]
     fn test_multiple_content_operations() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\n");
-        let app = DiaryxApp::new(fs.clone());
+        let app = DiaryxApp::new(SyncToAsyncFs::new(fs.clone()));
 
-        app.append_content("test.md", "Line 1").unwrap();
-        app.append_content("test.md", "Line 2").unwrap();
-        app.prepend_content("test.md", "# Title").unwrap();
+        crate::fs::block_on_test(app.append_content("test.md", "Line 1")).unwrap();
+        crate::fs::block_on_test(app.append_content("test.md", "Line 2")).unwrap();
+        crate::fs::block_on_test(app.prepend_content("test.md", "# Title")).unwrap();
 
-        let content = app.get_content("test.md").unwrap();
+        let content = crate::fs::block_on_test(app.get_content("test.md")).unwrap();
         assert!(content.starts_with("# Title"));
         assert!(content.contains("Line 1"));
         assert!(content.contains("Line 2"));

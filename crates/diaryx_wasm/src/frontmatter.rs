@@ -4,8 +4,9 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
-use crate::state::{with_fs, with_fs_mut};
+use crate::state::{block_on, with_fs, with_fs_mut};
 use diaryx_core::entry::DiaryxApp;
+use diaryx_core::fs::SyncToAsyncFs;
 
 // ============================================================================
 // DiaryxFrontmatter Class
@@ -29,9 +30,10 @@ impl DiaryxFrontmatter {
         let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
 
         with_fs(|fs| {
-            let app = DiaryxApp::new(fs);
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
 
-            let frontmatter = app.get_all_frontmatter(path).js_err()?;
+            let frontmatter = block_on(app.get_all_frontmatter(path)).js_err()?;
 
             let mut json_map = serde_json::Map::new();
             for (key, value) in frontmatter {
@@ -48,12 +50,13 @@ impl DiaryxFrontmatter {
     #[wasm_bindgen]
     pub fn set_property(&self, path: &str, key: &str, value: JsValue) -> Result<(), JsValue> {
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
 
             let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value).js_err()?;
             let yaml_value: serde_yaml::Value = serde_json::from_value(json_value).js_err()?;
 
-            app.set_frontmatter_property(path, key, yaml_value).js_err()
+            block_on(app.set_frontmatter_property(path, key, yaml_value)).js_err()
         })
     }
 
@@ -61,8 +64,9 @@ impl DiaryxFrontmatter {
     #[wasm_bindgen]
     pub fn remove_property(&self, path: &str, key: &str) -> Result<(), JsValue> {
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
-            app.remove_frontmatter_property(path, key).js_err()
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.remove_frontmatter_property(path, key)).js_err()
         })
     }
 }

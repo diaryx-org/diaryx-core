@@ -13,7 +13,26 @@ part_of: ../../README.md
 
 This is the `diaryx_core` library! It contains shared code for the Diaryx clients.
 
-NOTE: this README is not finished yet!
+## Async-first Architecture
+
+This library uses an **async-first** design. All core modules (`Workspace`, `Validator`, `Exporter`, `Searcher`, `Publisher`) use the `AsyncFileSystem` trait for filesystem operations.
+
+**For CLI/native code:** Wrap a sync filesystem with `SyncToAsyncFs` and use `futures_lite::future::block_on()`:
+
+```rust,ignore
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use diaryx_core::workspace::Workspace;
+
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let workspace = Workspace::new(fs);
+
+// Use block_on for sync contexts
+let tree = futures_lite::future::block_on(
+    workspace.build_tree(Path::new("README.md"))
+);
+```
+
+**For WASM:** Implement `AsyncFileSystem` directly using JS promises/IndexedDB.
 
 ## Quick overview
 
@@ -51,8 +70,6 @@ diaryx_core
         └── types.rs
 ```
 
-Note: writing after this point may be outdated.
-
 ## Provided functionality
 
 ### Managing frontmatter
@@ -89,23 +106,21 @@ Search frontmatter or content separately:
 
 ## Export
 
-```rust
+```rust,ignore
 use diaryx_core::export::{ExportOptions, ExportPlan, Exporter};
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use std::path::Path;
 
 let workspace_root = Path::new("./workspace");
 let audience = "public";
 let destination = Path::new("./export");
-let fs = RealFileSystem;
+let fs = SyncToAsyncFs::new(RealFileSystem);
 let exporter = Exporter::new(fs);
-let plan = match exporter.plan_export(&workspace_root, audience, destination) {
-  Ok(plan) => plan,
-  Err(e) => {
-    eprintln!("✗ Failed to plan export: {}", e);
-    return;
-  }
-};
+
+// Use futures_lite::future::block_on for sync contexts
+let plan = futures_lite::future::block_on(
+    exporter.plan_export(&workspace_root, audience, destination)
+).unwrap();
 
 let force = false;
 let keep_audience = false;
@@ -114,16 +129,17 @@ let options = ExportOptions {
     keep_audience,
 };
 
-match exporter.execute_export(&plan, &options) {
+let result = futures_lite::future::block_on(
+    exporter.execute_export(&plan, &options)
+);
+
+match result {
   Ok(stats) => {
     println!("✓ {}", stats);
     println!("  Exported to: {}", destination.display());
   }
   Err(e) => {
     eprintln!("✗ Export failed: {}", e);
-    if !force && destination.exists() {
-      eprintln!("  (use --force to overwrite existing destination)");
-    }
   }
 }
 ```
@@ -136,20 +152,25 @@ The `validate` module provides functionality to check workspace link integrity a
 
 The `Validator` struct checks `part_of` and `contents` references within a workspace:
 
-```rust,no_run
+```rust,ignore
 use diaryx_core::validate::Validator;
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use std::path::Path;
 
-let validator = Validator::new(RealFileSystem);
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let validator = Validator::new(fs);
 
 // Validate entire workspace starting from root index
 let root_path = Path::new("./workspace/README.md");
-let result = validator.validate_workspace(&root_path).unwrap();
+let result = futures_lite::future::block_on(
+    validator.validate_workspace(&root_path)
+).unwrap();
 
 // Or validate a single file
 let file_path = Path::new("./workspace/notes/my-note.md");
-let result = validator.validate_file(&file_path).unwrap();
+let result = futures_lite::future::block_on(
+    validator.validate_file(&file_path)
+).unwrap();
 
 if result.is_ok() {
     println!("✓ Validation passed ({} files checked)", result.files_checked);
@@ -181,20 +202,25 @@ if result.is_ok() {
 
 The `ValidationFixer` struct provides methods to automatically fix validation issues:
 
-```rust,no_run
+```rust,ignore
 use diaryx_core::validate::{Validator, ValidationFixer};
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use std::path::Path;
 
-let validator = Validator::new(RealFileSystem);
-let fixer = ValidationFixer::new(RealFileSystem);
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let validator = Validator::new(fs.clone());
+let fixer = ValidationFixer::new(fs);
 
 // Validate workspace
 let root_path = Path::new("./workspace/README.md");
-let result = validator.validate_workspace(&root_path).unwrap();
+let result = futures_lite::future::block_on(
+    validator.validate_workspace(&root_path)
+).unwrap();
 
 // Fix all issues at once
-let (error_fixes, warning_fixes) = fixer.fix_all(&result);
+let (error_fixes, warning_fixes) = futures_lite::future::block_on(
+    fixer.fix_all(&result)
+);
 
 for fix in error_fixes.iter().chain(warning_fixes.iter()) {
     if fix.success {
@@ -204,11 +230,13 @@ for fix in error_fixes.iter().chain(warning_fixes.iter()) {
     }
 }
 
-// Or fix individual issues
-fixer.fix_broken_part_of(Path::new("./file.md"));
-fixer.fix_broken_contents_ref(Path::new("./index.md"), "missing.md");
-fixer.fix_unlisted_file(Path::new("./index.md"), Path::new("./new-file.md"));
-fixer.fix_missing_part_of(Path::new("./orphan.md"), Path::new("./index.md"));
+// Or fix individual issues (all methods are async)
+futures_lite::future::block_on(async {
+    fixer.fix_broken_part_of(Path::new("./file.md")).await;
+    fixer.fix_broken_contents_ref(Path::new("./index.md"), "missing.md").await;
+    fixer.fix_unlisted_file(Path::new("./index.md"), Path::new("./new-file.md")).await;
+    fixer.fix_missing_part_of(Path::new("./orphan.md"), Path::new("./index.md")).await;
+});
 ```
 
 ## Publish
@@ -227,71 +255,72 @@ fixer.fix_missing_part_of(Path::new("./orphan.md"), Path::new("./index.md"));
 
 The `fs` module provides filesystem abstraction through two traits: `FileSystem` (synchronous) and `AsyncFileSystem` (asynchronous).
 
+**Note:** As of the async-first refactor, all core modules (`Workspace`, `Validator`, `Exporter`, `Searcher`, `Publisher`) use `AsyncFileSystem`. For synchronous contexts (CLI, tests), wrap a sync filesystem with `SyncToAsyncFs` and use `futures_lite::future::block_on()`.
+
 ### FileSystem trait
 
-The synchronous `FileSystem` trait is used by most of the library and supports different implementations:
+The synchronous `FileSystem` trait provides basic implementations:
 
 - `RealFileSystem` - Native filesystem using `std::fs` (not available on WASM)
 - `InMemoryFileSystem` - In-memory implementation, useful for WASM and testing
 
-```rust,no_run
+```rust,ignore
 use diaryx_core::fs::{FileSystem, InMemoryFileSystem};
 use std::path::Path;
 
 // Create an in-memory filesystem
 let fs = InMemoryFileSystem::new();
 
-// Write a file
+// Write a file (sync)
 fs.write_file(Path::new("workspace/README.md"), "# Hello").unwrap();
 
 // Read it back
 let content = fs.read_to_string(Path::new("workspace/README.md")).unwrap();
 assert_eq!(content, "# Hello");
-
-// Check if file exists
-assert!(fs.exists(Path::new("workspace/README.md")));
-
-// List markdown files
-let files = fs.list_md_files(Path::new("workspace")).unwrap();
 ```
 
-### AsyncFileSystem trait
+### AsyncFileSystem trait (Primary API)
 
-The `AsyncFileSystem` trait provides async versions of all `FileSystem` methods, useful for:
+The `AsyncFileSystem` trait is the primary API for all core modules:
 
 - WASM environments where JavaScript APIs (like IndexedDB) are async
 - Native code using async runtimes like tokio
-- Code that needs to await filesystem operations
+- All workspace operations (Workspace, Validator, Exporter, etc.)
 
 ```rust,ignore
 use diaryx_core::fs::{AsyncFileSystem, InMemoryFileSystem, SyncToAsyncFs};
+use diaryx_core::workspace::Workspace;
 use std::path::Path;
 
-// Wrap a sync filesystem to use with async code
+// Wrap a sync filesystem for use with async APIs
 let sync_fs = InMemoryFileSystem::new();
 let async_fs = SyncToAsyncFs::new(sync_fs);
 
-// Use in async context
-async {
-    async_fs.write_file(Path::new("test.md"), "# Async!").await.unwrap();
-    let content = async_fs.read_to_string(Path::new("test.md")).await.unwrap();
-    let exists = async_fs.exists(Path::new("test.md")).await;
-};
+// Use with Workspace (async)
+let workspace = Workspace::new(async_fs);
+
+// For sync contexts, use block_on
+let tree = futures_lite::future::block_on(
+    workspace.build_tree(Path::new("README.md"))
+);
 ```
 
 ### SyncToAsyncFs adapter
 
-The `SyncToAsyncFs` struct wraps any synchronous `FileSystem` implementation to provide an `AsyncFileSystem` interface. Since the underlying operations are synchronous, the async methods complete immediately:
+The `SyncToAsyncFs` struct wraps any synchronous `FileSystem` implementation to provide an `AsyncFileSystem` interface. This is the recommended way to use the async-first API in synchronous contexts:
 
 ```rust,ignore
-use diaryx_core::fs::{InMemoryFileSystem, SyncToAsyncFs};
+use diaryx_core::fs::{InMemoryFileSystem, SyncToAsyncFs, RealFileSystem};
+use diaryx_core::workspace::Workspace;
 
-let sync_fs = InMemoryFileSystem::new();
-let async_fs = SyncToAsyncFs::new(sync_fs);
+// For native code
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let workspace = Workspace::new(fs);
+
+// For tests/WASM
+let fs = SyncToAsyncFs::new(InMemoryFileSystem::new());
+let workspace = Workspace::new(fs);
 
 // Access the inner sync filesystem if needed
-let inner = async_fs.inner();
-
-// Or unwrap it
-let recovered = async_fs.into_inner();
+// let inner = async_fs.inner();
 ```

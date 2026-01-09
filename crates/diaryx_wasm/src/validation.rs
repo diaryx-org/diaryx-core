@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
-use crate::state::with_fs;
+use crate::state::{block_on, with_async_fs};
 
 // ============================================================================
 // Types
@@ -200,20 +200,19 @@ impl DiaryxValidation {
     /// Validate workspace links.
     #[wasm_bindgen]
     pub fn validate(&self, workspace_path: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
-            let validator = Validator::new(fs);
+        with_async_fs(|fs| {
+            let validator = Validator::new(fs.clone());
             let root_path = PathBuf::from(workspace_path);
 
             let ws = Workspace::new(fs);
-            let root_index = ws
-                .find_root_index_in_dir(&root_path)
+            let root_index = block_on(ws.find_root_index_in_dir(&root_path))
                 .js_err()?
-                .or_else(|| ws.find_any_index_in_dir(&root_path).ok().flatten())
+                .or_else(|| block_on(ws.find_any_index_in_dir(&root_path)).ok().flatten())
                 .ok_or_else(|| {
                     JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
                 })?;
 
-            let result = validator.validate_workspace(&root_index).js_err()?;
+            let result = block_on(validator.validate_workspace(&root_index)).js_err()?;
 
             let js_result = JsValidationResult {
                 errors: result
@@ -236,11 +235,11 @@ impl DiaryxValidation {
     /// Validate a single file's links.
     #[wasm_bindgen]
     pub fn validate_file(&self, file_path: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let validator = Validator::new(fs);
             let path = PathBuf::from(file_path);
 
-            let result = validator.validate_file(&path).js_err()?;
+            let result = block_on(validator.validate_file(&path)).js_err()?;
 
             let js_result = JsValidationResult {
                 errors: result
@@ -263,10 +262,10 @@ impl DiaryxValidation {
     /// Fix a broken part_of reference by removing it.
     #[wasm_bindgen]
     pub fn fix_broken_part_of(&self, file_path: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let path = PathBuf::from(file_path);
-            let result = fixer.fix_broken_part_of(&path);
+            let result = block_on(fixer.fix_broken_part_of(&path));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -278,10 +277,10 @@ impl DiaryxValidation {
         index_path: &str,
         target: &str,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let path = PathBuf::from(index_path);
-            let result = fixer.fix_broken_contents_ref(&path, target);
+            let result = block_on(fixer.fix_broken_contents_ref(&path, target));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -293,10 +292,10 @@ impl DiaryxValidation {
         file_path: &str,
         attachment: &str,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let path = PathBuf::from(file_path);
-            let result = fixer.fix_broken_attachment(&path, attachment);
+            let result = block_on(fixer.fix_broken_attachment(&path, attachment));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -310,10 +309,10 @@ impl DiaryxValidation {
         old_value: &str,
         new_value: &str,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let path = PathBuf::from(file_path);
-            let result = fixer.fix_non_portable_path(&path, property, old_value, new_value);
+            let result = block_on(fixer.fix_non_portable_path(&path, property, old_value, new_value));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -321,11 +320,11 @@ impl DiaryxValidation {
     /// Add an unlisted file to an index's contents.
     #[wasm_bindgen]
     pub fn fix_unlisted_file(&self, index_path: &str, file_path: &str) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let index = PathBuf::from(index_path);
             let file = PathBuf::from(file_path);
-            let result = fixer.fix_unlisted_file(&index, &file);
+            let result = block_on(fixer.fix_unlisted_file(&index, &file));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -337,11 +336,11 @@ impl DiaryxValidation {
         index_path: &str,
         file_path: &str,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let index = PathBuf::from(index_path);
             let file = PathBuf::from(file_path);
-            let result = fixer.fix_orphan_binary_file(&index, &file);
+            let result = block_on(fixer.fix_orphan_binary_file(&index, &file));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -353,11 +352,11 @@ impl DiaryxValidation {
         file_path: &str,
         index_path: &str,
     ) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let file = PathBuf::from(file_path);
             let index = PathBuf::from(index_path);
-            let result = fixer.fix_missing_part_of(&file, &index);
+            let result = block_on(fixer.fix_missing_part_of(&file, &index));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -368,7 +367,7 @@ impl DiaryxValidation {
     /// to fix all issues.
     #[wasm_bindgen]
     pub fn fix_all(&self, validation_result: JsValue) -> Result<JsValue, JsValue> {
-        with_fs(|fs| {
+        with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
 
             // Parse the JS validation result
@@ -383,13 +382,13 @@ impl DiaryxValidation {
             for err in &js_result.errors {
                 let result = match err {
                     JsValidationError::BrokenPartOf { file, target: _ } => {
-                        fixer.fix_broken_part_of(&PathBuf::from(file))
+                        block_on(fixer.fix_broken_part_of(&PathBuf::from(file)))
                     }
                     JsValidationError::BrokenContentsRef { index, target } => {
-                        fixer.fix_broken_contents_ref(&PathBuf::from(index), target)
+                        block_on(fixer.fix_broken_contents_ref(&PathBuf::from(index), target))
                     }
                     JsValidationError::BrokenAttachment { file, attachment } => {
-                        fixer.fix_broken_attachment(&PathBuf::from(file), attachment)
+                        block_on(fixer.fix_broken_attachment(&PathBuf::from(file), attachment))
                     }
                 };
                 error_fixes.push(JsFixResult::from(result));
@@ -399,30 +398,30 @@ impl DiaryxValidation {
             for warn in &js_result.warnings {
                 let result = match warn {
                     JsValidationWarning::UnlistedFile { index, file } => {
-                        Some(fixer.fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file)))
+                        Some(block_on(fixer.fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file))))
                     }
                     JsValidationWarning::NonPortablePath {
                         file,
                         property,
                         value,
                         suggested,
-                    } => Some(fixer.fix_non_portable_path(
+                    } => Some(block_on(fixer.fix_non_portable_path(
                         &PathBuf::from(file),
                         property,
                         value,
                         suggested,
-                    )),
+                    ))),
                     JsValidationWarning::OrphanBinaryFile {
                         file,
                         suggested_index,
                     } => suggested_index.as_ref().map(|index| {
-                        fixer.fix_orphan_binary_file(&PathBuf::from(index), &PathBuf::from(file))
+                        block_on(fixer.fix_orphan_binary_file(&PathBuf::from(index), &PathBuf::from(file)))
                     }),
                     JsValidationWarning::MissingPartOf {
                         file,
                         suggested_index,
                     } => suggested_index.as_ref().map(|index| {
-                        fixer.fix_missing_part_of(&PathBuf::from(file), &PathBuf::from(index))
+                        block_on(fixer.fix_missing_part_of(&PathBuf::from(file), &PathBuf::from(index)))
                     }),
                     // These cannot be auto-fixed
                     JsValidationWarning::OrphanFile { .. }

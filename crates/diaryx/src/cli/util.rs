@@ -1,13 +1,14 @@
 //! Shared utilities for CLI commands
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use diaryx_core::workspace::Workspace;
 use glob::glob;
 use serde_yaml::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use crate::cli::{block_on, CliDiaryxAppSync};
 
 /// Result of a workspace-aware file rename operation
 pub struct RenameResult {
@@ -27,7 +28,7 @@ pub struct RenameResult {
 /// - Children's `part_of` property (if file has `contents`)
 /// - The file's own `part_of` (if moving to different directory)
 pub fn rename_file_with_refs(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     source_path: &Path,
     dest_path: &Path,
     dry_run: bool,
@@ -310,7 +311,7 @@ pub fn is_glob_pattern(path: &str) -> bool {
 /// - Glob patterns (`*.md`, `**/*.md`) match files by pattern
 /// - Date strings (via chrono-english) resolve to dated entry paths
 /// - Literal paths are returned as-is
-pub fn resolve_paths(path: &str, config: &Config, app: &DiaryxApp<RealFileSystem>) -> Vec<PathBuf> {
+pub fn resolve_paths(path: &str, config: &Config, app: &CliDiaryxAppSync) -> Vec<PathBuf> {
     // Check for title: or t: prefix
     if let Some(title_query) = path
         .strip_prefix("title:")
@@ -373,7 +374,7 @@ pub fn resolve_paths(path: &str, config: &Config, app: &DiaryxApp<RealFileSystem
 /// Resolve a directory to all files in its workspace
 /// Finds the local index in the directory and traverses its contents
 fn resolve_workspace_files_in_dir(dir: &Path) -> Vec<PathBuf> {
-    let fs = RealFileSystem;
+    let fs = SyncToAsyncFs::new(RealFileSystem);
     let workspace = Workspace::new(fs);
 
     // Canonicalize the directory path
@@ -386,10 +387,10 @@ fn resolve_workspace_files_in_dir(dir: &Path) -> Vec<PathBuf> {
     };
 
     // Find a local index in the directory
-    match workspace.find_any_index_in_dir(&dir) {
+    match block_on(workspace.find_any_index_in_dir(&dir)) {
         Ok(Some(index_path)) => {
             // Collect all files from the index
-            match workspace.collect_workspace_files(&index_path) {
+            match block_on(workspace.collect_workspace_files(&index_path)) {
                 Ok(files) => files,
                 Err(e) => {
                     eprintln!("✗ Error traversing workspace: {}", e);

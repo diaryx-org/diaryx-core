@@ -28,6 +28,20 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 pathdiff = "0.2"
 comrak = "0.49"
 
+# Native storage backends (OPFS and IndexedDB)
+opfs = "0.1.4"
+indexed-db = "0.4.2"
+futures = "0.3"
+
+# Web APIs for worker-compatible OPFS access
+web-sys = { version = "0.3", features = [
+  "Navigator",
+  "StorageManager", 
+  "WorkerGlobalScope",
+  "WorkerNavigator",
+  "FileSystemDirectoryHandle",
+] }
+
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
 # all the `std::fmt` and `std::panicking` infrastructure, so isn't great for

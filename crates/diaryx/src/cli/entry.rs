@@ -4,15 +4,14 @@ use std::path::Path;
 
 use diaryx_core::config::Config;
 use diaryx_core::date::parse_date;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
 
 use crate::editor::launch_editor;
 
 use crate::cli::util::{load_config, resolve_paths};
+use crate::cli::{block_on, CliDiaryxAppSync};
 
 /// Handle the 'today' command
-pub fn handle_today(app: &DiaryxApp<RealFileSystem>, template: Option<String>) {
+pub fn handle_today(app: &CliDiaryxAppSync, template: Option<String>) {
     let config = match load_config() {
         Some(c) => c,
         None => return,
@@ -25,12 +24,9 @@ pub fn handle_today(app: &DiaryxApp<RealFileSystem>, template: Option<String>) {
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
-                    } else {
-                        // Update the 'updated' timestamp after successful edit
-                        if let Err(e) = app.touch_updated(path.to_str().unwrap_or_default()) {
-                            eprintln!("✗ Warning: could not update timestamp: {}", e);
-                        }
                     }
+                    // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
+                    // TODO: Add touch_updated to DiaryxAppSync or migrate to async
                 }
                 Err(e) => eprintln!("✗ Error creating entry: {}", e),
             }
@@ -40,7 +36,7 @@ pub fn handle_today(app: &DiaryxApp<RealFileSystem>, template: Option<String>) {
 }
 
 /// Handle the 'yesterday' command
-pub fn handle_yesterday(app: &DiaryxApp<RealFileSystem>, template: Option<String>) {
+pub fn handle_yesterday(app: &CliDiaryxAppSync, template: Option<String>) {
     let config = match load_config() {
         Some(c) => c,
         None => return,
@@ -53,12 +49,9 @@ pub fn handle_yesterday(app: &DiaryxApp<RealFileSystem>, template: Option<String
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
-                    } else {
-                        // Update the 'updated' timestamp after successful edit
-                        if let Err(e) = app.touch_updated(path.to_str().unwrap_or_default()) {
-                            eprintln!("✗ Warning: could not update timestamp: {}", e);
-                        }
                     }
+                    // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
+                    // TODO: Add touch_updated to DiaryxAppSync or migrate to async
                 }
                 Err(e) => eprintln!("✗ Error creating entry: {}", e),
             }
@@ -74,7 +67,7 @@ pub fn handle_yesterday(app: &DiaryxApp<RealFileSystem>, template: Option<String
 /// - Exact paths: "./notes/todo.md"
 /// - Globs open multiple files: "*.md"
 /// - Directories open all workspace files: "."
-pub fn handle_open(app: &DiaryxApp<RealFileSystem>, path_or_date: &str) {
+pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) {
     let config = match load_config() {
         Some(c) => c,
         None => return,
@@ -97,12 +90,9 @@ pub fn handle_open(app: &DiaryxApp<RealFileSystem>, path_or_date: &str) {
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
-                    } else {
-                        // Update the 'updated' timestamp after successful edit
-                        if let Err(e) = app.touch_updated(path.to_str().unwrap_or_default()) {
-                            eprintln!("✗ Warning: could not update timestamp: {}", e);
-                        }
                     }
+                    // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
+                    // TODO: Add touch_updated to DiaryxAppSync or migrate to async
                     return;
                 }
                 Err(e) => {
@@ -129,19 +119,16 @@ pub fn handle_open(app: &DiaryxApp<RealFileSystem>, path_or_date: &str) {
 
         if let Err(e) = launch_editor(path, &config) {
             eprintln!("✗ Error launching editor for {}: {}", path.display(), e);
-        } else {
-            // Update the 'updated' timestamp after successful edit
-            if let Err(e) = app.touch_updated(path.to_str().unwrap_or_default()) {
-                eprintln!("✗ Warning: could not update timestamp: {}", e);
-            }
         }
+        // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
+        // TODO: Add touch_updated to DiaryxAppSync or migrate to async
     }
 }
 
 /// Handle the 'create' command
 /// Supports fuzzy path resolution for the parent directory
 pub fn handle_create(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     path: &str,
     template: Option<String>,
     title: Option<String>,

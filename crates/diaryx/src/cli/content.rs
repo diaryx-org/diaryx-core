@@ -5,14 +5,13 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
 
 use crate::cli::args::ContentCommands;
 use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
+use crate::cli::{block_on, CliDiaryxAppSync};
 
 /// Handle all content subcommands
-pub fn handle_content_command(app: &DiaryxApp<RealFileSystem>, operation: ContentCommands) {
+pub fn handle_content_command(app: &CliDiaryxAppSync, operation: ContentCommands) {
     let config = match load_config() {
         Some(c) => c,
         None => return,
@@ -88,7 +87,7 @@ fn get_input_content(
 }
 
 /// Handle the 'content get' command
-fn handle_get(app: &DiaryxApp<RealFileSystem>, config: &Config, path: &str) {
+fn handle_get(app: &CliDiaryxAppSync, config: &Config, path: &str) {
     let resolved = resolve_paths(path, config, app);
 
     if resolved.is_empty() {
@@ -113,7 +112,7 @@ fn handle_get(app: &DiaryxApp<RealFileSystem>, config: &Config, path: &str) {
 
 /// Handle the 'content set' command
 fn handle_set(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     path: &str,
     content: Option<String>,
@@ -168,7 +167,7 @@ fn handle_set(
 
 /// Handle the 'content clear' command
 fn handle_clear(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     path: &str,
     yes: bool,
@@ -223,7 +222,7 @@ fn handle_clear(
 
 /// Handle the 'content append' command
 fn handle_append(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     path: &str,
     content: Option<String>,
@@ -278,7 +277,7 @@ fn handle_append(
 
 /// Handle the 'content prepend' command
 fn handle_prepend(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &Config,
     path: &str,
     content: Option<String>,

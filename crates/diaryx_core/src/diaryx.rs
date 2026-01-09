@@ -1,23 +1,24 @@
-//! Unified Diaryx API.
+//! Unified Diaryx API (async-first).
 //!
 //! This module provides the main entry point for all Diaryx operations.
-//! The `Diaryx<FS>` struct wraps a filesystem and provides access to
-//! domain-specific operations through sub-module accessors.
+//! The `Diaryx<FS>` struct wraps an async filesystem and provides access to
+//! domain-specific operations through async sub-module accessors.
 //!
 //! # Example
 //!
 //! ```ignore
 //! use diaryx_core::diaryx::Diaryx;
 //! use diaryx_core::fs::RealFileSystem;
+//! use diaryx_core::fs::SyncToAsyncFs;
 //!
-//! let fs = RealFileSystem;
+//! let fs = SyncToAsyncFs::new(RealFileSystem);
 //! let diaryx = Diaryx::new(fs);
 //!
 //! // Access entry operations
-//! let content = diaryx.entry().get_content("path/to/file.md")?;
+//! let content = diaryx.entry().get_content("path/to/file.md").await?;
 //!
 //! // Access workspace operations
-//! let tree = diaryx.workspace().get_tree("workspace/")?;
+//! let tree = diaryx.workspace().inner().get_tree("workspace/").await?;
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -27,18 +28,18 @@ use serde_yaml::Value;
 
 use crate::error::{DiaryxError, Result};
 use crate::frontmatter;
-use crate::fs::FileSystem;
+use crate::fs::AsyncFileSystem;
 
 /// The main Diaryx instance.
 ///
 /// This struct provides a unified API for all Diaryx operations.
 /// It wraps a filesystem and provides access to domain-specific
 /// operations through sub-module accessors.
-pub struct Diaryx<FS: FileSystem> {
+pub struct Diaryx<FS: AsyncFileSystem> {
     fs: FS,
 }
 
-impl<FS: FileSystem> Diaryx<FS> {
+impl<FS: AsyncFileSystem> Diaryx<FS> {
     /// Create a new Diaryx instance with the given filesystem.
     pub fn new(fs: FS) -> Self {
         Self { fs }
@@ -65,24 +66,24 @@ impl<FS: FileSystem> Diaryx<FS> {
     }
 }
 
-impl<FS: FileSystem + Clone> Diaryx<FS> {
+impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
     /// Get search operations accessor.
     ///
-    /// This provides methods for searching workspace content and frontmatter.
+    /// Provides methods for searching workspace files by content or frontmatter.
     pub fn search(&self) -> SearchOps<'_, FS> {
         SearchOps { diaryx: self }
     }
 
     /// Get export operations accessor.
     ///
-    /// This provides methods for exporting workspaces with audience filtering.
+    /// Provides methods for exporting workspace files filtered by audience.
     pub fn export(&self) -> ExportOps<'_, FS> {
         ExportOps { diaryx: self }
     }
 
     /// Get validation operations accessor.
     ///
-    /// This provides methods for validating workspace link integrity.
+    /// Provides methods for validating workspace link integrity.
     pub fn validate(&self) -> ValidateOps<'_, FS> {
         ValidateOps { diaryx: self }
     }
@@ -95,18 +96,18 @@ impl<FS: FileSystem + Clone> Diaryx<FS> {
 /// Entry operations accessor.
 ///
 /// Provides methods for reading/writing file content and frontmatter.
-pub struct EntryOps<'a, FS: FileSystem> {
+pub struct EntryOps<'a, FS: AsyncFileSystem> {
     diaryx: &'a Diaryx<FS>,
 }
 
-impl<'a, FS: FileSystem> EntryOps<'a, FS> {
+impl<'a, FS: AsyncFileSystem> EntryOps<'a, FS> {
     // -------------------- Frontmatter Methods --------------------
 
     /// Get all frontmatter properties for a file.
     ///
     /// Returns an empty map if no frontmatter exists.
-    pub fn get_frontmatter(&self, path: &str) -> Result<IndexMap<String, Value>> {
-        let content = self.read_raw(path)?;
+    pub async fn get_frontmatter(&self, path: &str) -> Result<IndexMap<String, Value>> {
+        let content = self.read_raw(path).await?;
         match frontmatter::parse(&content) {
             Ok(parsed) => Ok(parsed.frontmatter),
             Err(DiaryxError::NoFrontmatter(_)) => Ok(IndexMap::new()),
@@ -117,24 +118,29 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     /// Get a specific frontmatter property.
     ///
     /// Returns `Ok(None)` if the property doesn't exist or no frontmatter.
-    pub fn get_frontmatter_property(&self, path: &str, key: &str) -> Result<Option<Value>> {
-        let frontmatter = self.get_frontmatter(path)?;
+    pub async fn get_frontmatter_property(&self, path: &str, key: &str) -> Result<Option<Value>> {
+        let frontmatter = self.get_frontmatter(path).await?;
         Ok(frontmatter.get(key).cloned())
     }
 
     /// Set a frontmatter property.
     ///
     /// Creates frontmatter if none exists.
-    pub fn set_frontmatter_property(&self, path: &str, key: &str, value: Value) -> Result<()> {
-        let content = self.read_raw_or_empty(path)?;
+    pub async fn set_frontmatter_property(
+        &self,
+        path: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<()> {
+        let content = self.read_raw_or_empty(path).await?;
         let mut parsed = frontmatter::parse_or_empty(&content)?;
         frontmatter::set_property(&mut parsed.frontmatter, key, value);
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     /// Remove a frontmatter property.
-    pub fn remove_frontmatter_property(&self, path: &str, key: &str) -> Result<()> {
-        let content = match self.read_raw(path) {
+    pub async fn remove_frontmatter_property(&self, path: &str, key: &str) -> Result<()> {
+        let content = match self.read_raw(path).await {
             Ok(c) => c,
             Err(_) => return Ok(()), // File doesn't exist, nothing to remove
         };
@@ -146,14 +152,14 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
         };
 
         frontmatter::remove_property(&mut parsed.frontmatter, key);
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     // -------------------- Content Methods --------------------
 
     /// Get the body content of a file, excluding frontmatter.
-    pub fn get_content(&self, path: &str) -> Result<String> {
-        let content = self.read_raw_or_empty(path)?;
+    pub async fn get_content(&self, path: &str) -> Result<String> {
+        let content = self.read_raw_or_empty(path).await?;
         let parsed = frontmatter::parse_or_empty(&content)?;
         Ok(parsed.body)
     }
@@ -161,30 +167,31 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     /// Set the body content of a file, preserving frontmatter.
     ///
     /// Creates frontmatter if none exists.
-    pub fn set_content(&self, path: &str, body: &str) -> Result<()> {
-        let content = self.read_raw_or_empty(path)?;
+    pub async fn set_content(&self, path: &str, body: &str) -> Result<()> {
+        let content = self.read_raw_or_empty(path).await?;
         let mut parsed = frontmatter::parse_or_empty(&content)?;
         parsed.body = body.to_string();
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     /// Save content and update the 'updated' timestamp.
     ///
     /// This is a convenience method for the common save operation.
-    pub fn save_content(&self, path: &str, body: &str) -> Result<()> {
-        self.set_content(path, body)?;
-        self.touch_updated(path)
+    pub async fn save_content(&self, path: &str, body: &str) -> Result<()> {
+        self.set_content(path, body).await?;
+        self.touch_updated(path).await
     }
 
     /// Update the 'updated' timestamp to the current time.
-    pub fn touch_updated(&self, path: &str) -> Result<()> {
+    pub async fn touch_updated(&self, path: &str) -> Result<()> {
         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.set_frontmatter_property(path, "updated", Value::String(timestamp))
+            .await
     }
 
     /// Append content to the end of a file's body.
-    pub fn append_content(&self, path: &str, content: &str) -> Result<()> {
-        let raw = self.read_raw_or_empty(path)?;
+    pub async fn append_content(&self, path: &str, content: &str) -> Result<()> {
+        let raw = self.read_raw_or_empty(path).await?;
         let mut parsed = frontmatter::parse_or_empty(&raw)?;
 
         parsed.body = if parsed.body.is_empty() {
@@ -195,17 +202,18 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
             format!("{}\n{}", parsed.body, content)
         };
 
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     // -------------------- Raw I/O Methods --------------------
 
     /// Read the raw file content (including frontmatter).
-    pub fn read_raw(&self, path: &str) -> Result<String> {
+    pub async fn read_raw(&self, path: &str) -> Result<String> {
         let path_buf = PathBuf::from(path);
         self.diaryx
             .fs
             .read_to_string(Path::new(path))
+            .await
             .map_err(|e| DiaryxError::FileRead {
                 path: path_buf,
                 source: e,
@@ -213,8 +221,8 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     }
 
     /// Read the raw file content, returning empty string if file doesn't exist.
-    fn read_raw_or_empty(&self, path: &str) -> Result<String> {
-        match self.diaryx.fs.read_to_string(Path::new(path)) {
+    async fn read_raw_or_empty(&self, path: &str) -> Result<String> {
+        match self.diaryx.fs.read_to_string(Path::new(path)).await {
             Ok(content) => Ok(content),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
             Err(e) => Err(DiaryxError::FileRead {
@@ -225,11 +233,12 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     }
 
     /// Write a parsed file back to disk.
-    fn write_parsed(&self, path: &str, parsed: &frontmatter::ParsedFile) -> Result<()> {
+    async fn write_parsed(&self, path: &str, parsed: &frontmatter::ParsedFile) -> Result<()> {
         let content = frontmatter::serialize(&parsed.frontmatter, &parsed.body)?;
         self.diaryx
             .fs
             .write_file(Path::new(path), &content)
+            .await
             .map_err(|e| DiaryxError::FileWrite {
                 path: PathBuf::from(path),
                 source: e,
@@ -239,14 +248,14 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     // -------------------- Attachment Methods --------------------
 
     /// Get the list of attachments for a file.
-    pub fn get_attachments(&self, path: &str) -> Result<Vec<String>> {
-        let frontmatter = self.get_frontmatter(path)?;
+    pub async fn get_attachments(&self, path: &str) -> Result<Vec<String>> {
+        let frontmatter = self.get_frontmatter(path).await?;
         Ok(frontmatter::get_string_array(&frontmatter, "attachments"))
     }
 
     /// Add an attachment to a file's attachments list.
-    pub fn add_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
-        let content = self.read_raw_or_empty(path)?;
+    pub async fn add_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let content = self.read_raw_or_empty(path).await?;
         let mut parsed = frontmatter::parse_or_empty(&content)?;
 
         let attachments = parsed
@@ -261,12 +270,12 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
             }
         }
 
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     /// Remove an attachment from a file's attachments list.
-    pub fn remove_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
-        let content = match self.read_raw(path) {
+    pub async fn remove_attachment(&self, path: &str, attachment_path: &str) -> Result<()> {
+        let content = match self.read_raw(path).await {
             Ok(c) => c,
             Err(_) => return Ok(()),
         };
@@ -291,7 +300,7 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
             }
         }
 
-        self.write_parsed(path, &parsed)
+        self.write_parsed(path, &parsed).await
     }
 
     // -------------------- Frontmatter Sorting --------------------
@@ -300,8 +309,8 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
     ///
     /// Pattern is comma-separated keys, with "*" meaning "rest alphabetically".
     /// Example: "title,description,*" puts title first, description second, rest alphabetically
-    pub fn sort_frontmatter(&self, path: &str, pattern: Option<&str>) -> Result<()> {
-        let content = match self.read_raw(path) {
+    pub async fn sort_frontmatter(&self, path: &str, pattern: Option<&str>) -> Result<()> {
+        let content = match self.read_raw(path).await {
             Ok(c) => c,
             Err(_) => return Ok(()),
         };
@@ -322,7 +331,7 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
             body: parsed.body,
         };
 
-        self.write_parsed(path, &sorted_parsed)
+        self.write_parsed(path, &sorted_parsed).await
     }
 }
 
@@ -331,14 +340,15 @@ impl<'a, FS: FileSystem> EntryOps<'a, FS> {
 // ============================================================================
 
 /// Workspace operations accessor.
-pub struct WorkspaceOps<'a, FS: FileSystem> {
+///
+/// This provides methods for traversing the workspace tree,
+/// managing files, and working with the index hierarchy.
+pub struct WorkspaceOps<'a, FS: AsyncFileSystem> {
     diaryx: &'a Diaryx<FS>,
 }
 
-impl<'a, FS: FileSystem> WorkspaceOps<'a, FS> {
+impl<'a, FS: AsyncFileSystem> WorkspaceOps<'a, FS> {
     /// Get access to the underlying Workspace struct for full functionality.
-    ///
-    /// This is a bridge to the existing Workspace API during the refactoring.
     pub fn inner(&self) -> crate::workspace::Workspace<&'a FS> {
         crate::workspace::Workspace::new(&self.diaryx.fs)
     }
@@ -349,14 +359,34 @@ impl<'a, FS: FileSystem> WorkspaceOps<'a, FS> {
 // ============================================================================
 
 /// Search operations accessor.
-pub struct SearchOps<'a, FS: FileSystem + Clone> {
+///
+/// Provides methods for searching workspace files by content or frontmatter.
+pub struct SearchOps<'a, FS: AsyncFileSystem> {
     diaryx: &'a Diaryx<FS>,
 }
 
-impl<'a, FS: FileSystem + Clone> SearchOps<'a, FS> {
+impl<'a, FS: AsyncFileSystem + Clone> SearchOps<'a, FS> {
     /// Get access to the underlying Searcher struct for full functionality.
     pub fn inner(&self) -> crate::search::Searcher<FS> {
         crate::search::Searcher::new(self.diaryx.fs.clone())
+    }
+
+    /// Search the entire workspace for a pattern.
+    pub async fn search_workspace(
+        &self,
+        workspace_root: &std::path::Path,
+        query: &crate::search::SearchQuery,
+    ) -> crate::error::Result<crate::search::SearchResults> {
+        self.inner().search_workspace(workspace_root, query).await
+    }
+
+    /// Search a single file for a pattern.
+    pub async fn search_file(
+        &self,
+        path: &std::path::Path,
+        query: &crate::search::SearchQuery,
+    ) -> crate::error::Result<Option<crate::search::FileSearchResult>> {
+        self.inner().search_file(path, query).await
     }
 }
 
@@ -365,14 +395,38 @@ impl<'a, FS: FileSystem + Clone> SearchOps<'a, FS> {
 // ============================================================================
 
 /// Export operations accessor.
-pub struct ExportOps<'a, FS: FileSystem + Clone> {
+///
+/// Provides methods for exporting workspace files filtered by audience.
+pub struct ExportOps<'a, FS: AsyncFileSystem> {
     diaryx: &'a Diaryx<FS>,
 }
 
-impl<'a, FS: FileSystem + Clone> ExportOps<'a, FS> {
+impl<'a, FS: AsyncFileSystem + Clone> ExportOps<'a, FS> {
     /// Get access to the underlying Exporter struct for full functionality.
     pub fn inner(&self) -> crate::export::Exporter<FS> {
         crate::export::Exporter::new(self.diaryx.fs.clone())
+    }
+
+    /// Plan an export operation without executing it.
+    pub async fn plan_export(
+        &self,
+        workspace_root: &std::path::Path,
+        audience: &str,
+        destination: &std::path::Path,
+    ) -> crate::error::Result<crate::export::ExportPlan> {
+        self.inner()
+            .plan_export(workspace_root, audience, destination)
+            .await
+    }
+
+    /// Execute an export plan.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn execute_export(
+        &self,
+        plan: &crate::export::ExportPlan,
+        options: &crate::export::ExportOptions,
+    ) -> crate::error::Result<crate::export::ExportStats> {
+        self.inner().execute_export(plan, options).await
     }
 }
 
@@ -380,21 +434,45 @@ impl<'a, FS: FileSystem + Clone> ExportOps<'a, FS> {
 // Validate Operations (placeholder - delegates to existing Validator)
 // ============================================================================
 
-/// Validate operations accessor.
-pub struct ValidateOps<'a, FS: FileSystem + Clone> {
+/// Validation operations accessor.
+///
+/// Provides methods for validating workspace link integrity.
+pub struct ValidateOps<'a, FS: AsyncFileSystem> {
     diaryx: &'a Diaryx<FS>,
 }
 
-impl<'a, FS: FileSystem + Clone> ValidateOps<'a, FS> {
+impl<'a, FS: AsyncFileSystem + Clone> ValidateOps<'a, FS> {
     /// Get access to the underlying Validator struct for full functionality.
     pub fn inner(&self) -> crate::validate::Validator<FS> {
         crate::validate::Validator::new(self.diaryx.fs.clone())
+    }
+
+    /// Validate all links starting from a workspace root index.
+    pub async fn validate_workspace(
+        &self,
+        root_path: &std::path::Path,
+    ) -> crate::error::Result<crate::validate::ValidationResult> {
+        self.inner().validate_workspace(root_path).await
+    }
+
+    /// Validate a single file's links.
+    pub async fn validate_file(
+        &self,
+        file_path: &std::path::Path,
+    ) -> crate::error::Result<crate::validate::ValidationResult> {
+        self.inner().validate_file(file_path).await
+    }
+
+    /// Get a fixer for validation issues.
+    pub fn fixer(&self) -> crate::validate::ValidationFixer<FS> {
+        crate::validate::ValidationFixer::new(self.diaryx.fs.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::{SyncToAsyncFs};
     use crate::test_utils::MockFileSystem;
 
     #[test]
@@ -402,19 +480,19 @@ mod tests {
         let fs =
             MockFileSystem::new().with_file("test.md", "---\ntitle: Test\n---\n\nOriginal content");
 
-        let diaryx = Diaryx::new(fs);
+        let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
 
         // Get content
-        let content = diaryx.entry().get_content("test.md").unwrap();
+        let content =
+            crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
         assert_eq!(content.trim(), "Original content");
 
         // Set content
-        diaryx
-            .entry()
-            .set_content("test.md", "\nNew content")
+        crate::fs::block_on_test(diaryx.entry().set_content("test.md", "\nNew content"))
             .unwrap();
 
-        let content = diaryx.entry().get_content("test.md").unwrap();
+        let content =
+            crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
         assert_eq!(content.trim(), "New content");
     }
 
@@ -423,9 +501,10 @@ mod tests {
         let fs = MockFileSystem::new()
             .with_file("test.md", "---\ntitle: My Title\nauthor: John\n---\n\nBody");
 
-        let diaryx = Diaryx::new(fs);
+        let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
 
-        let fm = diaryx.entry().get_frontmatter("test.md").unwrap();
+        let fm =
+            crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
         assert_eq!(fm.get("title").unwrap().as_str().unwrap(), "My Title");
         assert_eq!(fm.get("author").unwrap().as_str().unwrap(), "John");
     }
@@ -434,14 +513,17 @@ mod tests {
     fn test_entry_set_frontmatter_property() {
         let fs = MockFileSystem::new().with_file("test.md", "---\ntitle: Original\n---\n\nBody");
 
-        let diaryx = Diaryx::new(fs);
+        let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
 
-        diaryx
-            .entry()
-            .set_frontmatter_property("test.md", "title", Value::String("Updated".to_string()))
-            .unwrap();
+        crate::fs::block_on_test(diaryx.entry().set_frontmatter_property(
+            "test.md",
+            "title",
+            Value::String("Updated".to_string()),
+        ))
+        .unwrap();
 
-        let fm = diaryx.entry().get_frontmatter("test.md").unwrap();
+        let fm =
+            crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
         assert_eq!(fm.get("title").unwrap().as_str().unwrap(), "Updated");
     }
 }

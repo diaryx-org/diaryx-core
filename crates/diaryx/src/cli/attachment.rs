@@ -1,20 +1,18 @@
 //! Attachment command handlers
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
-use diaryx_core::workspace::Workspace;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::args::AttachmentCommands;
 use crate::cli::util::resolve_paths;
+use crate::cli::{block_on, CliDiaryxAppSync, CliWorkspace};
 
 /// Handle attachment commands
 pub fn handle_attachment_command(
     command: AttachmentCommands,
-    ws: &Workspace<RealFileSystem>,
-    app: &DiaryxApp<RealFileSystem>,
+    ws: &CliWorkspace,
+    app: &CliDiaryxAppSync,
     current_dir: &Path,
 ) {
     // Load config for path resolution
@@ -72,8 +70,8 @@ pub fn handle_attachment_command(
 
 /// Handle 'attachment add' command
 fn handle_add(
-    _ws: &Workspace<RealFileSystem>,
-    app: &DiaryxApp<RealFileSystem>,
+    _ws: &CliWorkspace,
+    app: &CliDiaryxAppSync,
     config: &Config,
     current_dir: &Path,
     entry_arg: &str,
@@ -195,8 +193,8 @@ fn handle_add(
 
 /// Handle 'attachment remove' command
 fn handle_remove(
-    _ws: &Workspace<RealFileSystem>,
-    app: &DiaryxApp<RealFileSystem>,
+    _ws: &CliWorkspace,
+    app: &CliDiaryxAppSync,
     config: &Config,
     current_dir: &Path,
     entry_arg: &str,
@@ -265,8 +263,8 @@ fn handle_remove(
 
 /// Handle 'attachment list' command
 fn handle_list(
-    ws: &Workspace<RealFileSystem>,
-    app: &DiaryxApp<RealFileSystem>,
+    ws: &CliWorkspace,
+    app: &CliDiaryxAppSync,
     config: &Config,
     entry_arg: &str,
 ) {
@@ -286,7 +284,7 @@ fn handle_list(
     let entry_path = &entry_paths[0];
 
     // Parse the entry to get attachments
-    match ws.parse_index(entry_path) {
+    match block_on(ws.parse_index(entry_path)) {
         Ok(index) => {
             let attachments = index.frontmatter.attachments_list();
             if attachments.is_empty() {

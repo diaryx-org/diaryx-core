@@ -1,13 +1,11 @@
 //! Sort command handler
 
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
-
 use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
+use crate::cli::CliDiaryxAppSync;
 
 /// Handle the sort command
 pub fn handle_sort_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     path: String,
     pattern: Option<String>,
     default: bool,

@@ -2,9 +2,14 @@
 
 use std::path::PathBuf;
 
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use diaryx_core::publish::{PublishOptions, Publisher};
 use diaryx_core::workspace::Workspace;
+
+/// Helper to run async operations in sync context
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    futures_lite::future::block_on(f)
+}
 
 /// Handle the publish command
 pub fn handle_publish(
@@ -73,10 +78,10 @@ pub fn handle_publish(
     }
 
     // Execute publish
-    let fs = RealFileSystem;
+    let fs = SyncToAsyncFs::new(RealFileSystem);
     let publisher = Publisher::new(fs);
 
-    match publisher.publish(&workspace_root, &destination, &options) {
+    match block_on(publisher.publish(&workspace_root, &destination, &options)) {
         Ok(result) => {
             if result.files_processed == 0 {
                 println!("⚠ No files to publish");
@@ -108,7 +113,7 @@ pub fn handle_publish(
 
 /// Resolve the workspace root for publishing
 fn resolve_workspace_for_publish(workspace_override: Option<PathBuf>) -> Result<PathBuf, String> {
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     // If workspace is explicitly provided, use it
     if let Some(workspace_path) = workspace_override {
@@ -116,7 +121,7 @@ fn resolve_workspace_for_publish(workspace_override: Option<PathBuf>) -> Result<
             return Ok(workspace_path);
         }
         // If it's a directory, find the root index in it
-        if let Ok(Some(root)) = ws.find_root_index_in_dir(&workspace_path) {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&workspace_path)) {
             return Ok(root);
         }
         return Err(format!(
@@ -129,7 +134,7 @@ fn resolve_workspace_for_publish(workspace_override: Option<PathBuf>) -> Result<
     let current_dir =
         std::env::current_dir().map_err(|e| format!("Cannot get current directory: {}", e))?;
 
-    if let Ok(Some(root)) = ws.detect_workspace(&current_dir) {
+    if let Ok(Some(root)) = block_on(ws.detect_workspace(&current_dir)) {
         return Ok(root);
     }
 
@@ -137,7 +142,7 @@ fn resolve_workspace_for_publish(workspace_override: Option<PathBuf>) -> Result<
     let config =
         diaryx_core::config::Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
 
-    if let Ok(Some(root)) = ws.find_root_index_in_dir(&config.default_workspace) {
+    if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&config.default_workspace)) {
         return Ok(root);
     }
 

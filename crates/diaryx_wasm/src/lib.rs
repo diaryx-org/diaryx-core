@@ -21,13 +21,21 @@
 //!
 //! All methods return `Result<T, JsValue>` for JavaScript interop.
 
+mod async_export;
 mod async_filesystem;
+mod async_search;
+mod async_validation;
+mod async_workspace;
 mod attachment;
+mod backend;
 mod entry;
 mod error;
 mod export;
 mod filesystem;
 mod frontmatter;
+mod indexeddb_fs;
+mod js_async_fs;
+mod opfs_fs;
 mod search;
 mod state;
 mod template;
@@ -46,6 +54,16 @@ pub use search::DiaryxSearch;
 pub use template::DiaryxTemplate;
 pub use validation::DiaryxValidation;
 pub use workspace::DiaryxWorkspace;
+
+// Re-export async classes with native Promise support
+pub use async_export::DiaryxAsyncExport;
+pub use async_search::DiaryxAsyncSearch;
+pub use async_validation::DiaryxAsyncValidation;
+pub use async_workspace::DiaryxAsyncWorkspace;
+pub use backend::DiaryxBackend;
+pub use indexeddb_fs::IndexedDbFileSystem;
+pub use js_async_fs::JsAsyncFileSystem;
+pub use opfs_fs::OpfsFileSystem;
 
 // Re-export utility functions
 pub use entry::slugify_title;

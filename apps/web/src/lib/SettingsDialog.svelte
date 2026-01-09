@@ -10,6 +10,7 @@
 
   // Import modular settings components
   import DisplaySettings from "./settings/DisplaySettings.svelte";
+  import StorageSettings from "./settings/StorageSettings.svelte";
   import SyncSettings from "./settings/SyncSettings.svelte";
   import BackupSettings from "./settings/BackupSettings.svelte";
   import ImportSettings from "./settings/ImportSettings.svelte";
@@ -57,6 +58,9 @@
         bind:showUnlinkedFiles
         bind:showHiddenFiles
       />
+
+      <!-- Storage Settings -->
+      <StorageSettings />
 
       <!-- Live Sync Settings -->
       <SyncSettings

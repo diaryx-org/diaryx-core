@@ -3,15 +3,15 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::FileSystem;
+use diaryx_core::entry::{DiaryxApp, DiaryxAppSync};
+use diaryx_core::fs::{FileSystem, SyncToAsyncFs};
 use diaryx_core::template::TemplateManager;
 use diaryx_core::workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{IntoJsOption, IntoJsResult};
-use crate::state::{with_fs, with_fs_mut};
+use crate::state::{block_on, with_fs, with_fs_mut};
 
 // ============================================================================
 // Types
@@ -56,9 +56,10 @@ impl DiaryxEntry {
         let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
 
         with_fs(|fs| {
-            let app = DiaryxApp::new(fs);
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
 
-            let frontmatter = app.get_all_frontmatter(path).js_err()?;
+            let frontmatter = block_on(app.get_all_frontmatter(path)).js_err()?;
 
             let mut json_frontmatter = serde_json::Map::new();
             for (key, value) in frontmatter {
@@ -72,7 +73,7 @@ impl DiaryxEntry {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            let content = app.get_content(path).js_err()?;
+            let content = block_on(app.get_content(path)).js_err()?;
 
             let entry = JsEntryData {
                 path: path.to_string(),
@@ -89,8 +90,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn save(&self, path: &str, content: &str) -> Result<(), JsValue> {
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
-            app.save_content(path, content).js_err()
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.save_content(path, content)).js_err()
         })
     }
 
@@ -110,7 +112,8 @@ impl DiaryxEntry {
         };
 
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
             let path_buf = PathBuf::from(path);
 
             let title = options
@@ -146,27 +149,27 @@ impl DiaryxEntry {
             }
 
             // Create entry without template
-            app.create_entry(path).js_err()?;
+            block_on(app.create_entry(path)).js_err()?;
 
             // Set title and timestamps
-            app.set_frontmatter_property(path, "title", serde_yaml::Value::String(title))
+            block_on(app.set_frontmatter_property(path, "title", serde_yaml::Value::String(title)))
                 .js_err()?;
 
             let now = Utc::now().to_rfc3339();
-            app.set_frontmatter_property(path, "created", serde_yaml::Value::String(now.clone()))
+            block_on(app.set_frontmatter_property(path, "created", serde_yaml::Value::String(now.clone())))
                 .js_err()?;
-            app.set_frontmatter_property(path, "updated", serde_yaml::Value::String(now))
+            block_on(app.set_frontmatter_property(path, "updated", serde_yaml::Value::String(now)))
                 .js_err()?;
 
             // Set part_of if provided
             if let Some(ref opts) = options
                 && let Some(ref part_of) = opts.part_of
             {
-                app.set_frontmatter_property(
+                block_on(app.set_frontmatter_property(
                     path,
                     "part_of",
                     serde_yaml::Value::String(part_of.clone()),
-                )
+                ))
                 .js_err()?;
             }
 
@@ -179,8 +182,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn delete(&self, path: &str) -> Result<(), JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.delete_entry(&PathBuf::from(path)).js_err()
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.delete_entry(&PathBuf::from(path))).js_err()
         })
     }
 
@@ -188,8 +192,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn move_entry(&self, from_path: &str, to_path: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.move_entry(&PathBuf::from(from_path), &PathBuf::from(to_path))
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.move_entry(&PathBuf::from(from_path), &PathBuf::from(to_path)))
                 .js_err()?;
             Ok(to_path.to_string())
         })
@@ -199,11 +204,12 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn attach_to_parent(&self, entry_path: &str, parent_path: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.attach_and_move_entry_to_parent(
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.attach_and_move_entry_to_parent(
                 &PathBuf::from(entry_path),
                 &PathBuf::from(parent_path),
-            )
+            ))
             .map(|p| p.to_string_lossy().to_string())
             .js_err()
         })
@@ -213,8 +219,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn convert_to_index(&self, path: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.convert_to_index(&PathBuf::from(path))
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.convert_to_index(&PathBuf::from(path)))
                 .map(|p| p.to_string_lossy().to_string())
                 .js_err()
         })
@@ -224,8 +231,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn convert_to_leaf(&self, path: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.convert_to_leaf(&PathBuf::from(path))
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.convert_to_leaf(&PathBuf::from(path)))
                 .map(|p| p.to_string_lossy().to_string())
                 .js_err()
         })
@@ -235,8 +243,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn create_child(&self, parent_path: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.create_child_entry(&PathBuf::from(parent_path), None)
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.create_child_entry(&PathBuf::from(parent_path), None))
                 .map(|p| p.to_string_lossy().to_string())
                 .js_err()
         })
@@ -246,8 +255,9 @@ impl DiaryxEntry {
     #[wasm_bindgen]
     pub fn rename(&self, path: &str, new_filename: &str) -> Result<String, JsValue> {
         with_fs_mut(|fs| {
-            let ws = Workspace::new(fs);
-            ws.rename_entry(&PathBuf::from(path), new_filename)
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let ws = Workspace::new(async_fs);
+            block_on(ws.rename_entry(&PathBuf::from(path), new_filename))
                 .map(|p| p.to_string_lossy().to_string())
                 .js_err()
         })
@@ -260,7 +270,8 @@ impl DiaryxEntry {
         use diaryx_core::config::Config;
 
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
+            // Use DiaryxAppSync for ensure_dated_entry (not yet async)
+            let app = DiaryxAppSync::new(fs.clone());
             let today = Local::now().date_naive();
 
             let config = Config::with_options(
@@ -303,10 +314,11 @@ fn add_to_parent_index<FS: FileSystem>(fs: &FS, entry_path: &str) -> Result<(), 
         return Ok(());
     }
 
-    let app = DiaryxApp::new(fs);
+    let async_fs = SyncToAsyncFs::new(fs.clone());
+    let app = DiaryxApp::new(async_fs);
     let index_path_str = index_path.to_string_lossy();
 
-    let frontmatter = app.get_all_frontmatter(&index_path_str).js_err()?;
+    let frontmatter = block_on(app.get_all_frontmatter(&index_path_str)).js_err()?;
 
     let mut contents: Vec<String> = frontmatter
         .get("contents")
@@ -332,23 +344,23 @@ fn add_to_parent_index<FS: FileSystem>(fs: &FS, entry_path: &str) -> Result<(), 
             .map(serde_yaml::Value::String)
             .collect();
 
-        app.set_frontmatter_property(
+        block_on(app.set_frontmatter_property(
             &index_path_str,
             "contents",
             serde_yaml::Value::Sequence(yaml_contents),
-        )
+        ))
         .js_err()?;
     }
 
     // Set part_of on entry if not present
-    let entry_frontmatter = app.get_all_frontmatter(entry_path).js_err()?;
+    let entry_frontmatter = block_on(app.get_all_frontmatter(entry_path)).js_err()?;
 
     if !entry_frontmatter.contains_key("part_of") {
-        app.set_frontmatter_property(
+        block_on(app.set_frontmatter_property(
             entry_path,
             "part_of",
             serde_yaml::Value::String("index.md".to_string()),
-        )
+        ))
         .js_err()?;
     }
 

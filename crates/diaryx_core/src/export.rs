@@ -1,4 +1,10 @@
 //! Export module - filter and export workspace files by audience
+//!
+//! # Async-first Design
+//!
+//! This module uses `AsyncFileSystem` for all filesystem operations.
+//! For synchronous contexts (CLI, tests), wrap a sync filesystem with
+//! `SyncToAsyncFs` and use `futures_lite::future::block_on()`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -6,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::error::{DiaryxError, Result};
-use crate::fs::FileSystem;
+use crate::fs::AsyncFileSystem;
 use crate::workspace::{IndexFrontmatter, Workspace};
 
 /// Result of planning an export operation
@@ -100,12 +106,12 @@ pub struct ExportOptions {
     pub keep_audience: bool,
 }
 
-/// Export operations
-pub struct Exporter<FS: FileSystem> {
+/// Export operations (async-first)
+pub struct Exporter<FS: AsyncFileSystem> {
     workspace: Workspace<FS>,
 }
 
-impl<FS: FileSystem + Clone> Exporter<FS> {
+impl<FS: AsyncFileSystem> Exporter<FS> {
     /// Create a new exporter
     pub fn new(fs: FS) -> Self {
         Self {
@@ -115,7 +121,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
 
     /// Plan an export operation without executing it
     /// This traverses the workspace and determines which files would be included/excluded
-    pub fn plan_export(
+    pub async fn plan_export(
         &self,
         workspace_root: &Path,
         audience: &str,
@@ -141,7 +147,8 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
             &mut included,
             &mut excluded,
             &mut visited,
-        )?;
+        )
+        .await?;
 
         Ok(ExportPlan {
             included,
@@ -154,7 +161,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
 
     /// Recursive helper for planning export
     #[allow(clippy::too_many_arguments)]
-    fn plan_file_recursive(
+    async fn plan_file_recursive(
         &self,
         path: &Path,
         root_dir: &Path,
@@ -173,7 +180,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
         visited.insert(canonical);
 
         // Parse the file
-        let index = self.workspace.parse_index(path)?;
+        let index = self.workspace.parse_index(path).await?;
         let frontmatter = &index.frontmatter;
 
         // Determine visibility
@@ -204,8 +211,8 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
             for child_path_str in frontmatter.contents_list() {
                 let child_path = index.resolve_path(child_path_str);
 
-                if self.workspace.fs_ref().exists(&child_path) {
-                    let child_included = self.plan_file_recursive(
+                if self.workspace.fs_ref().exists(&child_path).await {
+                    let child_included = Box::pin(self.plan_file_recursive(
                         &child_path,
                         root_dir,
                         dest_dir,
@@ -214,7 +221,8 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
                         included,
                         excluded,
                         visited,
-                    )?;
+                    ))
+                    .await?;
 
                     if !child_included {
                         filtered_contents.push(child_path_str.clone());
@@ -299,27 +307,30 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
     /// Execute an export plan
     /// Only available on native platforms (not WASM) since it writes to the filesystem
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn execute_export(
+    pub async fn execute_export(
         &self,
         plan: &ExportPlan,
         options: &ExportOptions,
     ) -> Result<ExportStats> {
         // Check if destination exists
-        if self.workspace.fs_ref().exists(&plan.destination) && !options.force {
+        if self.workspace.fs_ref().exists(&plan.destination).await && !options.force {
             return Err(DiaryxError::WorkspaceAlreadyExists(
                 plan.destination.clone(),
             ));
         }
 
         // Create destination directory
-        self.workspace.fs_ref().create_dir_all(&plan.destination)?;
+        self.workspace
+            .fs_ref()
+            .create_dir_all(&plan.destination)
+            .await?;
 
         let mut stats = ExportStats::default();
 
         for export_file in &plan.included {
             // Create parent directories if needed
             if let Some(parent) = export_file.dest_path.parent() {
-                self.workspace.fs_ref().create_dir_all(parent)?;
+                self.workspace.fs_ref().create_dir_all(parent).await?;
             }
 
             // Read source file
@@ -327,6 +338,7 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
                 .workspace
                 .fs_ref()
                 .read_to_string(&export_file.source_path)
+                .await
                 .map_err(|e| DiaryxError::FileRead {
                     path: export_file.source_path.clone(),
                     source: e,
@@ -344,7 +356,8 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
             // Write to destination
             self.workspace
                 .fs_ref()
-                .write_file(&export_file.dest_path, &processed_content)?;
+                .write_file(&export_file.dest_path, &processed_content)
+                .await?;
             stats.files_exported += 1;
         }
 
@@ -377,23 +390,23 @@ impl<FS: FileSystem + Clone> Exporter<FS> {
         let mut frontmatter: serde_yaml::Value = serde_yaml::from_str(frontmatter_str)?;
 
         // Filter contents array
-        if let Some(contents) = frontmatter.get_mut("contents")
-            && let Some(arr) = contents.as_sequence_mut()
-        {
-            arr.retain(|item| {
-                if let Some(s) = item.as_str() {
-                    !filtered.iter().any(|f| f == s)
-                } else {
-                    true
-                }
-            });
+        if let Some(contents) = frontmatter.get_mut("contents") {
+            if let Some(arr) = contents.as_sequence_mut() {
+                arr.retain(|item| {
+                    if let Some(s) = item.as_str() {
+                        !filtered.iter().any(|f| f == s)
+                    } else {
+                        true
+                    }
+                });
+            }
         }
 
         // Optionally remove audience property
-        if !options.keep_audience
-            && let Some(map) = frontmatter.as_mapping_mut()
-        {
-            map.remove(serde_yaml::Value::String("audience".to_string()));
+        if !options.keep_audience {
+            if let Some(map) = frontmatter.as_mapping_mut() {
+                map.remove(serde_yaml::Value::String("audience".to_string()));
+            }
         }
 
         // Reconstruct file
@@ -465,29 +478,36 @@ impl std::fmt::Display for ExportStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::MockFileSystem;
+    use crate::fs::{block_on_test, FileSystem, InMemoryFileSystem, SyncToAsyncFs};
 
-    // Type alias for backwards compatibility with existing tests
-    type MockFs = MockFileSystem;
+    type TestFs = SyncToAsyncFs<InMemoryFileSystem>;
+
+    fn make_test_fs() -> InMemoryFileSystem {
+        InMemoryFileSystem::new()
+    }
 
     #[test]
     fn test_private_file_excluded() {
-        let fs = MockFs::new().with_file(
-            "/workspace/README.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/workspace/README.md"),
             "---\ntitle: Root\ncontents:\n  - secret.md\naudience:\n  - family\n---\n\n# Root\n",
-        ).with_file(
-            "/workspace/secret.md",
+        )
+        .unwrap();
+        fs.write_file(
+            Path::new("/workspace/secret.md"),
             "---\ntitle: Secret\npart_of: README.md\naudience:\n  - private\n---\n\n# Secret\n",
-        );
+        )
+        .unwrap();
 
-        let exporter = Exporter::new(fs);
-        let plan = exporter
-            .plan_export(
-                Path::new("/workspace/README.md"),
-                "family",
-                Path::new("/export"),
-            )
-            .unwrap();
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let exporter = Exporter::new(async_fs);
+        let plan = block_on_test(exporter.plan_export(
+            Path::new("/workspace/README.md"),
+            "family",
+            Path::new("/export"),
+        ))
+        .unwrap();
 
         assert_eq!(plan.included.len(), 1);
         assert_eq!(plan.excluded.len(), 1);
@@ -496,24 +516,26 @@ mod tests {
 
     #[test]
     fn test_audience_inheritance() {
-        let fs = MockFs::new()
-            .with_file(
-                "/workspace/README.md",
-                "---\ntitle: Root\ncontents:\n  - child.md\naudience:\n  - family\n---\n\n# Root\n",
-            )
-            .with_file(
-                "/workspace/child.md",
-                "---\ntitle: Child\npart_of: README.md\n---\n\n# Child inherits family audience\n",
-            );
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/workspace/README.md"),
+            "---\ntitle: Root\ncontents:\n  - child.md\naudience:\n  - family\n---\n\n# Root\n",
+        )
+        .unwrap();
+        fs.write_file(
+            Path::new("/workspace/child.md"),
+            "---\ntitle: Child\npart_of: README.md\n---\n\n# Child inherits family audience\n",
+        )
+        .unwrap();
 
-        let exporter = Exporter::new(fs);
-        let plan = exporter
-            .plan_export(
-                Path::new("/workspace/README.md"),
-                "family",
-                Path::new("/export"),
-            )
-            .unwrap();
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let exporter = Exporter::new(async_fs);
+        let plan = block_on_test(exporter.plan_export(
+            Path::new("/workspace/README.md"),
+            "family",
+            Path::new("/export"),
+        ))
+        .unwrap();
 
         // Both should be included - child inherits family audience
         assert_eq!(plan.included.len(), 2);
@@ -522,19 +544,21 @@ mod tests {
 
     #[test]
     fn test_no_audience_defaults_to_private() {
-        let fs = MockFs::new().with_file(
-            "/workspace/README.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/workspace/README.md"),
             "---\ntitle: Root\ncontents: []\n---\n\n# Root with no audience\n",
-        );
+        )
+        .unwrap();
 
-        let exporter = Exporter::new(fs);
-        let plan = exporter
-            .plan_export(
-                Path::new("/workspace/README.md"),
-                "family",
-                Path::new("/export"),
-            )
-            .unwrap();
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let exporter = Exporter::new(async_fs);
+        let plan = block_on_test(exporter.plan_export(
+            Path::new("/workspace/README.md"),
+            "family",
+            Path::new("/export"),
+        ))
+        .unwrap();
 
         // Root has no audience, defaults to private
         assert_eq!(plan.included.len(), 0);
@@ -544,25 +568,31 @@ mod tests {
 
     #[test]
     fn test_filtered_contents_tracked() {
-        let fs = MockFs::new().with_file(
-            "/workspace/README.md",
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("/workspace/README.md"),
             "---\ntitle: Root\ncontents:\n  - public.md\n  - private.md\naudience:\n  - family\n---\n\n# Root\n",
-        ).with_file(
-            "/workspace/public.md",
+        )
+        .unwrap();
+        fs.write_file(
+            Path::new("/workspace/public.md"),
             "---\ntitle: Public\npart_of: README.md\n---\n\n# Public\n",
-        ).with_file(
-            "/workspace/private.md",
+        )
+        .unwrap();
+        fs.write_file(
+            Path::new("/workspace/private.md"),
             "---\ntitle: Private\npart_of: README.md\naudience:\n  - private\n---\n\n# Private\n",
-        );
+        )
+        .unwrap();
 
-        let exporter = Exporter::new(fs);
-        let plan = exporter
-            .plan_export(
-                Path::new("/workspace/README.md"),
-                "family",
-                Path::new("/export"),
-            )
-            .unwrap();
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let exporter = Exporter::new(async_fs);
+        let plan = block_on_test(exporter.plan_export(
+            Path::new("/workspace/README.md"),
+            "family",
+            Path::new("/export"),
+        ))
+        .unwrap();
 
         // Find the root in included files
         let root = plan

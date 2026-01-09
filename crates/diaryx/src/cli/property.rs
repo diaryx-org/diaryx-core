@@ -1,14 +1,13 @@
 //! Property command handlers
 
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
 use serde_yaml::Value;
 
 use crate::cli::args::PropertyCommands;
 use crate::cli::util::{ConfirmResult, format_value, load_config, prompt_confirm, resolve_paths};
+use crate::cli::{block_on, CliDiaryxAppSync};
 
 /// Handle the property command
-pub fn handle_property_command(app: &DiaryxApp<RealFileSystem>, operation: PropertyCommands) {
+pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyCommands) {
     let config = match load_config() {
         Some(c) => c,
         None => return,
@@ -101,7 +100,7 @@ pub fn handle_property_command(app: &DiaryxApp<RealFileSystem>, operation: Prope
 
 /// Handle get command
 fn handle_get_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -151,7 +150,7 @@ fn handle_get_command(
 
 /// Handle set command
 fn handle_set_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -208,7 +207,7 @@ fn handle_set_command(
 
 /// Handle remove command
 fn handle_remove_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -256,7 +255,7 @@ fn handle_remove_command(
 
 /// Handle rename command
 fn handle_rename_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     old_key: &str,
@@ -311,7 +310,7 @@ fn handle_rename_command(
 
 /// Handle list command (list all properties)
 fn handle_list_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     _yes: bool,
@@ -355,7 +354,7 @@ fn handle_list_command(
 
 /// Handle show command (show list with indices)
 fn handle_show_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -406,7 +405,7 @@ fn handle_show_command(
 
 /// Handle list append command
 fn handle_list_append_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -434,7 +433,7 @@ fn handle_list_append_command(
 
 /// Handle list prepend command
 fn handle_list_prepend_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -462,7 +461,7 @@ fn handle_list_prepend_command(
 
 /// Handle list pop command
 fn handle_list_pop_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -514,7 +513,7 @@ fn handle_list_pop_command(
 /// Handle list set-at command
 #[allow(clippy::too_many_arguments)]
 fn handle_list_set_at_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -553,7 +552,7 @@ fn handle_list_set_at_command(
 
 /// Handle list remove-value command
 fn handle_list_remove_value_command(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
@@ -591,7 +590,7 @@ fn handle_list_remove_value_command(
 /// Generic handler for list operations
 #[allow(clippy::too_many_arguments)]
 fn handle_list_operation<F>(
-    app: &DiaryxApp<RealFileSystem>,
+    app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,

@@ -10,7 +10,7 @@ use diaryx_core::{
     config::Config,
     entry::DiaryxApp,
     error::SerializableError,
-    fs::{FileSystem, RealFileSystem},
+    fs::{FileSystem, RealFileSystem, SyncToAsyncFs},
     search::{SearchQuery, SearchResults, Searcher},
     validate::{FixResult, ValidationFixer, ValidationResult, Validator},
     workspace::{TreeNode, Workspace},
@@ -211,8 +211,8 @@ pub async fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, S
 
     // Check if workspace is already initialized (has a root index file)
     log::info!("[initialize_app] Checking if workspace is initialized...");
-    let ws = Workspace::new(RealFileSystem);
-    let workspace_initialized = match ws.find_root_index_in_dir(&paths.default_workspace) {
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
+    let workspace_initialized = match ws.find_root_index_in_dir(&paths.default_workspace).await {
         Ok(Some(path)) => {
             log::info!("[initialize_app] Found existing root index at: {:?}", path);
             true
@@ -233,6 +233,7 @@ pub async fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, S
     if !workspace_initialized {
         log::info!("[initialize_app] Initializing workspace...");
         ws.init_workspace(&paths.default_workspace, Some("My Workspace"), None)
+            .await
             .map_err(|e| {
                 log::error!("[initialize_app] Failed to initialize workspace: {:?}", e);
                 e.to_serializable()
@@ -341,7 +342,7 @@ pub fn save_config<R: Runtime>(app: AppHandle<R>, config: Config) -> Result<(), 
 
 /// Get the workspace tree structure
 #[tauri::command]
-pub fn get_workspace_tree<R: Runtime>(
+pub async fn get_workspace_tree<R: Runtime>(
     app: AppHandle<R>,
     workspace_path: Option<String>,
     depth: Option<usize>,
@@ -352,7 +353,7 @@ pub fn get_workspace_tree<R: Runtime>(
         depth
     );
 
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
     let paths = get_platform_paths(&app)?;
     log::info!(
         "[get_workspace_tree] Platform paths: default_workspace={:?}",
@@ -399,7 +400,7 @@ pub fn get_workspace_tree<R: Runtime>(
     );
 
     // Find the root index
-    let root_index = match ws.find_root_index_in_dir(&root_path) {
+    let root_index = match ws.find_root_index_in_dir(&root_path).await {
         Ok(Some(path)) => {
             log::info!("[get_workspace_tree] Found root index at: {:?}", path);
             path
@@ -429,6 +430,7 @@ pub fn get_workspace_tree<R: Runtime>(
     log::info!("[get_workspace_tree] Building tree from root index...");
     let tree = ws
         .build_tree_with_depth(&root_index, max_depth, &mut visited)
+        .await
         .map_err(|e| {
             log::error!("[get_workspace_tree] Error building tree: {:?}", e);
             e.to_serializable()
@@ -444,7 +446,7 @@ pub fn get_workspace_tree<R: Runtime>(
 /// Get the filesystem tree structure (for "Show All Files" mode)
 /// Unlike get_workspace_tree, this scans actual filesystem rather than following contents/part_of
 #[tauri::command]
-pub fn get_filesystem_tree<R: Runtime>(
+pub async fn get_filesystem_tree<R: Runtime>(
     app: AppHandle<R>,
     workspace_path: Option<String>,
     show_hidden: Option<bool>,
@@ -471,9 +473,10 @@ pub fn get_filesystem_tree<R: Runtime>(
     log::info!("[get_filesystem_tree] Using root path: {:?}", root_path);
 
     // Build filesystem tree
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
     let tree = ws
         .build_filesystem_tree(&root_path, show_hidden.unwrap_or(false))
+        .await
         .map_err(|e| {
             log::error!("[get_filesystem_tree] Error building tree: {:?}", e);
             e.to_serializable()
@@ -488,7 +491,7 @@ pub fn get_filesystem_tree<R: Runtime>(
 
 /// Validate workspace links and find unlinked entries
 #[tauri::command]
-pub fn validate_workspace<R: Runtime>(
+pub async fn validate_workspace<R: Runtime>(
     app: AppHandle<R>,
     workspace_path: Option<String>,
 ) -> Result<ValidationResult, SerializableError> {
@@ -513,9 +516,10 @@ pub fn validate_workspace<R: Runtime>(
     log::info!("[validate_workspace] Using root path: {:?}", root_path);
 
     // Find the index file in the workspace directory
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
     let index_path = ws
         .find_any_index_in_dir(&root_path)
+        .await
         .map_err(|e| e.to_serializable())?
         .ok_or_else(|| {
             diaryx_core::error::DiaryxError::Io(std::io::Error::new(
@@ -526,9 +530,10 @@ pub fn validate_workspace<R: Runtime>(
         })?;
 
     // Run validation
-    let validator = Validator::new(RealFileSystem);
+    let validator = Validator::new(SyncToAsyncFs::new(RealFileSystem));
     let result = validator
         .validate_workspace(&index_path)
+        .await
         .map_err(|e| e.to_serializable())?;
 
     log::info!(
@@ -543,14 +548,15 @@ pub fn validate_workspace<R: Runtime>(
 
 /// Validate a single file's links
 #[tauri::command]
-pub fn validate_file(file_path: String) -> Result<ValidationResult, SerializableError> {
+pub async fn validate_file(file_path: String) -> Result<ValidationResult, SerializableError> {
     log::info!("[validate_file] Validating: {}", file_path);
 
-    let validator = Validator::new(RealFileSystem);
+    let validator = Validator::new(SyncToAsyncFs::new(RealFileSystem));
     let path = PathBuf::from(&file_path);
 
     let result = validator
         .validate_file(&path)
+        .await
         .map_err(|e| e.to_serializable())?;
 
     log::info!(
@@ -564,128 +570,122 @@ pub fn validate_file(file_path: String) -> Result<ValidationResult, Serializable
 
 /// Fix a broken part_of reference by removing it
 #[tauri::command]
-pub fn fix_broken_part_of(file_path: String) -> Result<FixResult, SerializableError> {
+pub async fn fix_broken_part_of(file_path: String) -> Result<FixResult, SerializableError> {
     log::info!("[fix_broken_part_of] Fixing: {}", file_path);
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let path = PathBuf::from(&file_path);
 
-    Ok(fixer.fix_broken_part_of(&path))
+    Ok(fixer.fix_broken_part_of(&path).await)
 }
 
 /// Fix a broken contents reference by removing it from the index
 #[tauri::command]
-pub fn fix_broken_contents_ref(
+pub async fn fix_broken_contents_ref(
     index_path: String,
     target: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_broken_contents_ref] Removing '{}' from {}",
+        "[fix_broken_contents_ref] Fixing {} in {}",
         target,
         index_path
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let path = PathBuf::from(&index_path);
-
-    Ok(fixer.fix_broken_contents_ref(&path, &target))
+    Ok(fixer.fix_broken_contents_ref(&path, &target).await)
 }
 
 /// Fix a broken attachment reference by removing it
 #[tauri::command]
-pub fn fix_broken_attachment(
+pub async fn fix_broken_attachment(
     file_path: String,
     attachment: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_broken_attachment] Removing '{}' from {}",
+        "[fix_broken_attachment] Fixing {} in {}",
         attachment,
         file_path
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let path = PathBuf::from(&file_path);
-
-    Ok(fixer.fix_broken_attachment(&path, &attachment))
+    Ok(fixer.fix_broken_attachment(&path, &attachment).await)
 }
 
 /// Fix a non-portable path by normalizing it
 #[tauri::command]
-pub fn fix_non_portable_path(
+pub async fn fix_non_portable_path(
     file_path: String,
     property: String,
     old_value: String,
     new_value: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_non_portable_path] Normalizing {} '{}' -> '{}' in {}",
+        "[fix_non_portable_path] Fixing {} in {}: {} -> {}",
         property,
+        file_path,
         old_value,
-        new_value,
-        file_path
+        new_value
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let path = PathBuf::from(&file_path);
-
-    Ok(fixer.fix_non_portable_path(&path, &property, &old_value, &new_value))
+    Ok(fixer.fix_non_portable_path(&path, &property, &old_value, &new_value).await)
 }
 
 /// Add an unlisted file to an index's contents
 #[tauri::command]
-pub fn fix_unlisted_file(
+pub async fn fix_unlisted_file(
     index_path: String,
     file_path: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_unlisted_file] Adding '{}' to {}",
+        "[fix_unlisted_file] Adding {} to {}",
         file_path,
         index_path
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let index = PathBuf::from(&index_path);
     let file = PathBuf::from(&file_path);
-
-    Ok(fixer.fix_unlisted_file(&index, &file))
+    Ok(fixer.fix_unlisted_file(&index, &file).await)
 }
 
 /// Add an orphan binary file to an index's attachments
 #[tauri::command]
-pub fn fix_orphan_binary_file(
+pub async fn fix_orphan_binary_file(
     index_path: String,
     file_path: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_orphan_binary_file] Adding '{}' to attachments in {}",
+        "[fix_orphan_binary_file] Adding {} to {}",
         file_path,
         index_path
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let index = PathBuf::from(&index_path);
     let file = PathBuf::from(&file_path);
-
-    Ok(fixer.fix_orphan_binary_file(&index, &file))
+    Ok(fixer.fix_orphan_binary_file(&index, &file).await)
 }
 
 /// Fix a missing part_of by setting it to point to the given index
 #[tauri::command]
-pub fn fix_missing_part_of(
+pub async fn fix_missing_part_of(
     file_path: String,
     index_path: String,
 ) -> Result<FixResult, SerializableError> {
     log::info!(
-        "[fix_missing_part_of] Setting part_of to '{}' in {}",
+        "[fix_missing_part_of] Setting part_of to {} in {}",
         index_path,
         file_path
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
     let file = PathBuf::from(&file_path);
     let index = PathBuf::from(&index_path);
-
-    Ok(fixer.fix_missing_part_of(&file, &index))
+    Ok(fixer.fix_missing_part_of(&file, &index).await)
 }
 
 /// Summary of fix operations
@@ -699,7 +699,7 @@ pub struct FixSummary {
 
 /// Fix all errors and fixable warnings in a validation result
 #[tauri::command]
-pub fn fix_all_validation_issues(
+pub async fn fix_all_validation_issues(
     validation_result: ValidationResult,
 ) -> Result<FixSummary, SerializableError> {
     log::info!(
@@ -708,8 +708,8 @@ pub fn fix_all_validation_issues(
         validation_result.warnings.len()
     );
 
-    let fixer = ValidationFixer::new(RealFileSystem);
-    let (error_fixes, warning_fixes) = fixer.fix_all(&validation_result);
+    let fixer = ValidationFixer::new(SyncToAsyncFs::new(RealFileSystem));
+    let (error_fixes, warning_fixes) = fixer.fix_all(&validation_result).await;
 
     let total_fixed = error_fixes.iter().filter(|r| r.success).count()
         + warning_fixes.iter().filter(|r| r.success).count();
@@ -776,7 +776,7 @@ pub fn save_entry(request: SaveEntryRequest) -> Result<(), SerializableError> {
 
 /// Search the workspace
 #[tauri::command]
-pub fn search_workspace<R: Runtime>(
+pub async fn search_workspace<R: Runtime>(
     app: AppHandle<R>,
     pattern: String,
     workspace_path: Option<String>,
@@ -784,8 +784,8 @@ pub fn search_workspace<R: Runtime>(
     property: Option<String>,
     case_sensitive: Option<bool>,
 ) -> Result<SearchResults, SerializableError> {
-    let searcher = Searcher::new(RealFileSystem);
-    let ws = Workspace::new(RealFileSystem);
+    let searcher = Searcher::new(SyncToAsyncFs::new(RealFileSystem));
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
     let paths = get_platform_paths(&app)?;
 
     // Resolve workspace path
@@ -807,6 +807,7 @@ pub fn search_workspace<R: Runtime>(
     // Find root index
     let root_index = ws
         .find_root_index_in_dir(&root_path)
+        .await
         .map_err(|e| e.to_serializable())?
         .ok_or_else(|| SerializableError {
             kind: "WorkspaceNotFound".to_string(),
@@ -827,6 +828,7 @@ pub fn search_workspace<R: Runtime>(
 
     searcher
         .search_workspace(&root_index, &query)
+        .await
         .map_err(|e| e.to_serializable())
 }
 
@@ -1470,12 +1472,14 @@ pub fn ensure_daily_entry<R: Runtime>(app: AppHandle<R>) -> Result<PathBuf, Seri
 
 /// Get all available audience tags from the workspace
 #[tauri::command]
-pub fn get_available_audiences<R: Runtime>(
+pub async fn get_available_audiences<R: Runtime>(
     app: AppHandle<R>,
     root_path: String,
 ) -> Result<Vec<String>, SerializableError> {
+    use diaryx_core::fs::AsyncFileSystem;
+
     let paths = get_platform_paths(&app)?;
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     // Use provided root_path or default workspace
     let root = if root_path.is_empty() {
@@ -1491,6 +1495,7 @@ pub fn get_available_audiences<R: Runtime>(
     } else {
         // It's a directory, find the root index inside
         ws.find_root_index_in_dir(&root)
+            .await
             .map_err(|e| e.to_serializable())?
             .ok_or_else(|| SerializableError {
                 kind: "WorkspaceNotFound".to_string(),
@@ -1501,8 +1506,8 @@ pub fn get_available_audiences<R: Runtime>(
 
     let mut audiences: HashSet<String> = HashSet::new();
 
-    fn collect_audiences(
-        ws: &Workspace<RealFileSystem>,
+    async fn collect_audiences<FS: AsyncFileSystem>(
+        ws: &Workspace<FS>,
         path: &Path,
         audiences: &mut HashSet<String>,
         visited: &mut HashSet<PathBuf>,
@@ -1512,7 +1517,7 @@ pub fn get_available_audiences<R: Runtime>(
         }
         visited.insert(path.to_path_buf());
 
-        if let Ok(index) = ws.parse_index(path) {
+        if let Ok(index) = ws.parse_index(path).await {
             if let Some(file_audiences) = &index.frontmatter.audience {
                 for a in file_audiences {
                     if a.to_lowercase() != "private" {
@@ -1524,8 +1529,8 @@ pub fn get_available_audiences<R: Runtime>(
             if index.frontmatter.is_index() {
                 for child_rel in index.frontmatter.contents_list() {
                     let child_path = index.resolve_path(child_rel);
-                    if RealFileSystem.exists(&child_path) {
-                        collect_audiences(ws, &child_path, audiences, visited);
+                    if ws.fs_ref().exists(&child_path).await {
+                        Box::pin(collect_audiences(ws, &child_path, audiences, visited)).await;
                     }
                 }
             }
@@ -1533,7 +1538,7 @@ pub fn get_available_audiences<R: Runtime>(
     }
 
     let mut visited = HashSet::new();
-    collect_audiences(&ws, &root_index, &mut audiences, &mut visited);
+    collect_audiences(&ws, &root_index, &mut audiences, &mut visited).await;
 
     let mut result: Vec<String> = audiences.into_iter().collect();
     result.sort();
@@ -1563,15 +1568,16 @@ pub struct ExcludedFile {
 
 /// Plan an export operation
 #[tauri::command]
-pub fn plan_export<R: Runtime>(
+pub async fn plan_export<R: Runtime>(
     app: AppHandle<R>,
     root_path: String,
     audience: String,
 ) -> Result<ExportPlanResult, SerializableError> {
     use diaryx_core::export::Exporter;
+    use diaryx_core::fs::AsyncFileSystem;
 
     let paths = get_platform_paths(&app)?;
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     let root = if root_path.is_empty() {
         paths.default_workspace.clone()
@@ -1584,6 +1590,7 @@ pub fn plan_export<R: Runtime>(
         root.clone()
     } else {
         ws.find_root_index_in_dir(&root)
+            .await
             .map_err(|e| e.to_serializable())?
             .ok_or_else(|| SerializableError {
                 kind: "WorkspaceNotFound".to_string(),
@@ -1598,8 +1605,8 @@ pub fn plan_export<R: Runtime>(
     if audience == "*" {
         let mut included = Vec::new();
 
-        fn collect_all(
-            ws: &Workspace<RealFileSystem>,
+        async fn collect_all<FS: AsyncFileSystem>(
+            ws: &Workspace<FS>,
             path: &Path,
             root_dir: &Path,
             included: &mut Vec<IncludedFile>,
@@ -1610,7 +1617,7 @@ pub fn plan_export<R: Runtime>(
             }
             visited.insert(path.to_path_buf());
 
-            if let Ok(index) = ws.parse_index(path) {
+            if let Ok(index) = ws.parse_index(path).await {
                 let relative_path =
                     pathdiff::diff_paths(path, root_dir).unwrap_or_else(|| path.to_path_buf());
 
@@ -1622,8 +1629,8 @@ pub fn plan_export<R: Runtime>(
                 if index.frontmatter.is_index() {
                     for child_rel in index.frontmatter.contents_list() {
                         let child_path = index.resolve_path(child_rel);
-                        if RealFileSystem.exists(&child_path) {
-                            collect_all(ws, &child_path, root_dir, included, visited);
+                        if ws.fs_ref().exists(&child_path).await {
+                            Box::pin(collect_all(ws, &child_path, root_dir, included, visited)).await;
                         }
                     }
                 }
@@ -1631,7 +1638,7 @@ pub fn plan_export<R: Runtime>(
         }
 
         let mut visited = HashSet::new();
-        collect_all(&ws, &root_index, root_dir, &mut included, &mut visited);
+        collect_all(&ws, &root_index, root_dir, &mut included, &mut visited).await;
 
         return Ok(ExportPlanResult {
             included,
@@ -1641,9 +1648,10 @@ pub fn plan_export<R: Runtime>(
     }
 
     // Normal audience-filtered export
-    let exporter = Exporter::new(RealFileSystem);
+    let exporter = Exporter::new(SyncToAsyncFs::new(RealFileSystem));
     let plan = exporter
         .plan_export(&root_index, &audience, Path::new("/export"))
+        .await
         .map_err(|e| e.to_serializable())?;
 
     Ok(ExportPlanResult {
@@ -1676,12 +1684,12 @@ pub struct ExportedFileResult {
 
 /// Export files to memory (as markdown strings)
 #[tauri::command]
-pub fn export_to_memory<R: Runtime>(
+pub async fn export_to_memory<R: Runtime>(
     app: AppHandle<R>,
     root_path: String,
     audience: String,
 ) -> Result<Vec<ExportedFileResult>, SerializableError> {
-    let plan = plan_export(app, root_path, audience)?;
+    let plan = plan_export(app, root_path, audience).await?;
 
     let mut files = Vec::new();
     for included in plan.included {
@@ -1699,12 +1707,12 @@ pub fn export_to_memory<R: Runtime>(
 
 /// Export files as HTML
 #[tauri::command]
-pub fn export_to_html<R: Runtime>(
+pub async fn export_to_html<R: Runtime>(
     app: AppHandle<R>,
     root_path: String,
     audience: String,
 ) -> Result<Vec<ExportedFileResult>, SerializableError> {
-    let plan = plan_export(app, root_path, audience)?;
+    let plan = plan_export(app, root_path, audience).await?;
 
     let mut files = Vec::new();
     for included in plan.included {
@@ -1731,13 +1739,15 @@ pub struct BinaryExportResult {
 
 /// Export binary attachments
 #[tauri::command]
-pub fn export_binary_attachments<R: Runtime>(
+pub async fn export_binary_attachments<R: Runtime>(
     app: AppHandle<R>,
     root_path: String,
     _audience: String,
 ) -> Result<Vec<BinaryExportResult>, SerializableError> {
+    use diaryx_core::fs::AsyncFileSystem;
+
     let paths = get_platform_paths(&app)?;
-    let ws = Workspace::new(RealFileSystem);
+    let ws = Workspace::new(SyncToAsyncFs::new(RealFileSystem));
 
     let root = if root_path.is_empty() {
         paths.default_workspace.clone()
@@ -1750,6 +1760,7 @@ pub fn export_binary_attachments<R: Runtime>(
         root.clone()
     } else {
         ws.find_root_index_in_dir(&root)
+            .await
             .map_err(|e| e.to_serializable())?
             .ok_or_else(|| SerializableError {
                 kind: "WorkspaceNotFound".to_string(),
@@ -1761,8 +1772,8 @@ pub fn export_binary_attachments<R: Runtime>(
     let root_dir = root_index.parent().unwrap_or(&root_index);
     let mut attachments = Vec::new();
 
-    fn collect_attachments(
-        ws: &Workspace<RealFileSystem>,
+    async fn collect_attachments<FS: AsyncFileSystem>(
+        ws: &Workspace<FS>,
         path: &Path,
         root_dir: &Path,
         attachments: &mut Vec<BinaryExportResult>,
@@ -1773,17 +1784,16 @@ pub fn export_binary_attachments<R: Runtime>(
         }
         visited.insert(path.to_path_buf());
 
-        if let Ok(index) = ws.parse_index(path) {
+        if let Ok(index) = ws.parse_index(path).await {
             // Check for _attachments folder
             if let Some(entry_dir) = path.parent() {
                 let attachments_dir = entry_dir.join("_attachments");
-                if attachments_dir.is_dir()
-                    && let Ok(entries) = std::fs::read_dir(&attachments_dir)
+                if ws.fs_ref().is_dir(&attachments_dir).await
+                    && let Ok(entries) = ws.fs_ref().list_files(&attachments_dir).await
                 {
-                    for entry in entries.flatten() {
-                        let entry_path = entry.path();
-                        if entry_path.is_file()
-                            && let Ok(data) = std::fs::read(&entry_path)
+                    for entry_path in entries {
+                        if !ws.fs_ref().is_dir(&entry_path).await
+                            && let Ok(data) = ws.fs_ref().read_binary(&entry_path).await
                         {
                             let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
                                 .unwrap_or_else(|| entry_path.clone());
@@ -1800,8 +1810,8 @@ pub fn export_binary_attachments<R: Runtime>(
             if index.frontmatter.is_index() {
                 for child_rel in index.frontmatter.contents_list() {
                     let child_path = index.resolve_path(child_rel);
-                    if RealFileSystem.exists(&child_path) {
-                        collect_attachments(ws, &child_path, root_dir, attachments, visited);
+                    if ws.fs_ref().exists(&child_path).await {
+                        Box::pin(collect_attachments(ws, &child_path, root_dir, attachments, visited)).await;
                     }
                 }
             }
@@ -1809,7 +1819,7 @@ pub fn export_binary_attachments<R: Runtime>(
     }
 
     let mut visited = HashSet::new();
-    collect_attachments(&ws, &root_index, root_dir, &mut attachments, &mut visited);
+    collect_attachments(&ws, &root_index, root_dir, &mut attachments, &mut visited).await;
 
     Ok(attachments)
 }

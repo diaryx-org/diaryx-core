@@ -2,8 +2,15 @@
 //!
 //! This module provides abstractions for backing up workspace data to
 //! configurable targets (local drive, cloud storage, etc.).
+//!
+//! This module is async-first to support WASM environments (e.g. IndexedDB-backed
+//! filesystems) while remaining usable on native targets.
+//!
+//! Notes:
+//! - Many higher-level Diaryx clients may not use this module yet.
+//! - Native-only targets (like local drive) are gated behind `cfg(not(wasm32))`.
 
-use crate::fs::FileSystem;
+use crate::fs::{AsyncFileSystem, BoxFuture};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -138,13 +145,21 @@ pub trait BackupTarget: Send + Sync {
     ///
     /// This should copy all relevant files from the source filesystem
     /// to the backup target.
-    fn backup(&self, fs: &dyn FileSystem, workspace_path: &Path) -> BackupResult;
+    fn backup<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, BackupResult>;
 
     /// Restore all files from this target into filesystem.
     ///
     /// This should copy all files from the backup target into the
     /// destination filesystem.
-    fn restore(&self, fs: &dyn FileSystem, workspace_path: &Path) -> BackupResult;
+    fn restore<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, BackupResult>;
 
     /// Check if this target is available/accessible.
     ///
@@ -242,19 +257,27 @@ pub enum Resolution {
 /// Used for cloud sync and multi-device scenarios.
 pub trait SyncTarget: BackupTarget {
     /// Pull changes from remote, returning any conflicts.
-    fn pull(&self, fs: &dyn FileSystem, workspace_path: &Path) -> SyncResult;
+    fn pull<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, SyncResult>;
 
     /// Push local changes to remote.
-    fn push(&self, fs: &dyn FileSystem, workspace_path: &Path) -> SyncResult;
+    fn push<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, SyncResult>;
 
     /// Resolve a conflict using the specified resolution strategy.
-    fn resolve_conflict(
-        &self,
-        fs: &dyn FileSystem,
-        workspace_path: &Path,
-        conflict: &Conflict,
+    fn resolve_conflict<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+        conflict: &'a Conflict,
         resolution: Resolution,
-    ) -> BackupResult;
+    ) -> BoxFuture<'a, BackupResult>;
 }
 
 // ============================================================================
@@ -324,7 +347,11 @@ impl BackupManager {
     /// Backup to all available targets.
     ///
     /// Returns a result for each target, in the same order as added.
-    pub fn backup_all(&self, fs: &dyn FileSystem, workspace_path: &Path) -> Vec<BackupResult> {
+    pub async fn backup_all(
+        &self,
+        fs: &dyn AsyncFileSystem,
+        workspace_path: &Path,
+    ) -> Vec<BackupResult> {
         let mut results = Vec::with_capacity(self.targets.len());
 
         for target in &self.targets {
@@ -336,7 +363,7 @@ impl BackupManager {
                 continue;
             }
 
-            let result = target.backup(fs, workspace_path);
+            let result = target.backup(fs, workspace_path).await;
 
             // Handle failure policy
             if !result.success {
@@ -349,7 +376,7 @@ impl BackupManager {
                         // Simple retry logic (no exponential backoff in this MVP)
                         let mut final_result = result;
                         for _ in 0..max_retries {
-                            final_result = target.backup(fs, workspace_path);
+                            final_result = target.backup(fs, workspace_path).await;
                             if final_result.success {
                                 break;
                             }
@@ -371,9 +398,9 @@ impl BackupManager {
     /// Restore from the primary target.
     ///
     /// Returns `None` if no primary target is set.
-    pub fn restore_from_primary(
+    pub async fn restore_from_primary(
         &self,
-        fs: &dyn FileSystem,
+        fs: &dyn AsyncFileSystem,
         workspace_path: &Path,
     ) -> Option<BackupResult> {
         let primary = self.primary_index.and_then(|i| self.targets.get(i))?;
@@ -385,7 +412,7 @@ impl BackupManager {
             )));
         }
 
-        Some(primary.restore(fs, workspace_path))
+        Some(primary.restore(fs, workspace_path).await)
     }
 }
 
@@ -447,154 +474,166 @@ impl BackupTarget for LocalDriveTarget {
         self.failure_policy.clone()
     }
 
-    fn backup(&self, fs: &dyn FileSystem, workspace_path: &Path) -> BackupResult {
-        use std::fs as std_fs;
+    fn backup<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, BackupResult> {
+        Box::pin(async move {
+            use std::fs as std_fs;
 
-        // Ensure backup directory exists
-        if let Err(e) = std_fs::create_dir_all(&self.backup_path) {
-            return BackupResult::failure(format!("Failed to create backup directory: {}", e));
-        }
-
-        // Get all files in workspace
-        let files = match fs.list_all_files_recursive(workspace_path) {
-            Ok(files) => files,
-            Err(e) => return BackupResult::failure(format!("Failed to list files: {}", e)),
-        };
-
-        let mut files_processed = 0;
-
-        for file_path in files {
-            // Skip directories
-            if fs.is_dir(&file_path) {
-                continue;
+            // Ensure backup directory exists
+            if let Err(e) = std_fs::create_dir_all(&self.backup_path) {
+                return BackupResult::failure(format!("Failed to create backup directory: {}", e));
             }
 
-            // Calculate relative path from workspace
-            let relative = match file_path.strip_prefix(workspace_path) {
-                Ok(rel) => rel,
-                Err(_) => continue,
+            // Get all files in workspace
+            let files = match fs.list_all_files_recursive(workspace_path).await {
+                Ok(files) => files,
+                Err(e) => return BackupResult::failure(format!("Failed to list files: {}", e)),
             };
 
-            let dest_path = self.backup_path.join(relative);
+            let mut files_processed = 0;
 
-            // Ensure parent directory exists
-            if let Some(parent) = dest_path.parent()
-                && let Err(e) = std_fs::create_dir_all(parent)
-            {
-                return BackupResult::failure(format!(
-                    "Failed to create directory {:?}: {}",
-                    parent, e
-                ));
-            }
+            for file_path in files {
+                // Skip directories
+                if fs.is_dir(&file_path).await {
+                    continue;
+                }
 
-            // Copy file content
-            let content = match fs.read_to_string(&file_path) {
-                Ok(content) => content,
-                Err(_) => {
-                    // Try binary read
-                    match fs.read_binary(&file_path) {
-                        Ok(bytes) => {
-                            if let Err(e) = std_fs::write(&dest_path, &bytes) {
-                                return BackupResult::failure(format!(
-                                    "Failed to write binary file {:?}: {}",
-                                    dest_path, e
-                                ));
-                            }
-                            files_processed += 1;
-                            continue;
-                        }
+                // Calculate relative path from workspace
+                let relative = match file_path.strip_prefix(workspace_path) {
+                    Ok(rel) => rel,
+                    Err(_) => continue,
+                };
+
+                let dest_path = self.backup_path.join(relative);
+
+                // Ensure parent directory exists
+                if let Some(parent) = dest_path.parent()
+                    && let Err(e) = std_fs::create_dir_all(parent)
+                {
+                    return BackupResult::failure(format!(
+                        "Failed to create directory {:?}: {}",
+                        parent, e
+                    ));
+                }
+
+                // Prefer binary copy to avoid encoding surprises; fall back to string.
+                let bytes = match fs.read_binary(&file_path).await {
+                    Ok(bytes) => bytes,
+                    Err(_) => match fs.read_to_string(&file_path).await {
+                        Ok(s) => s.into_bytes(),
                         Err(e) => {
                             return BackupResult::failure(format!(
                                 "Failed to read file {:?}: {}",
                                 file_path, e
                             ));
                         }
-                    }
-                }
-            };
+                    },
+                };
 
-            if let Err(e) = std_fs::write(&dest_path, &content) {
-                return BackupResult::failure(format!(
-                    "Failed to write file {:?}: {}",
-                    dest_path, e
-                ));
+                if let Err(e) = std_fs::write(&dest_path, &bytes) {
+                    return BackupResult::failure(format!(
+                        "Failed to write file {:?}: {}",
+                        dest_path, e
+                    ));
+                }
+
+                files_processed += 1;
             }
 
-            files_processed += 1;
-        }
-
-        BackupResult::success(files_processed)
+            BackupResult::success(files_processed)
+        })
     }
 
-    fn restore(&self, fs: &dyn FileSystem, workspace_path: &Path) -> BackupResult {
-        use std::fs as std_fs;
+    fn restore<'a>(
+        &'a self,
+        fs: &'a dyn AsyncFileSystem,
+        workspace_path: &'a Path,
+    ) -> BoxFuture<'a, BackupResult> {
+        Box::pin(async move {
+            use std::fs as std_fs;
 
-        if !self.backup_path.exists() {
-            return BackupResult::failure("Backup directory does not exist");
-        }
-
-        let mut files_processed = 0;
-
-        // Walk the backup directory
-        fn visit_dir(
-            dir: &Path,
-            backup_root: &Path,
-            workspace_path: &Path,
-            fs: &dyn FileSystem,
-            files_processed: &mut usize,
-        ) -> Result<(), String> {
-            let entries = std_fs::read_dir(dir)
-                .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
-
-            for entry in entries {
-                let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-                let path = entry.path();
-
-                if path.is_dir() {
-                    visit_dir(&path, backup_root, workspace_path, fs, files_processed)?;
-                } else {
-                    let relative = path
-                        .strip_prefix(backup_root)
-                        .map_err(|_| "Failed to calculate relative path")?;
-                    let dest_path = workspace_path.join(relative);
-
-                    // Ensure parent directory exists in target filesystem
-                    if let Some(parent) = dest_path.parent() {
-                        fs.create_dir_all(parent).map_err(|e| {
-                            format!("Failed to create directory {:?}: {}", parent, e)
-                        })?;
-                    }
-
-                    // Read and write file
-                    let content = std_fs::read_to_string(&path)
-                        .or_else(|_| {
-                            std_fs::read(&path).map(|bytes| {
-                                // For binary files, we'll handle separately
-                                String::from_utf8_lossy(&bytes).into_owned()
-                            })
-                        })
-                        .map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
-
-                    fs.write_file(&dest_path, &content)
-                        .map_err(|e| format!("Failed to write file {:?}: {}", dest_path, e))?;
-
-                    *files_processed += 1;
-                }
+            if !self.backup_path.exists() {
+                return BackupResult::failure("Backup directory does not exist");
             }
 
-            Ok(())
-        }
+            let mut files_processed = 0;
 
-        match visit_dir(
-            &self.backup_path,
-            &self.backup_path,
-            workspace_path,
-            fs,
-            &mut files_processed,
-        ) {
-            Ok(()) => BackupResult::success(files_processed),
-            Err(e) => BackupResult::failure(e),
-        }
+            // Walk the backup directory
+            fn visit_dir<'a>(
+                dir: PathBuf,
+                backup_root: PathBuf,
+                workspace_path: PathBuf,
+                fs: &'a dyn AsyncFileSystem,
+                files_processed: &'a mut usize,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async move {
+                    let entries = std_fs::read_dir(&dir)
+                        .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
+
+                    for entry in entries {
+                        let entry =
+                            entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                        let path = entry.path();
+
+                        if path.is_dir() {
+                            visit_dir(
+                                path,
+                                backup_root.clone(),
+                                workspace_path.clone(),
+                                fs,
+                                files_processed,
+                            )
+                            .await?;
+                        } else {
+                            let relative = path
+                                .strip_prefix(&backup_root)
+                                .map_err(|_| "Failed to calculate relative path")?;
+                            let dest_path = workspace_path.join(relative);
+
+                            // Ensure parent directory exists in target filesystem
+                            if let Some(parent) = dest_path.parent() {
+                                fs.create_dir_all(parent).await.map_err(|e| {
+                                    format!("Failed to create directory {:?}: {}", parent, e)
+                                })?;
+                            }
+
+                            // Read bytes and write bytes.
+                            //
+                            // NOTE: For maximum compatibility across Diaryx filesystem implementations (including WASM/in-memory),
+                            // we write restored files as UTF-8-ish text. This is a compromise: true binary attachments should be
+                            // handled by an attachment-specific restore path in the future.
+                                                        let bytes = std_fs::read(&path)
+                                                            .map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
+
+                                                        let s = String::from_utf8_lossy(&bytes).into_owned();
+                                                        fs.write_file(&dest_path, &s).await.map_err(|e| {
+                                                            format!("Failed to write file {:?}: {}", dest_path, e)
+                                                        })?;
+
+                            *files_processed += 1;
+                        }
+                    }
+
+                    Ok(())
+                })
+            }
+
+            match visit_dir(
+                self.backup_path.clone(),
+                self.backup_path.clone(),
+                workspace_path.to_path_buf(),
+                fs,
+                &mut files_processed,
+            )
+            .await
+            {
+                Ok(()) => BackupResult::success(files_processed),
+                Err(e) => BackupResult::failure(e),
+            }
+        })
     }
 
     fn is_available(&self) -> bool {
@@ -613,6 +652,7 @@ impl BackupTarget for LocalDriveTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::{FileSystem, SyncToAsyncFs};
 
     #[test]
     fn test_backup_result_success() {
@@ -685,7 +725,7 @@ mod tests {
         use crate::fs::InMemoryFileSystem;
         use tempfile::tempdir;
 
-        // Create a workspace with some files
+        // Create a workspace with some files (sync fs)
         let fs = InMemoryFileSystem::new();
         let workspace = PathBuf::from("/workspace");
         fs.create_dir_all(&workspace).unwrap();
@@ -694,12 +734,15 @@ mod tests {
         fs.write_file(&workspace.join("subdir/nested.md"), "Nested content")
             .unwrap();
 
+        // Wrap in async adapter for the async-first backup APIs
+        let async_fs = SyncToAsyncFs::new(fs);
+
         // Create backup target pointing to temp directory
         let backup_dir = tempdir().unwrap();
         let target = LocalDriveTarget::new("Test Backup", backup_dir.path().to_path_buf());
 
-        // Backup
-        let result = target.backup(&fs, &workspace);
+        // Backup (async)
+        let result = crate::fs::block_on_test(target.backup(&async_fs, &workspace));
         assert!(result.success, "Backup failed: {:?}", result.error);
         assert_eq!(result.files_processed, 2);
 
@@ -710,8 +753,11 @@ mod tests {
         // Create a fresh filesystem and restore into it
         let fs2 = InMemoryFileSystem::new();
         fs2.create_dir_all(&workspace).unwrap();
+        let async_fs2 = SyncToAsyncFs::new(fs2);
 
-        let restore_result = target.restore(&fs2, &workspace);
+        // IMPORTANT: restore expects the workspace root to exist in the destination FS
+        // (we already created it above via `create_dir_all`).
+        let restore_result = crate::fs::block_on_test(target.restore(&async_fs2, &workspace));
         assert!(
             restore_result.success,
             "Restore failed: {:?}",
@@ -719,11 +765,12 @@ mod tests {
         );
         assert_eq!(restore_result.files_processed, 2);
 
-        // Verify restored content
-        let content = fs2.read_to_string(&workspace.join("test.md")).unwrap();
+        // Verify restored content (read back via the inner sync fs)
+        let fs2_inner = async_fs2.into_inner();
+        let content = fs2_inner.read_to_string(&workspace.join("test.md")).unwrap();
         assert_eq!(content, "# Hello World");
 
-        let nested = fs2
+        let nested = fs2_inner
             .read_to_string(&workspace.join("subdir/nested.md"))
             .unwrap();
         assert_eq!(nested, "Nested content");

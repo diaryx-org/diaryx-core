@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::FileSystem;
+use diaryx_core::fs::{FileSystem, SyncToAsyncFs};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::error::IntoJsResult;
-use crate::state::{with_fs, with_fs_mut};
+use crate::state::{block_on, with_fs, with_fs_mut};
 
 // ============================================================================
 // Types
@@ -41,8 +41,9 @@ impl DiaryxAttachment {
     #[wasm_bindgen]
     pub fn add(&self, entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
         with_fs(|fs| {
-            let app = DiaryxApp::new(fs);
-            app.add_attachment(entry_path, attachment_path).js_err()
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.add_attachment(entry_path, attachment_path)).js_err()
         })
     }
 
@@ -50,8 +51,9 @@ impl DiaryxAttachment {
     #[wasm_bindgen]
     pub fn remove(&self, entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
         with_fs(|fs| {
-            let app = DiaryxApp::new(fs);
-            app.remove_attachment(entry_path, attachment_path).js_err()
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.remove_attachment(entry_path, attachment_path)).js_err()
         })
     }
 
@@ -59,8 +61,9 @@ impl DiaryxAttachment {
     #[wasm_bindgen]
     pub fn list(&self, entry_path: &str) -> Result<JsValue, JsValue> {
         with_fs(|fs| {
-            let app = DiaryxApp::new(fs);
-            let attachments = app.get_attachments(entry_path).js_err()?;
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            let attachments = block_on(app.get_attachments(entry_path)).js_err()?;
             serde_wasm_bindgen::to_value(&attachments).js_err()
         })
     }
@@ -86,8 +89,9 @@ impl DiaryxAttachment {
 
             let relative_path = format!("_attachments/{}", filename);
 
-            let app = DiaryxApp::new(fs);
-            app.add_attachment(entry_path, &relative_path).js_err()?;
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.add_attachment(entry_path, &relative_path)).js_err()?;
 
             Ok(relative_path)
         })
@@ -97,9 +101,9 @@ impl DiaryxAttachment {
     #[wasm_bindgen]
     pub fn delete(&self, entry_path: &str, attachment_path: &str) -> Result<(), JsValue> {
         with_fs_mut(|fs| {
-            let app = DiaryxApp::new(fs);
-            app.remove_attachment(entry_path, attachment_path)
-                .js_err()?;
+            let async_fs = SyncToAsyncFs::new(fs.clone());
+            let app = DiaryxApp::new(async_fs);
+            block_on(app.remove_attachment(entry_path, attachment_path)).js_err()?;
 
             let entry_dir = Path::new(entry_path).parent().unwrap_or(Path::new("."));
             let full_path = entry_dir.join(attachment_path);

@@ -43,9 +43,29 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::DiaryxApp;
-use diaryx_core::fs::RealFileSystem;
+use diaryx_core::entry::{DiaryxApp, DiaryxAppSync};
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
 use diaryx_core::workspace::Workspace;
+
+/// Type alias for the async filesystem used throughout the CLI.
+/// Wraps RealFileSystem with SyncToAsyncFs for use with async-first core APIs.
+pub type AsyncFs = SyncToAsyncFs<RealFileSystem>;
+
+/// Type alias for DiaryxApp with the CLI's async filesystem.
+/// Used for async operations (frontmatter, content, attachments).
+pub type CliDiaryxApp = DiaryxApp<AsyncFs>;
+
+/// Type alias for the sync DiaryxApp.
+/// Used for operations that haven't been migrated to async yet (templates, daily entries).
+pub type CliDiaryxAppSync = DiaryxAppSync<RealFileSystem>;
+
+/// Type alias for Workspace with the CLI's async filesystem.
+pub type CliWorkspace = Workspace<AsyncFs>;
+
+/// Helper to run async operations in sync context
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    futures_lite::future::block_on(f)
+}
 
 pub use args::Cli;
 use args::Commands;
@@ -55,9 +75,11 @@ pub fn run_cli() {
     let cli = Cli::parse();
 
     // Setup dependencies
-    let fs = RealFileSystem;
-    let app = DiaryxApp::new(fs);
-    let ws = Workspace::new(RealFileSystem);
+    // Use SyncToAsyncFs wrapper for the async-first core API
+    let async_fs = SyncToAsyncFs::new(RealFileSystem);
+    let app = DiaryxApp::new(async_fs.clone());
+    let app_sync = DiaryxAppSync::new(RealFileSystem);
+    let ws = Workspace::new(async_fs);
 
     // Execute commands
     match cli.command {
@@ -71,15 +93,15 @@ pub fn run_cli() {
         }
 
         Commands::Today { template } => {
-            entry::handle_today(&app, template);
+            entry::handle_today(&app_sync, template);
         }
 
         Commands::Yesterday { template } => {
-            entry::handle_yesterday(&app, template);
+            entry::handle_yesterday(&app_sync, template);
         }
 
         Commands::Open { path } => {
-            entry::handle_open(&app, &path);
+            entry::handle_open(&app_sync, &path);
         }
 
         Commands::Config => {
@@ -91,15 +113,15 @@ pub fn run_cli() {
             template,
             title,
         } => {
-            entry::handle_create(&app, &path, template, title);
+            entry::handle_create(&app_sync, &path, template, title);
         }
 
         Commands::Property { operation } => {
-            property::handle_property_command(&app, operation);
+            property::handle_property_command(&app_sync, operation);
         }
 
         Commands::Template { command } => {
-            template::handle_template_command(command, &app);
+            template::handle_template_command(command, &app_sync);
         }
 
         Commands::Sort {
@@ -111,11 +133,11 @@ pub fn run_cli() {
             yes,
             dry_run,
         } => {
-            sort::handle_sort_command(&app, path, pattern, default, index, yes, dry_run);
+            sort::handle_sort_command(&app_sync, path, pattern, default, index, yes, dry_run);
         }
 
         Commands::Workspace { command } => {
-            workspace::handle_workspace_command(command, cli.workspace, &ws, &app);
+            workspace::handle_workspace_command(command, cli.workspace, &ws, &app_sync);
         }
 
         Commands::NormalizeFilename {
@@ -124,7 +146,7 @@ pub fn run_cli() {
             yes,
             dry_run,
         } => {
-            normalize::handle_normalize_filename(&app, &path, title, yes, dry_run);
+            normalize::handle_normalize_filename(&app_sync, &path, title, yes, dry_run);
         }
 
         Commands::Export {
@@ -158,7 +180,7 @@ pub fn run_cli() {
         }
 
         Commands::Content { operation } => {
-            content::handle_content_command(&app, operation);
+            content::handle_content_command(&app_sync, operation);
         }
 
         Commands::Search {
@@ -203,7 +225,7 @@ pub fn run_cli() {
 
         Commands::Attachment { command } => {
             let current_dir = std::env::current_dir().unwrap_or_default();
-            attachment::handle_attachment_command(command, &ws, &app, &current_dir);
+            attachment::handle_attachment_command(command, &ws, &app_sync, &current_dir);
         }
     }
 }
@@ -276,7 +298,7 @@ fn handle_init(
     daily_folder: Option<String>,
     title: Option<String>,
     description: Option<String>,
-    ws: &Workspace<RealFileSystem>,
+    ws: &Workspace<SyncToAsyncFs<RealFileSystem>>,
 ) {
     let dir = default_workspace.unwrap_or_else(|| {
         dirs::home_dir()
@@ -303,7 +325,7 @@ fn handle_init(
     }
 
     // Initialize workspace (create README.md)
-    match ws.init_workspace(&dir, title.as_deref(), description.as_deref()) {
+    match block_on(ws.init_workspace(&dir, title.as_deref(), description.as_deref())) {
         Ok(readme_path) => {
             println!("✓ Initialized workspace");
             println!("  Index file: {}", readme_path.display());
