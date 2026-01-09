@@ -105,6 +105,10 @@ export class WorkerBackendNew implements Backend {
   getConfig = () => this.remote!.getConfig();
   saveConfig = (config: any) => this.remote!.saveConfig(config);
 
+  // Root index discovery
+  findRootIndex = (dirPath?: string) => this.remote!.findRootIndex(dirPath);
+  getDefaultWorkspacePath = () => this.remote!.getDefaultWorkspacePath();
+
   getWorkspaceTree = (path?: string, depth?: number) => 
     this.remote!.getWorkspaceTree(path, depth);
   createWorkspace = (path?: string, name?: string) => 
@@ -200,17 +204,25 @@ export class WorkerBackendNew implements Backend {
   removeFrontmatterProperty = (path: string, key: string): Promise<void> =>
     this.remote!.call('removeFrontmatterProperty', [path, key]) as Promise<void>;
 
-  listTemplates = (): Promise<any> =>
-    this.remote!.call('listTemplates', ['workspace']) as Promise<any>;
+  listTemplates = async (): Promise<any> => {
+    const wsPath = await this.getDefaultWorkspacePath();
+    return this.remote!.call('listTemplates', [wsPath]) as Promise<any>;
+  };
   
-  getTemplate = (name: string): Promise<string> =>
-    this.remote!.call('getTemplate', [name, 'workspace']) as Promise<string>;
+  getTemplate = async (name: string): Promise<string> => {
+    const wsPath = await this.getDefaultWorkspacePath();
+    return this.remote!.call('getTemplate', [name, wsPath]) as Promise<string>;
+  };
   
-  saveTemplate = (name: string, content: string): Promise<void> =>
-    this.remote!.call('saveTemplate', [name, content, 'workspace']) as Promise<void>;
+  saveTemplate = async (name: string, content: string): Promise<void> => {
+    const wsPath = await this.getDefaultWorkspacePath();
+    return this.remote!.call('saveTemplate', [name, content, wsPath]) as Promise<void>;
+  };
   
-  deleteTemplate = (name: string): Promise<void> =>
-    this.remote!.call('deleteTemplate', [name, 'workspace']) as Promise<void>;
+  deleteTemplate = async (name: string): Promise<void> => {
+    const wsPath = await this.getDefaultWorkspacePath();
+    return this.remote!.call('deleteTemplate', [name, wsPath]) as Promise<void>;
+  };
 
   validateFile = (filePath: string): Promise<any> =>
     this.remote!.call('validateFile', [filePath]) as Promise<any>;

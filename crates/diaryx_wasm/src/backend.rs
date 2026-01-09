@@ -274,25 +274,97 @@ impl DiaryxBackend {
     }
 
     // ========================================================================
-    // Config (stored as JSON in config/config.json)
+    // Root Index Discovery
     // ========================================================================
 
-    /// Get the current configuration.
+    /// Find the root index file in a directory.
+    /// A root index is any .md file with `contents` property and no `part_of`.
+    #[wasm_bindgen(js_name = "findRootIndex")]
+    pub fn find_root_index(&self, dir_path: String) -> Promise {
+        let fs = self.fs.clone();
+        
+        future_to_promise(async move {
+            let ws = Workspace::new(&*fs);
+            let dir = PathBuf::from(&dir_path);
+            
+            match ws.find_root_index_in_dir(&dir).await {
+                Ok(Some(path)) => Ok(JsValue::from_str(&path.to_string_lossy())),
+                Ok(None) => Ok(JsValue::NULL),
+                Err(e) => Err(JsValue::from_str(&format!("Failed to find root index: {}", e))),
+            }
+        })
+    }
+
+    // ========================================================================
+    // Config (stored in root index frontmatter as diaryx_* keys)
+    // ========================================================================
+
+    /// Get the current configuration from root index frontmatter.
+    /// Config keys are stored as `diaryx_*` properties.
     #[wasm_bindgen(js_name = "getConfig")]
     pub fn get_config(&self) -> Promise {
         let fs = self.fs.clone();
         
         future_to_promise(async move {
-            let config_path = PathBuf::from("config/config.json");
-            match fs.read_to_string(&config_path).await {
-                Ok(content) => {
-                    // Parse JSON and return
-                    js_sys::JSON::parse(&content)
-                        .map_err(|e| JsValue::from_str(&format!("Invalid config JSON: {:?}", e)))
+            let ws = Workspace::new(&*fs);
+            
+            // Find root index - try current directory first ("." for FSA mode)
+            let root_path = ws.find_root_index_in_dir(Path::new(".")).await
+                .ok()
+                .flatten();
+            
+            // Fallback: try "workspace" directory for OPFS mode
+            let root_path = match root_path {
+                Some(p) => Some(p),
+                None => ws.find_root_index_in_dir(Path::new("workspace")).await
+                    .ok()
+                    .flatten(),
+            };
+            
+            let root_path = match root_path {
+                Some(p) => p,
+                None => {
+                    // Return default config if no root found
+                    let default = r#"{"default_workspace":"."}"#;
+                    return js_sys::JSON::parse(default)
+                        .map_err(|e| JsValue::from_str(&format!("JSON error: {:?}", e)));
+                }
+            };
+            
+            // Read frontmatter from root index
+            match ws.parse_index(&root_path).await {
+                Ok(index) => {
+                    // Extract diaryx_* keys from extra
+                    let mut config = serde_json::Map::new();
+                    
+                    // Set default_workspace to root index's directory
+                    if let Some(parent) = root_path.parent() {
+                        let ws_path = if parent.as_os_str().is_empty() { "." } else { &parent.to_string_lossy() };
+                        config.insert("default_workspace".to_string(), serde_json::Value::String(ws_path.to_string()));
+                    }
+                    
+                    // Extract diaryx_* keys
+                    for (key, value) in &index.frontmatter.extra {
+                        if let Some(config_key) = key.strip_prefix("diaryx_") {
+                            // Convert serde_yaml::Value to serde_json::Value
+                            if let Ok(json_str) = serde_yaml::to_string(value) {
+                                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                    config.insert(config_key.to_string(), json_val);
+                                }
+                            }
+                        }
+                    }
+                    
+                    let config_obj = serde_json::Value::Object(config);
+                    let config_str = serde_json::to_string(&config_obj)
+                        .map_err(|e| JsValue::from_str(&format!("JSON error: {:?}", e)))?;
+                    
+                    js_sys::JSON::parse(&config_str)
+                        .map_err(|e| JsValue::from_str(&format!("JSON parse error: {:?}", e)))
                 }
                 Err(_) => {
                     // Return default config
-                    let default = r#"{"default_workspace":"workspace"}"#;
+                    let default = r#"{"default_workspace":"."}"#;
                     js_sys::JSON::parse(default)
                         .map_err(|e| JsValue::from_str(&format!("JSON error: {:?}", e)))
                 }
@@ -300,22 +372,65 @@ impl DiaryxBackend {
         })
     }
 
-    /// Save configuration.
+    /// Save configuration to root index frontmatter.
+    /// Config keys are stored as `diaryx_*` properties.
     #[wasm_bindgen(js_name = "saveConfig")]
     pub fn save_config(&self, config_js: JsValue) -> Promise {
         let fs = self.fs.clone();
         
         future_to_promise(async move {
+            let ws = Workspace::new(&*fs);
+            
+            // Find root index
+            let root_path = ws.find_root_index_in_dir(Path::new(".")).await
+                .ok()
+                .flatten();
+            
+            // Fallback: try "workspace" directory for OPFS mode
+            let root_path = match root_path {
+                Some(p) => Some(p),
+                None => ws.find_root_index_in_dir(Path::new("workspace")).await
+                    .ok()
+                    .flatten(),
+            };
+            
+            let root_path = match root_path {
+                Some(p) if fs.exists(&p).await => p,
+                _ => return Err(JsValue::from_str("No root index found to save config")),
+            };
+            
+            // Parse config from JS
             let config_str = js_sys::JSON::stringify(&config_js)
                 .map_err(|e| JsValue::from_str(&format!("Failed to stringify config: {:?}", e)))?;
+            let config: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&String::from(config_str))
+                .map_err(|e| JsValue::from_str(&format!("Invalid config JSON: {:?}", e)))?;
             
-            let config_dir = PathBuf::from("config");
-            let config_path = config_dir.join("config.json");
-            
-            fs.create_dir_all(&config_dir).await
+            // Read current file
+            let content = fs.read_to_string(&root_path).await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             
-            fs.write_file(&config_path, &String::from(config_str)).await
+            // Parse frontmatter
+            let mut parsed = frontmatter::parse_or_empty(&content)
+                .map_err(|e| JsValue::from_str(&format!("Failed to parse frontmatter: {:?}", e)))?;
+            
+            // Update diaryx_* keys (skip default_workspace as it's derived)
+            for (key, value) in config {
+                if key != "default_workspace" {
+                    let yaml_key = format!("diaryx_{}", key);
+                    // Convert JSON value to YAML
+                    let yaml_str = serde_json::to_string(&value)
+                        .map_err(|e| JsValue::from_str(&format!("JSON error: {:?}", e)))?;
+                    let yaml_val: serde_yaml::Value = serde_yaml::from_str(&yaml_str)
+                        .map_err(|e| JsValue::from_str(&format!("YAML error: {:?}", e)))?;
+                    parsed.frontmatter.insert(yaml_key, yaml_val);
+                }
+            }
+            
+            // Serialize and write back
+            let new_content = frontmatter::serialize(&parsed.frontmatter, &parsed.body)
+                .map_err(|e| JsValue::from_str(&format!("Failed to serialize: {:?}", e)))?;
+            
+            fs.write_file(&root_path, &new_content).await
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             
             Ok(JsValue::UNDEFINED)
@@ -844,6 +959,12 @@ impl DiaryxBackend {
                 let content = "---\ntitle: \"Daily\"\npart_of: \"../index.md\"\ncontents: []\n---\n\n# Daily\n";
                 fs.write_file(&daily_index_path, content).await
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                
+                // Add Daily index to root workspace contents
+                let root_index_path = workspace_path.join("index.md");
+                if fs.exists(&root_index_path).await {
+                    Self::add_to_contents(&*fs, &root_index_path, "Daily/index.md").await?;
+                }
             }
             
             // Ensure year index exists
@@ -1337,7 +1458,22 @@ impl DiaryxBackend {
                 }
             }
             
-            if let Ok(Some(root_index)) = ws.find_root_index_in_dir(&root).await {
+            // Determine the starting index file:
+            // - If root is a file and parseable as an index, use it directly
+            // - Otherwise, treat root as a directory and find a root index in it
+            let start_index = if !fs.is_dir(&root).await {
+                // It's a file - try to parse it as an index
+                if ws.parse_index(&root).await.is_ok() {
+                    Some(root.clone())
+                } else {
+                    None
+                }
+            } else {
+                // It's a directory - find root index in it
+                ws.find_root_index_in_dir(&root).await.ok().flatten()
+            };
+
+            if let Some(root_index) = start_index {
                 let root_dir = root_index.parent().unwrap_or(&root);
                 collect_files(&ws, &root_index, root_dir, &mut included, &mut visited).await;
             }
@@ -1394,7 +1530,18 @@ impl DiaryxBackend {
                 }
             }
             
-            if let Ok(Some(root_index)) = ws.find_root_index_in_dir(&root).await {
+            // Determine the starting index file
+            let start_index = if !fs.is_dir(&root).await {
+                if ws.parse_index(&root).await.is_ok() {
+                    Some(root.clone())
+                } else {
+                    None
+                }
+            } else {
+                ws.find_root_index_in_dir(&root).await.ok().flatten()
+            };
+
+            if let Some(root_index) = start_index {
                 let root_dir = root_index.parent().unwrap_or(&root);
                 collect_files(&ws, &root_index, root_dir, &mut files, &mut visited).await;
             }
@@ -1449,7 +1596,18 @@ impl DiaryxBackend {
                 }
             }
             
-            if let Ok(Some(root_index)) = ws.find_root_index_in_dir(&root).await {
+            // Determine the starting index file
+            let start_index = if !fs.is_dir(&root).await {
+                if ws.parse_index(&root).await.is_ok() {
+                    Some(root.clone())
+                } else {
+                    None
+                }
+            } else {
+                ws.find_root_index_in_dir(&root).await.ok().flatten()
+            };
+
+            if let Some(root_index) = start_index {
                 let root_dir = root_index.parent().unwrap_or(&root);
                 collect_files(&ws, &root_index, root_dir, &mut files, &mut visited).await;
             }
@@ -1517,7 +1675,18 @@ impl DiaryxBackend {
                 }
             }
             
-            if let Ok(Some(root_index)) = ws.find_root_index_in_dir(&root).await {
+            // Determine the starting index file
+            let start_index = if !fs.is_dir(&root).await {
+                if ws.parse_index(&root).await.is_ok() {
+                    Some(root.clone())
+                } else {
+                    None
+                }
+            } else {
+                ws.find_root_index_in_dir(&root).await.ok().flatten()
+            };
+
+            if let Some(root_index) = start_index {
                 let root_dir = root_index.parent().unwrap_or(&root);
                 collect_attachments(
                     &ws, &root_index, root_dir, &mut binary_files,

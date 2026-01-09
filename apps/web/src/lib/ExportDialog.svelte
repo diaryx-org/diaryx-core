@@ -64,6 +64,21 @@
     }
   }
 
+  // Helper to convert Map to plain object (WASM may return Maps instead of objects)
+  function normalizeToObject(value: any): any {
+    if (value instanceof Map) {
+      const obj: Record<string, any> = {};
+      for (const [k, v] of value.entries()) {
+        obj[k] = normalizeToObject(v);
+      }
+      return obj;
+    }
+    if (Array.isArray(value)) {
+      return value.map(normalizeToObject);
+    }
+    return value;
+  }
+
   async function loadExportPlan() {
     if (!backend) return;
     isLoading = true;
@@ -74,16 +89,22 @@
       // The backend treats empty audience differently - for now use "all" which won't match any audience
       // This means no files are included. We need a different approach for "export all"
       const audience = selectedAudience === "all" ? "*" : selectedAudience;
+      console.log("[ExportDialog] planExport called with rootPath:", rootPath, "audience:", audience);
+      let rawPlan;
       if (selectedAudience === "all") {
         // For "all" export, we'll skip audience filtering by using a special marker
-        exportPlan = await backend.planExport(rootPath, "*");
+        rawPlan = await backend.planExport(rootPath, "*");
       } else {
-        exportPlan = await backend.planExport(rootPath, selectedAudience);
+        rawPlan = await backend.planExport(rootPath, selectedAudience);
       }
+      // Normalize Map to plain object (WASM returns Maps)
+      exportPlan = normalizeToObject(rawPlan);
+      console.log("[ExportDialog] planExport returned:", exportPlan);
       
       // Also fetch binary attachments for preview
-      const attachments = await backend.exportBinaryAttachments(rootPath, audience);
-      binaryFiles = attachments.map(f => ({ path: f.path }));
+      const rawAttachments = await backend.exportBinaryAttachments(rootPath, audience);
+      const attachments = normalizeToObject(rawAttachments) ?? [];
+      binaryFiles = attachments.map((f: any) => ({ path: f.path }));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       exportPlan = null;
@@ -94,20 +115,24 @@
   }
 
   async function handleExport() {
-    if (!backend || !exportPlan || exportPlan.included.length === 0) return;
+    if (!backend || !exportPlan || !exportPlan.included || exportPlan.included.length === 0) return;
     
     isExporting = true;
     error = null;
     try {
       const audience = selectedAudience === "all" ? "*" : selectedAudience;
-      const files = exportAsHtml 
+      const rawFiles = exportAsHtml 
         ? await backend.exportToHtml(rootPath, audience)
         : await backend.exportToMemory(rootPath, audience);
       
-      // Also get binary attachments
-      const binaryFiles = await backend.exportBinaryAttachments(rootPath, audience);
+      // Normalize Maps to arrays (WASM returns Maps)
+      const files = normalizeToObject(rawFiles) ?? [];
       
-      await downloadAsZip(files, binaryFiles);
+      // Also get binary attachments
+      const rawBinaryFiles = await backend.exportBinaryAttachments(rootPath, audience);
+      const binaries = normalizeToObject(rawBinaryFiles) ?? [];
+      
+      await downloadAsZip(files, binaries);
       open = false;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -210,7 +235,7 @@
     return root;
   }
 
-  const fileTree = $derived(exportPlan ? buildTree(exportPlan.included, binaryFiles) : []);
+  const fileTree = $derived(exportPlan?.included ? buildTree(exportPlan.included, binaryFiles) : []);
 </script>
 
 <Dialog.Root bind:open onOpenChange={onOpenChange}>
@@ -246,7 +271,7 @@
       <!-- Preview Tree -->
       <div class="flex-1 overflow-y-auto border rounded-md p-2 min-h-[200px]">
         <div class="text-xs text-muted-foreground mb-2">
-          Files to export ({(exportPlan?.included.length ?? 0) + binaryFiles.length}):
+          Files to export ({(exportPlan?.included?.length ?? 0) + binaryFiles.length}):
         </div>
         
         {#if isLoading}
@@ -315,7 +340,7 @@
       </Button>
       <Button
         onclick={handleExport}
-        disabled={isExporting || !exportPlan || exportPlan.included.length === 0}
+        disabled={isExporting || !exportPlan || !exportPlan.included || exportPlan.included.length === 0}
       >
         {#if isExporting}
           <Loader2 class="size-4 mr-2 animate-spin" />

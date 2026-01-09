@@ -12,8 +12,11 @@ import type { StorageType } from './storageType';
 // We'll dynamically import the WASM module
 let backend: any | null = null;
 
+// Discovered workspace root path (set after init)
+let rootPath: string | null = null;
+
 // Event port for streaming events back to main thread - currently unused in new implementation
-// as events are forwarded differently or just log warnings for now? 
+// as events are forwarded differently or just log warnings for now?
 // Actually, I should probably remove the variable.
 
 /**
@@ -94,23 +97,58 @@ const workerApi = {
   },
 
   // =========================================================================
+  // Root Index Discovery
+  // =========================================================================
+
+  async findRootIndex(dirPath?: string): Promise<string | null> {
+    const path = dirPath ?? '.';
+    const result = await getBackend().findRootIndex(path);
+    return result ?? null;
+  },
+
+  async getDefaultWorkspacePath(): Promise<string> {
+    // Return cached path if available
+    if (rootPath) return rootPath;
+    
+    // Try to discover root index in current directory first
+    let root = await getBackend().findRootIndex('.');
+    
+    // Fallback: try "workspace" directory (OPFS default)
+    if (!root) {
+      root = await getBackend().findRootIndex('workspace');
+    }
+    
+    if (root) {
+      // Get parent directory of root index
+      const lastSlash = root.lastIndexOf('/');
+      const discoveredPath = lastSlash > 0 ? root.substring(0, lastSlash) : '.';
+      rootPath = discoveredPath;
+      return discoveredPath;
+    }
+    
+    // Fallback to current directory
+    return '.';
+  },
+
+  // =========================================================================
   // Workspace
   // =========================================================================
   
   async getWorkspaceTree(workspacePath?: string, depth?: number): Promise<any> {
-    const path = workspacePath ?? 'workspace';
+    const path = workspacePath ?? await this.getDefaultWorkspacePath();
     return getBackend().getTree(path, depth ?? null);
   },
   
   async createWorkspace(path?: string, name?: string): Promise<string> {
-    const workspacePath = path ?? 'workspace';
+    const workspacePath = path ?? '.';
     const workspaceName = name ?? 'My Workspace';
     await getBackend().createWorkspace(workspacePath, workspaceName);
+    rootPath = workspacePath; // Cache the new workspace path
     return workspacePath;
   },
   
   async getFilesystemTree(workspacePath?: string, showHidden?: boolean): Promise<any> {
-    const path = workspacePath ?? 'workspace';
+    const path = workspacePath ?? await this.getDefaultWorkspacePath();
     return getBackend().getFilesystemTree(path, showHidden ?? false);
   },
 
@@ -159,7 +197,7 @@ const workerApi = {
   // =========================================================================
   
   async searchWorkspace(pattern: string, options?: any): Promise<any> {
-    const workspacePath = options?.workspacePath ?? 'workspace';
+    const workspacePath = options?.workspacePath ?? await this.getDefaultWorkspacePath();
     return getBackend().search(workspacePath, pattern);
   },
 
@@ -168,7 +206,7 @@ const workerApi = {
   // =========================================================================
   
   async validateWorkspace(workspacePath?: string): Promise<any> {
-    const path = workspacePath ?? 'workspace';
+    const path = workspacePath ?? await this.getDefaultWorkspacePath();
     return getBackend().validateWorkspace(path);
   },
 

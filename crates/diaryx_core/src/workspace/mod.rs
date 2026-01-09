@@ -658,13 +658,29 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             })
     }
 
+    /// Normalize a path string by stripping leading "./" prefix
+    fn normalize_contents_path(path: &str) -> &str {
+        path.strip_prefix("./").unwrap_or(path)
+    }
+
     /// Add an entry to an index's contents list
     async fn add_to_index_contents(&self, index_path: &Path, entry: &str) -> Result<bool> {
+        // Normalize the entry path (strip leading ./)
+        let normalized_entry = Self::normalize_contents_path(entry);
+
         match self.get_frontmatter_property(index_path, "contents").await {
             Ok(Some(Value::Sequence(mut items))) => {
-                let entry_value = Value::String(entry.to_string());
-                if !items.contains(&entry_value) {
-                    items.push(entry_value);
+                // Check if entry already exists (comparing normalized forms)
+                let already_exists = items.iter().any(|item| {
+                    if let Some(s) = item.as_str() {
+                        Self::normalize_contents_path(s) == normalized_entry
+                    } else {
+                        false
+                    }
+                });
+
+                if !already_exists {
+                    items.push(Value::String(normalized_entry.to_string()));
                     // Sort contents for consistent ordering
                     items.sort_by(|a, b| {
                         let a_str = a.as_str().unwrap_or("");
@@ -678,8 +694,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                 Ok(false)
             }
             Ok(None) => {
-                // Create contents with just this entry
-                let items = vec![Value::String(entry.to_string())];
+                // Create contents with just this entry (normalized)
+                let items = vec![Value::String(normalized_entry.to_string())];
                 self.set_frontmatter_property(index_path, "contents", Value::Sequence(items))
                     .await?;
                 Ok(true)
@@ -693,10 +709,20 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 
     /// Remove an entry from an index's contents list
     async fn remove_from_index_contents(&self, index_path: &Path, entry: &str) -> Result<bool> {
+        // Normalize the entry path for comparison
+        let normalized_entry = Self::normalize_contents_path(entry);
+
         match self.get_frontmatter_property(index_path, "contents").await {
             Ok(Some(Value::Sequence(mut items))) => {
                 let before_len = items.len();
-                items.retain(|item| item.as_str() != Some(entry));
+                // Remove entries that match when normalized
+                items.retain(|item| {
+                    if let Some(s) = item.as_str() {
+                        Self::normalize_contents_path(s) != normalized_entry
+                    } else {
+                        true
+                    }
+                });
 
                 if items.len() != before_len {
                     // Sort contents for consistent ordering
@@ -939,20 +965,28 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
     ) -> Result<PathBuf> {
         use crate::path_utils::relative_path_from_file_to_target;
 
-        // Validate parent exists and is an index
-        let parent_index = self.parse_index(parent_index_path).await?;
-        if !parent_index.frontmatter.is_index() {
-            return Err(DiaryxError::InvalidPath {
+        // Parse parent - if it's a leaf (not an index), convert it to an index first
+        let effective_parent = if let Ok(parent_index) = self.parse_index(parent_index_path).await {
+            if parent_index.frontmatter.is_index() {
+                parent_index_path.to_path_buf()
+            } else {
+                // Parent is a leaf file - convert to index first
+                self.convert_to_index(parent_index_path).await?
+            }
+        } else {
+            // Parent doesn't exist or couldn't be parsed - try to convert anyway
+            // (convert_to_index will fail with a proper error if file doesn't exist)
+            return Err(DiaryxError::FileRead {
                 path: parent_index_path.to_path_buf(),
-                message: "Parent is not an index file".to_string(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "Parent file not found"),
             });
-        }
+        };
 
-        // Determine parent directory
-        let parent_dir = parent_index_path
+        // Determine parent directory (from effective parent, which may have moved)
+        let parent_dir = effective_parent
             .parent()
             .ok_or_else(|| DiaryxError::InvalidPath {
-                path: parent_index_path.to_path_buf(),
+                path: effective_parent.clone(),
                 message: "Parent index has no directory".to_string(),
             })?;
 
@@ -961,7 +995,7 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let child_path = parent_dir.join(&child_filename);
 
         // Calculate relative path from child to parent
-        let parent_rel = relative_path_from_file_to_target(&child_path, parent_index_path);
+        let parent_rel = relative_path_from_file_to_target(&child_path, &effective_parent);
 
         // Create child file with frontmatter
         let display_title = title.unwrap_or("New Entry");
@@ -979,7 +1013,7 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             })?;
 
         // Add to parent's contents
-        self.add_to_index_contents(parent_index_path, &child_filename)
+        self.add_to_index_contents(&effective_parent, &child_filename)
             .await?;
 
         Ok(child_path)
@@ -1031,7 +1065,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             // Create new directory
             self.fs.create_dir_all(&new_dir_path).await?;
 
-            // Move all files from old directory to new directory
+            // Move all files from old directory to new directory and track children
+            let mut children_paths: Vec<PathBuf> = Vec::new();
             if let Ok(files) = self.fs.list_files(current_dir).await {
                 for file in files {
                     let file_name = file.file_name().unwrap_or_default();
@@ -1042,8 +1077,16 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                         self.fs.move_file(&file, &new_file_path).await?;
                     } else {
                         self.fs.move_file(&file, &new_path).await?;
+                        children_paths.push(new_path);
                     }
                 }
+            }
+            
+            // Update all children's part_of to point to new index
+            for child_path in &children_paths {
+                use crate::path_utils::relative_path_from_file_to_target;
+                let new_part_of = relative_path_from_file_to_target(child_path, &new_file_path);
+                let _ = self.set_frontmatter_property(child_path, "part_of", Value::String(new_part_of)).await;
             }
 
             // Update grandparent's contents if it exists
