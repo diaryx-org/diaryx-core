@@ -1,6 +1,10 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+/// Command pattern API for unified command execution
+pub mod command;
+pub use command::{Command, Response};
+
 /// Unified Diaryx API - the main entry point
 pub mod diaryx;
 

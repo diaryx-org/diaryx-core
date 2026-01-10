@@ -9,14 +9,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{DiaryxError, Result};
 use crate::fs::AsyncFileSystem;
 use crate::workspace::{IndexFrontmatter, Workspace};
 
 /// Result of planning an export operation
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportPlan {
     /// Files that will be exported
     pub included: Vec<ExportFile>,
@@ -31,7 +31,7 @@ pub struct ExportPlan {
 }
 
 /// A file to be exported
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportFile {
     /// Original path in the workspace
     pub source_path: PathBuf,
@@ -44,7 +44,7 @@ pub struct ExportFile {
 }
 
 /// A file that was excluded from export
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExcludedFile {
     /// Path to the excluded file
     pub path: PathBuf,
@@ -53,7 +53,7 @@ pub struct ExcludedFile {
 }
 
 /// Why a file was excluded
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExclusionReason {
     /// File is marked as private
     Private,

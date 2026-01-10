@@ -1610,6 +1610,7 @@ dependencies = [
  "indexmap 2.12.1",
  "pathdiff",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.17",

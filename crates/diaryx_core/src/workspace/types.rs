@@ -131,7 +131,7 @@ impl IndexFile {
 }
 
 /// Node in the workspace tree (for display purposes)
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNode {
     /// Title of index/root file (or filename if no title)
     pub name: String,
