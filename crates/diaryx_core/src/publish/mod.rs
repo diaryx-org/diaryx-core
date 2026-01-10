@@ -86,10 +86,11 @@ impl<FS: AsyncFileSystem + Clone> Publisher<FS> {
         if let Some(pos) = files
             .iter()
             .position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == root_canonical)
-            && pos != 0 {
-                let root_file = files.remove(pos);
-                files.insert(0, root_file);
-            }
+            && pos != 0
+        {
+            let root_file = files.remove(pos);
+            files.insert(0, root_file);
+        }
 
         let mut pages = Vec::new();
         let mut path_to_filename: HashMap<PathBuf, String> = HashMap::new();

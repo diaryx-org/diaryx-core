@@ -3,10 +3,10 @@
 use serde_yaml::Value;
 use std::path::PathBuf;
 
+use crate::cli::CliDiaryxAppSync;
 use crate::cli::util::{
     ConfirmResult, load_config, prompt_confirm, rename_file_with_refs, resolve_paths,
 };
-use crate::cli::CliDiaryxAppSync;
 
 /// Convert a filename (without extension) to a human-readable title
 /// Replaces underscores and hyphens with spaces, applies title case

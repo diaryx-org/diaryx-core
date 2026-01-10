@@ -391,21 +391,23 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
 
         // Filter contents array
         if let Some(contents) = frontmatter.get_mut("contents")
-            && let Some(arr) = contents.as_sequence_mut() {
-                arr.retain(|item| {
-                    if let Some(s) = item.as_str() {
-                        !filtered.iter().any(|f| f == s)
-                    } else {
-                        true
-                    }
-                });
-            }
+            && let Some(arr) = contents.as_sequence_mut()
+        {
+            arr.retain(|item| {
+                if let Some(s) = item.as_str() {
+                    !filtered.iter().any(|f| f == s)
+                } else {
+                    true
+                }
+            });
+        }
 
         // Optionally remove audience property
         if !options.keep_audience
-            && let Some(map) = frontmatter.as_mapping_mut() {
-                map.remove(serde_yaml::Value::String("audience".to_string()));
-            }
+            && let Some(map) = frontmatter.as_mapping_mut()
+        {
+            map.remove(serde_yaml::Value::String("audience".to_string()));
+        }
 
         // Reconstruct file
         let new_frontmatter = serde_yaml::to_string(&frontmatter)?;

@@ -138,16 +138,17 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 
         for file in md_files {
             if let Ok(index) = self.parse_index(&file).await
-                && index.frontmatter.is_index() {
-                    // Prefer root index if found
-                    if index.frontmatter.is_root() {
-                        return Ok(Some(file));
-                    }
-                    // Otherwise remember the first index we find
-                    if found_index.is_none() {
-                        found_index = Some(file);
-                    }
+                && index.frontmatter.is_index()
+            {
+                // Prefer root index if found
+                if index.frontmatter.is_root() {
+                    return Ok(Some(file));
                 }
+                // Otherwise remember the first index we find
+                if found_index.is_none() {
+                    found_index = Some(file);
+                }
+            }
         }
 
         Ok(found_index)
@@ -185,21 +186,18 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 
         // If this is an index file, recurse into its contents
         if let Ok(index) = self.parse_index(path).await
-            && index.frontmatter.is_index() {
-                for child_path_str in index.frontmatter.contents_list() {
-                    let child_path = index.resolve_path(child_path_str);
+            && index.frontmatter.is_index()
+        {
+            for child_path_str in index.frontmatter.contents_list() {
+                let child_path = index.resolve_path(child_path_str);
 
-                    // Only include if the file exists
-                    if self.fs.exists(&child_path).await {
-                        Box::pin(self.collect_workspace_files_recursive(
-                            &child_path,
-                            files,
-                            visited,
-                        ))
+                // Only include if the file exists
+                if self.fs.exists(&child_path).await {
+                    Box::pin(self.collect_workspace_files_recursive(&child_path, files, visited))
                         .await?;
-                    }
                 }
             }
+        }
 
         Ok(())
     }

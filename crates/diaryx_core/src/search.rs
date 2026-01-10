@@ -171,9 +171,10 @@ impl<FS: AsyncFileSystem> Searcher<FS> {
 
         for file_path in files {
             if let Some(file_result) = self.search_file(&file_path, query).await?
-                && file_result.has_matches() {
-                    results.files.push(file_result);
-                }
+                && file_result.has_matches()
+            {
+                results.files.push(file_result);
+            }
         }
 
         Ok(results)
