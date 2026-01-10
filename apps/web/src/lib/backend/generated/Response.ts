@@ -5,7 +5,7 @@ import type { ExportPlan } from "./ExportPlan";
 import type { ExportedFile } from "./ExportedFile";
 import type { FixResult } from "./FixResult";
 import type { FixSummary } from "./FixSummary";
-import type { JsonValue } from "../serde_json/JsonValue";
+import type { JsonValue } from "./serde_json/JsonValue";
 import type { SearchResults } from "./SearchResults";
 import type { StorageInfo } from "./StorageInfo";
 import type { TemplateInfo } from "./TemplateInfo";

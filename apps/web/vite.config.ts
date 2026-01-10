@@ -24,11 +24,6 @@ export default defineConfig({
     exclude: ["@tauri-apps/api"],
   },
   worker: {
-<<<<<<< HEAD
     format: 'es',
   },
-=======
-      format: 'es',
-    },
->>>>>>> 97fca8c6a2357b1c242fd5036ddfc2406cf788e5
 });

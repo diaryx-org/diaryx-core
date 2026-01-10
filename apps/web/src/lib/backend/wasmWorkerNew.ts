@@ -102,6 +102,18 @@ const workerApi = {
   },
 
   // =========================================================================
+  // Unified Command API
+  // =========================================================================
+
+  /**
+   * Execute a command using the unified command pattern.
+   * Takes JSON string command, returns JSON string response.
+   */
+  async execute(commandJson: string): Promise<string> {
+    return getBackend().execute(commandJson);
+  },
+
+  // =========================================================================
   // Root Index Discovery
   // =========================================================================
 

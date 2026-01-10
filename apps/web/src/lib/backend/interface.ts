@@ -1,7 +1,21 @@
 // Backend interface - abstracts over Tauri IPC and WASM implementations
 
+// Import generated types from Rust
+import type { Command, Response } from './generated';
+
+// Re-export generated types for consumers
+export type { Command, Response } from './generated';
+export type {
+  EntryData as GeneratedEntryData,
+  TreeNode as GeneratedTreeNode,
+  SearchResults as GeneratedSearchResults,
+  ValidationResult as GeneratedValidationResult,
+  FixResult as GeneratedFixResult,
+  ExportPlan as GeneratedExportPlan,
+} from './generated';
+
 // ============================================================================
-// Types
+// Types (legacy - these will eventually be replaced by generated types)
 // ============================================================================
 
 export interface Config {
@@ -246,6 +260,29 @@ export interface Backend {
    * Check if the backend is ready to use.
    */
   isReady(): boolean;
+
+  // --------------------------------------------------------------------------
+  // Unified Command API (new)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Execute a command and return the response.
+   *
+   * This is the unified API that replaces individual method calls.
+   * All commands use a tagged union format with `type` and `params`.
+   *
+   * @example
+   * ```ts
+   * const response = await backend.execute({
+   *   type: 'GetEntry',
+   *   params: { path: 'workspace/notes.md' }
+   * });
+   * if (response.type === 'Entry') {
+   *   console.log(response.data.title);
+   * }
+   * ```
+   */
+  execute(command: Command): Promise<Response>;
 
   // --------------------------------------------------------------------------
   // Events

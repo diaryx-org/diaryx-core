@@ -10,6 +10,8 @@ import type {
   Backend,
   BackendEventType,
   BackendEventListener,
+  Command,
+  Response,
 } from './interface';
 import { BackendEventEmitter } from './eventEmitter';
 import type { WorkerApi } from './wasmWorkerNew';
@@ -99,7 +101,21 @@ export class WorkerBackendNew implements Backend {
   }
 
   // =========================================================================
-  // Proxy methods - delegate to worker
+  // Unified Command API
+  // =========================================================================
+
+  /**
+   * Execute a command via the unified command pattern.
+   * This is the new primary API - all operations can be performed via execute().
+   */
+  async execute(command: Command): Promise<Response> {
+    const commandJson = JSON.stringify(command);
+    const responseJson = await this.remote!.execute(commandJson);
+    return JSON.parse(responseJson) as Response;
+  }
+
+  // =========================================================================
+  // Proxy methods - delegate to worker (legacy, will be deprecated)
   // =========================================================================
 
   getConfig = () => this.remote!.getConfig();
