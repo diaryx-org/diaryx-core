@@ -21,6 +21,9 @@ serde_yaml.workspace = true
 toml = "0.9.8"
 thiserror.workspace = true
 
+# TypeScript bindings generation
+ts-rs = { version = "10", features = ["serde-json-impl", "indexmap-impl"] }
+
 # Used by non-WASM sync wrappers (block_on) during the async-first refactor.
 # On WASM, the sync wrappers are cfg-gated off.
 futures-lite = "2"

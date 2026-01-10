@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use ts_rs::TS;
 
 use crate::export::ExportPlan;
 use crate::search::SearchResults;
@@ -34,7 +35,8 @@ use crate::workspace::TreeNode;
 /// All commands that can be executed against a Diaryx instance.
 ///
 /// Commands are serializable for cross-runtime usage (WASM, IPC, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 #[serde(tag = "type", content = "params")]
 pub enum Command {
     // === Entry Operations ===
@@ -391,8 +393,8 @@ pub enum Command {
 // Response Types
 // ============================================================================
 
-/// Responses from command execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 #[serde(tag = "type", content = "data")]
 pub enum Response {
     /// Command completed successfully with no data.
@@ -451,8 +453,8 @@ pub enum Response {
 // Helper Types
 // ============================================================================
 
-/// Entry data returned from GetEntry command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct EntryData {
     /// Path to the entry.
     pub path: PathBuf,
@@ -464,8 +466,8 @@ pub struct EntryData {
     pub content: String,
 }
 
-/// Options for creating an entry.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct CreateEntryOptions {
     /// Title for the entry.
     pub title: Option<String>,
@@ -475,8 +477,8 @@ pub struct CreateEntryOptions {
     pub template: Option<String>,
 }
 
-/// Options for searching.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct SearchOptions {
     /// Workspace path to search in.
     pub workspace_path: Option<String>,
@@ -490,8 +492,8 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
 }
 
-/// Exported file (markdown content).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct ExportedFile {
     /// Relative path.
     pub path: String,
@@ -499,8 +501,8 @@ pub struct ExportedFile {
     pub content: String,
 }
 
-/// Exported binary file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct BinaryExportFile {
     /// Relative path.
     pub path: String,
@@ -508,8 +510,8 @@ pub struct BinaryExportFile {
     pub data: Vec<u8>,
 }
 
-/// Template information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct TemplateInfo {
     /// Template name.
     pub name: String,
@@ -519,8 +521,8 @@ pub struct TemplateInfo {
     pub source: String,
 }
 
-/// Storage usage information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct StorageInfo {
     /// Bytes used.
     pub used: u64,
@@ -530,8 +532,8 @@ pub struct StorageInfo {
     pub attachment_limit: Option<u64>,
 }
 
-/// Summary of fix operations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct FixSummary {
     /// Results from fixing errors.
     pub error_fixes: Vec<FixResult>,

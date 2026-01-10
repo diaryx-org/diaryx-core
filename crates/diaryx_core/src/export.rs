@@ -10,13 +10,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error::{DiaryxError, Result};
 use crate::fs::AsyncFileSystem;
 use crate::workspace::{IndexFrontmatter, Workspace};
 
 /// Result of planning an export operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct ExportPlan {
     /// Files that will be exported
     pub included: Vec<ExportFile>,
@@ -31,7 +33,8 @@ pub struct ExportPlan {
 }
 
 /// A file to be exported
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct ExportFile {
     /// Original path in the workspace
     pub source_path: PathBuf,
@@ -44,7 +47,8 @@ pub struct ExportFile {
 }
 
 /// A file that was excluded from export
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct ExcludedFile {
     /// Path to the excluded file
     pub path: PathBuf,
@@ -53,7 +57,8 @@ pub struct ExcludedFile {
 }
 
 /// Why a file was excluded
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub enum ExclusionReason {
     /// File is marked as private
     Private,

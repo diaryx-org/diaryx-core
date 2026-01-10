@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error::Result;
 use crate::fs::AsyncFileSystem;
@@ -21,7 +22,8 @@ use crate::utils::path::relative_path_from_file_to_target;
 use crate::workspace::Workspace;
 
 /// A validation error indicating a broken reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 #[serde(tag = "type")]
 pub enum ValidationError {
     /// A file's `part_of` points to a non-existent file.
@@ -48,7 +50,8 @@ pub enum ValidationError {
 }
 
 /// A validation warning indicating a potential issue.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 #[serde(tag = "type")]
 pub enum ValidationWarning {
     /// A file exists but is not referenced by any index's contents.
@@ -111,7 +114,8 @@ pub enum ValidationWarning {
 }
 
 /// Result of validating a workspace.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct ValidationResult {
     /// Validation errors (broken references)
     pub errors: Vec<ValidationError>,
@@ -611,7 +615,8 @@ async fn find_index_in_directory<FS: AsyncFileSystem>(
 // ============================================================================
 
 /// Result of attempting to fix a validation issue.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct FixResult {
     /// Whether the fix was successful.
     pub success: bool,

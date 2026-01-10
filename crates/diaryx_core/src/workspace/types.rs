@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
+use ts_rs::TS;
 
 /// Represents an index file's frontmatter
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +132,8 @@ impl IndexFile {
 }
 
 /// Node in the workspace tree (for display purposes)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct TreeNode {
     /// Title of index/root file (or filename if no title)
     pub name: String,

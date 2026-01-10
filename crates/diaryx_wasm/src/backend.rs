@@ -24,6 +24,7 @@ use std::io::Result as IoResult;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use diaryx_core::diaryx::Diaryx;
 use diaryx_core::frontmatter;
 use diaryx_core::fs::AsyncFileSystem;
 use diaryx_core::search::{SearchMatch, SearchQuery, Searcher};
@@ -305,6 +306,63 @@ impl DiaryxBackend {
         let fsa = FsaFileSystem::from_handle(handle);
         let fs = Rc::new(StorageBackend::Fsa(fsa));
         Ok(Self { fs })
+    }
+
+    // ========================================================================
+    // Unified Command API
+    // ========================================================================
+
+    /// Execute a command and return the response as JSON string.
+    ///
+    /// This is the primary unified API for all operations, replacing the many
+    /// individual method calls with a single entry point.
+    ///
+    /// ## Example
+    /// ```javascript
+    /// const command = { type: 'GetEntry', params: { path: 'workspace/notes.md' } };
+    /// const responseJson = await backend.execute(JSON.stringify(command));
+    /// const response = JSON.parse(responseJson);
+    /// ```
+    #[wasm_bindgen]
+    pub async fn execute(&self, command_json: &str) -> std::result::Result<String, JsValue> {
+        use diaryx_core::{Command, Response};
+        
+        // Parse the command from JSON
+        let cmd: Command = serde_json::from_str(command_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid command JSON: {}", e)))?;
+        
+        // Create a Diaryx instance with our filesystem
+        let diaryx = Diaryx::new((*self.fs).clone());
+        
+        // Execute the command
+        let result = diaryx.execute(cmd).await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        // Serialize the response to JSON
+        serde_json::to_string(&result)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
+    }
+
+    /// Execute a command from a JavaScript object directly.
+    ///
+    /// This avoids JSON serialization overhead for better performance.
+    #[wasm_bindgen(js_name = "executeJs")]
+    pub async fn execute_js(&self, command: JsValue) -> std::result::Result<JsValue, JsValue> {
+        use diaryx_core::{Command, Response};
+        
+        // Parse command from JS object
+        let cmd: Command = serde_wasm_bindgen::from_value(command)?;
+        
+        // Create a Diaryx instance with our filesystem
+        let diaryx = Diaryx::new((*self.fs).clone());
+        
+        // Execute the command
+        let result = diaryx.execute(cmd).await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        
+        // Convert response to JsValue
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
     }
 
     // ========================================================================

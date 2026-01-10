@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::fs::AsyncFileSystem;
 use crate::workspace::Workspace;
@@ -73,7 +74,8 @@ impl SearchQuery {
 }
 
 /// A single match within a file
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct SearchMatch {
     /// Line number (1-based)
     pub line_number: usize,
@@ -86,7 +88,8 @@ pub struct SearchMatch {
 }
 
 /// Search results for a single file
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct FileSearchResult {
     /// Path to the file
     pub path: PathBuf,
@@ -109,7 +112,8 @@ impl FileSearchResult {
 }
 
 /// Aggregated search results
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct SearchResults {
     /// Results per file (only files with matches)
     pub files: Vec<FileSearchResult>,
