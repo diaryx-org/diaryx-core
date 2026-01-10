@@ -23,4 +23,7 @@ export default defineConfig({
     // Exclude Tauri API from optimization since it's optional
     exclude: ["@tauri-apps/api"],
   },
+  worker: {
+      format: 'es',
+    },
 });
