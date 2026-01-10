@@ -137,8 +137,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let mut found_index: Option<PathBuf> = None;
 
         for file in md_files {
-            if let Ok(index) = self.parse_index(&file).await {
-                if index.frontmatter.is_index() {
+            if let Ok(index) = self.parse_index(&file).await
+                && index.frontmatter.is_index() {
                     // Prefer root index if found
                     if index.frontmatter.is_root() {
                         return Ok(Some(file));
@@ -148,7 +148,6 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                         found_index = Some(file);
                     }
                 }
-            }
         }
 
         Ok(found_index)
@@ -185,8 +184,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         files.push(path.to_path_buf());
 
         // If this is an index file, recurse into its contents
-        if let Ok(index) = self.parse_index(path).await {
-            if index.frontmatter.is_index() {
+        if let Ok(index) = self.parse_index(path).await
+            && index.frontmatter.is_index() {
                 for child_path_str in index.frontmatter.contents_list() {
                     let child_path = index.resolve_path(child_path_str);
 
@@ -201,7 +200,6 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                     }
                 }
             }
-        }
 
         Ok(())
     }

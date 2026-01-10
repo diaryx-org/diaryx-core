@@ -165,7 +165,7 @@ fn handle_validate(
     recursive: bool,
     verbose: bool,
 ) {
-    use diaryx_core::entry::DiaryxApp;
+    
     use diaryx_core::fs::RealFileSystem as CoreRealFileSystem;
     use diaryx_core::validate::{
         ValidationError, ValidationFixer, ValidationResult, ValidationWarning, Validator,

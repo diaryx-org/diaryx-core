@@ -8,7 +8,7 @@ use diaryx_core::config::Config;
 
 use crate::cli::args::ContentCommands;
 use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
-use crate::cli::{CliDiaryxAppSync, block_on};
+use crate::cli::CliDiaryxAppSync;
 
 /// Handle all content subcommands
 pub fn handle_content_command(app: &CliDiaryxAppSync, operation: ContentCommands) {

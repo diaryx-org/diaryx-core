@@ -393,8 +393,8 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
             // Check for unlisted .md files in the same directory
             // Only if this file has contents (is an index)
-            if !contents_list.is_empty() || index.frontmatter.contents.is_some() {
-                if let Ok(entries) = self.ws.fs_ref().list_files(dir).await {
+            if (!contents_list.is_empty() || index.frontmatter.contents.is_some())
+                && let Ok(entries) = self.ws.fs_ref().list_files(dir).await {
                     let this_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                     // Collect all attachments referenced by this index
@@ -444,8 +444,8 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                                 }
                                 Some(ext) if !ext.eq_ignore_ascii_case("md") => {
                                     // Binary file - check if it's referenced by attachments
-                                    if let Some(fname) = filename {
-                                        if !referenced_attachments.contains(fname) {
+                                    if let Some(fname) = filename
+                                        && !referenced_attachments.contains(fname) {
                                             result.warnings.push(
                                                 ValidationWarning::OrphanBinaryFile {
                                                     file: entry_path,
@@ -454,7 +454,6 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                                                 },
                                             );
                                         }
-                                    }
                                 }
                                 _ => {}
                             }
@@ -472,7 +471,6 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                         });
                     }
                 }
-            }
         }
 
         Ok(result)
@@ -561,17 +559,16 @@ async fn find_index_in_directory<FS: AsyncFileSystem>(
     if let Ok(entries) = ws.fs_ref().list_files(dir).await {
         for entry_path in entries {
             // Skip the excluded file
-            if let Some(excl) = exclude {
-                if entry_path == excl {
+            if let Some(excl) = exclude
+                && entry_path == excl {
                     continue;
                 }
-            }
 
             // Only check markdown files
             if entry_path.extension().is_some_and(|ext| ext == "md") {
                 // If it's a file (not a dir), try to parse it as an index
-                if !ws.fs_ref().is_dir(&entry_path).await {
-                    if let Ok(index) = ws.parse_index(&entry_path).await {
+                if !ws.fs_ref().is_dir(&entry_path).await
+                    && let Ok(index) = ws.parse_index(&entry_path).await {
                         // Check if it has contents (is an index)
                         let is_index = index.frontmatter.contents.is_some()
                             || !index.frontmatter.contents_list().is_empty();
@@ -595,7 +592,6 @@ async fn find_index_in_directory<FS: AsyncFileSystem>(
                             }
                         }
                     }
-                }
             }
         }
     }
@@ -902,11 +898,10 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
                         let updated: Vec<serde_yaml::Value> = items
                             .into_iter()
                             .map(|item| {
-                                if let serde_yaml::Value::String(ref s) = item {
-                                    if s == old_value {
+                                if let serde_yaml::Value::String(ref s) = item
+                                    && s == old_value {
                                         return serde_yaml::Value::String(new_value.to_string());
                                     }
-                                }
                                 item
                             })
                             .collect();
