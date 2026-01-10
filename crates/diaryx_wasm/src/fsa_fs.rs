@@ -27,9 +27,9 @@ use wasm_bindgen::prelude::*;
 
 use opfs::persistent::{self, DirectoryHandle};
 use opfs::{
-    CreateWritableOptions, DirectoryHandle as DirectoryHandleTrait,
-    DirectoryEntry, FileHandle as FileHandleTrait, GetDirectoryHandleOptions,
-    GetFileHandleOptions, WritableFileStream as WritableFileStreamTrait,
+    CreateWritableOptions, DirectoryEntry, DirectoryHandle as DirectoryHandleTrait,
+    FileHandle as FileHandleTrait, GetDirectoryHandleOptions, GetFileHandleOptions,
+    WritableFileStream as WritableFileStreamTrait,
 };
 
 // ============================================================================
@@ -115,10 +115,7 @@ async fn get_parent_dir(
 }
 
 /// Get directory handle for a directory path (navigating to the directory itself).
-async fn get_directory(
-    root: &DirectoryHandle,
-    path: &Path,
-) -> persistent::Result<DirectoryHandle> {
+async fn get_directory(root: &DirectoryHandle, path: &Path) -> persistent::Result<DirectoryHandle> {
     let mut current = root.clone();
 
     for component in path.components() {
@@ -326,9 +323,7 @@ impl AsyncFileSystem for FsaFileSystem {
     }
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
-        Box::pin(async move {
-            get_directory(&self.root, path).await.is_ok()
-        })
+        Box::pin(async move { get_directory(&self.root, path).await.is_ok() })
     }
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {

@@ -100,8 +100,16 @@ impl From<diaryx_core::export::ExportPlan> for JsAsyncExportPlan {
         let total_files = plan.included.len();
         let total_excluded = plan.excluded.len();
         JsAsyncExportPlan {
-            included: plan.included.into_iter().map(JsAsyncExportPlanEntry::from).collect(),
-            excluded: plan.excluded.into_iter().map(JsAsyncExcludedFile::from).collect(),
+            included: plan
+                .included
+                .into_iter()
+                .map(JsAsyncExportPlanEntry::from)
+                .collect(),
+            excluded: plan
+                .excluded
+                .into_iter()
+                .map(JsAsyncExcludedFile::from)
+                .collect(),
             audience: plan.audience,
             total_files,
             total_excluded,
@@ -173,7 +181,7 @@ impl DiaryxAsyncExport {
 
             // Find all markdown files and collect unique audiences
             let mut audiences = HashSet::new();
-            
+
             let md_files = fs
                 .list_md_files_recursive(&path)
                 .await
@@ -410,8 +418,8 @@ fn extract_body(content: &str) -> String {
 
 /// Convert markdown to HTML using comrak
 fn markdown_to_html(markdown: &str) -> String {
-    use comrak::{markdown_to_html as comrak_md_to_html, Options};
-    
+    use comrak::{Options, markdown_to_html as comrak_md_to_html};
+
     let mut options = Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
@@ -438,13 +446,11 @@ fn get_audiences_from_frontmatter(content: &str) -> Option<Vec<String>> {
     let audience = yaml.get("audience")?;
 
     match audience {
-        serde_yaml::Value::Sequence(seq) => {
-            Some(
-                seq.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect(),
-            )
-        }
+        serde_yaml::Value::Sequence(seq) => Some(
+            seq.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        ),
         serde_yaml::Value::String(s) => Some(vec![s.clone()]),
         _ => None,
     }
@@ -465,13 +471,11 @@ fn get_attachments_from_frontmatter(content: &str) -> Option<Vec<String>> {
     let attachments = yaml.get("attachments")?;
 
     match attachments {
-        serde_yaml::Value::Sequence(seq) => {
-            Some(
-                seq.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect(),
-            )
-        }
+        serde_yaml::Value::Sequence(seq) => Some(
+            seq.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        ),
         _ => None,
     }
 }

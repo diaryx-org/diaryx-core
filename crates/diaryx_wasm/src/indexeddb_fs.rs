@@ -115,9 +115,9 @@ impl AsyncFileSystem for IndexedDbFileSystem {
 
             match result {
                 Some(value) => {
-                    let js_str: JsString = value.dyn_into().map_err(|_| {
-                        Error::new(ErrorKind::InvalidData, "Value is not a string")
-                    })?;
+                    let js_str: JsString = value
+                        .dyn_into()
+                        .map_err(|_| Error::new(ErrorKind::InvalidData, "Value is not a string"))?;
                     Ok(String::from(&js_str))
                 }
                 None => Err(Error::new(

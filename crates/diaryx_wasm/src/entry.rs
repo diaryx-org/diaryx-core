@@ -156,8 +156,12 @@ impl DiaryxEntry {
                 .js_err()?;
 
             let now = Utc::now().to_rfc3339();
-            block_on(app.set_frontmatter_property(path, "created", serde_yaml::Value::String(now.clone())))
-                .js_err()?;
+            block_on(app.set_frontmatter_property(
+                path,
+                "created",
+                serde_yaml::Value::String(now.clone()),
+            ))
+            .js_err()?;
             block_on(app.set_frontmatter_property(path, "updated", serde_yaml::Value::String(now)))
                 .js_err()?;
 
@@ -194,8 +198,7 @@ impl DiaryxEntry {
         with_fs_mut(|fs| {
             let async_fs = SyncToAsyncFs::new(fs.clone());
             let ws = Workspace::new(async_fs);
-            block_on(ws.move_entry(&PathBuf::from(from_path), &PathBuf::from(to_path)))
-                .js_err()?;
+            block_on(ws.move_entry(&PathBuf::from(from_path), &PathBuf::from(to_path))).js_err()?;
             Ok(to_path.to_string())
         })
     }

@@ -1,7 +1,7 @@
 //! Sort command handler
 
-use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
 use crate::cli::CliDiaryxAppSync;
+use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
 
 /// Handle the sort command
 pub fn handle_sort_command(

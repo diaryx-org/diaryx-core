@@ -8,7 +8,7 @@ use diaryx_core::config::Config;
 
 use crate::cli::args::ContentCommands;
 use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
-use crate::cli::{block_on, CliDiaryxAppSync};
+use crate::cli::{CliDiaryxAppSync, block_on};
 
 /// Handle all content subcommands
 pub fn handle_content_command(app: &CliDiaryxAppSync, operation: ContentCommands) {
@@ -166,13 +166,7 @@ fn handle_set(
 }
 
 /// Handle the 'content clear' command
-fn handle_clear(
-    app: &CliDiaryxAppSync,
-    config: &Config,
-    path: &str,
-    yes: bool,
-    dry_run: bool,
-) {
+fn handle_clear(app: &CliDiaryxAppSync, config: &Config, path: &str, yes: bool, dry_run: bool) {
     let resolved = resolve_paths(path, config, app);
 
     if resolved.is_empty() {

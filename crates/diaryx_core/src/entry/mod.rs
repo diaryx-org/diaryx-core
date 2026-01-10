@@ -211,7 +211,12 @@ impl<FS: AsyncFileSystem> DiaryxApp<FS> {
 
     /// Adds or updates a frontmatter property.
     /// Creates frontmatter if none exists.
-    pub async fn set_frontmatter_property(&self, path: &str, key: &str, value: Value) -> Result<()> {
+    pub async fn set_frontmatter_property(
+        &self,
+        path: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<()> {
         let (mut frontmatter, body) = self.parse_file_or_create_frontmatter(path).await?;
         frontmatter.insert(key.to_string(), value);
         self.reconstruct_file(path, &frontmatter, &body).await
@@ -658,7 +663,6 @@ impl<FS: FileSystem> DiaryxAppSync<FS> {
         Ok(true)
     }
 
-
     /// Get body content (excluding frontmatter). If no frontmatter exists, returns entire file.
     pub fn get_content(&self, path: &str) -> Result<String> {
         match self.parse_file_or_create_frontmatter(path) {
@@ -842,9 +846,7 @@ impl<FS: FileSystem> DiaryxAppSync<FS> {
                 return Ok(Some(resolved));
             }
             // Also check if the path itself matches
-            if att_path == attachment_name
-                || att_path.ends_with(&format!("/{}", attachment_name))
-            {
+            if att_path == attachment_name || att_path.ends_with(&format!("/{}", attachment_name)) {
                 let resolved = entry_dir.join(att_path);
                 if self.fs.exists(&resolved) {
                     return Ok(Some(resolved));
@@ -856,8 +858,7 @@ impl<FS: FileSystem> DiaryxAppSync<FS> {
         if let Some(ref parent_rel) = frontmatter.part_of {
             let parent_path = entry_dir.join(parent_rel);
             if self.fs.exists(&parent_path) {
-                return self
-                    .resolve_attachment(&parent_path.to_string_lossy(), attachment_name);
+                return self.resolve_attachment(&parent_path.to_string_lossy(), attachment_name);
             }
         }
 

@@ -78,7 +78,11 @@ impl From<diaryx_core::search::FileSearchResult> for JsAsyncFileSearchResult {
         JsAsyncFileSearchResult {
             path: r.path.to_string_lossy().to_string(),
             title: r.title,
-            matches: r.matches.into_iter().map(JsAsyncSearchMatch::from).collect(),
+            matches: r
+                .matches
+                .into_iter()
+                .map(JsAsyncSearchMatch::from)
+                .collect(),
         }
     }
 }
@@ -98,7 +102,11 @@ impl From<diaryx_core::search::SearchResults> for JsAsyncSearchResults {
     fn from(r: diaryx_core::search::SearchResults) -> Self {
         let total_matches = r.total_matches();
         JsAsyncSearchResults {
-            files: r.files.into_iter().map(JsAsyncFileSearchResult::from).collect(),
+            files: r
+                .files
+                .into_iter()
+                .map(JsAsyncFileSearchResult::from)
+                .collect(),
             total_matches,
             files_searched: r.files_searched,
         }
@@ -147,12 +155,7 @@ impl DiaryxAsyncSearch {
     /// @param options - Optional search options
     /// @returns Promise resolving to search results
     #[wasm_bindgen]
-    pub fn search(
-        &self,
-        workspace_path: String,
-        pattern: String,
-        options: JsValue,
-    ) -> Promise {
+    pub fn search(&self, workspace_path: String, pattern: String, options: JsValue) -> Promise {
         let fs = self.fs.clone();
 
         future_to_promise(async move {

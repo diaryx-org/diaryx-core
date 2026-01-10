@@ -399,7 +399,9 @@ impl BackupTarget for S3Target {
             for i in 0..archive.len() {
                 let mut file = match archive.by_index(i) {
                     Ok(f) => f,
-                    Err(e) => return BackupResult::failure(format!("Failed to read zip entry: {}", e)),
+                    Err(e) => {
+                        return BackupResult::failure(format!("Failed to read zip entry: {}", e));
+                    }
                 };
 
                 if file.is_dir() {

@@ -19,15 +19,15 @@ use std::path::{Path, PathBuf};
 
 use diaryx_core::fs::{AsyncFileSystem, BoxFuture};
 use futures::StreamExt;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use opfs::persistent::{self, DirectoryHandle};
 use opfs::{
-    CreateWritableOptions, DirectoryHandle as DirectoryHandleTrait,
-    DirectoryEntry, FileHandle as FileHandleTrait, GetDirectoryHandleOptions,
-    GetFileHandleOptions, WritableFileStream as WritableFileStreamTrait,
+    CreateWritableOptions, DirectoryEntry, DirectoryHandle as DirectoryHandleTrait,
+    FileHandle as FileHandleTrait, GetDirectoryHandleOptions, GetFileHandleOptions,
+    WritableFileStream as WritableFileStreamTrait,
 };
 
 // ============================================================================
@@ -55,27 +55,30 @@ impl Clone for OpfsFileSystem {
 /// Uses js_sys::global() which works in both Window and WorkerGlobalScope.
 async fn get_opfs_root() -> std::result::Result<web_sys::FileSystemDirectoryHandle, JsValue> {
     let global = js_sys::global();
-    
+
     // Try to get navigator from either Window or WorkerGlobalScope
     let navigator = js_sys::Reflect::get(&global, &JsValue::from_str("navigator"))?;
     if navigator.is_undefined() {
-        return Err(JsValue::from_str("No navigator object found in global scope"));
+        return Err(JsValue::from_str(
+            "No navigator object found in global scope",
+        ));
     }
-    
+
     // Get storage from navigator
     let storage = js_sys::Reflect::get(&navigator, &JsValue::from_str("storage"))?;
     if storage.is_undefined() {
         return Err(JsValue::from_str("No storage object found on navigator"));
     }
-    
+
     // Call getDirectory()
     let get_directory = js_sys::Reflect::get(&storage, &JsValue::from_str("getDirectory"))?;
-    let get_directory_fn = get_directory.dyn_ref::<js_sys::Function>()
+    let get_directory_fn = get_directory
+        .dyn_ref::<js_sys::Function>()
         .ok_or_else(|| JsValue::from_str("getDirectory is not a function"))?;
-    
+
     let promise = get_directory_fn.call0(&storage)?;
     let promise = promise.dyn_into::<js_sys::Promise>()?;
-    
+
     let result = JsFuture::from(promise).await?;
     result.dyn_into::<web_sys::FileSystemDirectoryHandle>()
 }
@@ -92,17 +95,16 @@ impl OpfsFileSystem {
 
     /// Create a new OpfsFileSystem with a custom root directory name.
     #[wasm_bindgen(js_name = "createWithName")]
-    pub async fn create_with_name(
-        root_name: &str,
-    ) -> std::result::Result<OpfsFileSystem, JsValue> {
+    pub async fn create_with_name(root_name: &str) -> std::result::Result<OpfsFileSystem, JsValue> {
         // Get OPFS root using worker-compatible method
-        let opfs_root = get_opfs_root().await
+        let opfs_root = get_opfs_root()
+            .await
             .map_err(|e| JsValue::from_str(&format!("Failed to get OPFS root: {:?}", e)))?;
 
         // Create/get the app directory using opfs crate's DirectoryHandle
         // We need to convert the web_sys handle to opfs crate's handle
         let app_dir = DirectoryHandle::from(opfs_root);
-        
+
         let options = GetDirectoryHandleOptions { create: true };
         let root = app_dir
             .get_directory_handle_with_options(root_name, &options)
@@ -162,10 +164,7 @@ async fn get_parent_dir(
 }
 
 /// Get directory handle for a directory path (navigating to the directory itself).
-async fn get_directory(
-    root: &DirectoryHandle,
-    path: &Path,
-) -> persistent::Result<DirectoryHandle> {
+async fn get_directory(root: &DirectoryHandle, path: &Path) -> persistent::Result<DirectoryHandle> {
     let mut current = root.clone();
 
     for component in path.components() {
@@ -373,9 +372,7 @@ impl AsyncFileSystem for OpfsFileSystem {
     }
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
-        Box::pin(async move {
-            get_directory(&self.root, path).await.is_ok()
-        })
+        Box::pin(async move { get_directory(&self.root, path).await.is_ok() })
     }
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {

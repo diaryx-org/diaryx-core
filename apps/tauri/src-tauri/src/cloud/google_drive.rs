@@ -237,8 +237,6 @@ impl BackupTarget for GoogleDriveTarget {
         _fs: &'a dyn AsyncFileSystem,
         _workspace_path: &'a Path,
     ) -> BoxFuture<'a, BackupResult> {
-        Box::pin(async move {
-            BackupResult::failure("Google Drive restore not yet implemented")
-        })
+        Box::pin(async move { BackupResult::failure("Google Drive restore not yet implemented") })
     }
 }

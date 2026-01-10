@@ -53,7 +53,11 @@ impl From<diaryx_core::workspace::TreeNode> for JsAsyncTreeNode {
             name: node.name,
             description: node.description,
             path: node.path.to_string_lossy().to_string(),
-            children: node.children.into_iter().map(JsAsyncTreeNode::from).collect(),
+            children: node
+                .children
+                .into_iter()
+                .map(JsAsyncTreeNode::from)
+                .collect(),
         }
     }
 }
@@ -113,14 +117,13 @@ impl DiaryxAsyncWorkspace {
             // If no root index found, try finding any index
             let root_index = match root_index {
                 Some(idx) => idx,
-                None => {
-                    ws.find_any_index_in_dir(&root_path)
-                        .await
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?
-                        .ok_or_else(|| {
-                            JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
-                        })?
-                }
+                None => ws
+                    .find_any_index_in_dir(&root_path)
+                    .await
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?
+                    .ok_or_else(|| {
+                        JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
+                    })?,
             };
 
             let max_depth = depth.map(|d| d as usize);

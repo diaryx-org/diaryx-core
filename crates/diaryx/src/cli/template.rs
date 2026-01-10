@@ -5,8 +5,8 @@ use diaryx_core::fs::RealFileSystem;
 use diaryx_core::template::{TEMPLATE_VARIABLES, TemplateManager, TemplateSource};
 use std::io::{self, Write};
 
-use crate::cli::args::TemplateCommands;
 use crate::cli::CliDiaryxAppSync;
+use crate::cli::args::TemplateCommands;
 use crate::editor::launch_editor;
 
 /// Handle template subcommands

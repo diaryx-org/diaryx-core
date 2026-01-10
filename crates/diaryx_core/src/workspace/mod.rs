@@ -18,7 +18,7 @@
 mod types;
 
 // Re-export types for backwards compatibility
-pub use types::{format_tree_node, IndexFile, IndexFrontmatter, TreeNode};
+pub use types::{IndexFile, IndexFrontmatter, TreeNode, format_tree_node};
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -218,18 +218,17 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
     }
 
     /// Resolve workspace: check current dir, then fall back to config default
-    pub async fn resolve_workspace(
-        &self,
-        current_dir: &Path,
-        config: &Config,
-    ) -> Result<PathBuf> {
+    pub async fn resolve_workspace(&self, current_dir: &Path, config: &Config) -> Result<PathBuf> {
         // First, try to detect workspace in current directory
         if let Some(root) = self.detect_workspace(current_dir).await? {
             return Ok(root);
         }
 
         // Fall back to config's default_workspace and look for root index there
-        if let Some(root) = self.find_root_index_in_dir(&config.default_workspace).await? {
+        if let Some(root) = self
+            .find_root_index_in_dir(&config.default_workspace)
+            .await?
+        {
             return Ok(root);
         }
 
@@ -436,10 +435,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 
                 if self.fs.is_dir(&entry).await {
                     // Recurse into subdirectory
-                    if let Ok(child_tree) = Box::pin(
-                        self.build_filesystem_tree_recursive(&entry, show_hidden),
-                    )
-                    .await
+                    if let Ok(child_tree) =
+                        Box::pin(self.build_filesystem_tree_recursive(&entry, show_hidden)).await
                     {
                         children.push(child_tree);
                     }
@@ -500,7 +497,11 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let child_count = node.children.len();
         for (i, child) in node.children.iter().enumerate() {
             let is_last_child = i == child_count - 1;
-            let connector = if is_last_child { "└── " } else { "├── " };
+            let connector = if is_last_child {
+                "└── "
+            } else {
+                "├── "
+            };
             let child_prefix = if is_last_child { "    " } else { "│   " };
 
             result.push_str(prefix);
@@ -545,7 +546,7 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                 return Err(DiaryxError::FileRead {
                     path: path.to_path_buf(),
                     source: e,
-                })
+                });
             }
         };
 
@@ -567,7 +568,12 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
     }
 
     /// Set a frontmatter property in a file
-    pub async fn set_frontmatter_property(&self, path: &Path, key: &str, value: Value) -> Result<()> {
+    pub async fn set_frontmatter_property(
+        &self,
+        path: &Path,
+        key: &str,
+        value: Value,
+    ) -> Result<()> {
         let content = match self.fs.read_to_string(path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -576,31 +582,29 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                 frontmatter.insert(key.to_string(), value);
                 let yaml_str = serde_yaml::to_string(&frontmatter)?;
                 let new_content = format!("---\n{}---\n", yaml_str);
-                return self
-                    .fs
-                    .write_file(path, &new_content)
-                    .await
-                    .map_err(|e| DiaryxError::FileWrite {
+                return self.fs.write_file(path, &new_content).await.map_err(|e| {
+                    DiaryxError::FileWrite {
                         path: path.to_path_buf(),
                         source: e,
-                    });
+                    }
+                });
             }
             Err(e) => {
                 return Err(DiaryxError::FileRead {
                     path: path.to_path_buf(),
                     source: e,
-                })
+                });
             }
         };
 
-        let (mut frontmatter, body) = if content.starts_with("---\n") || content.starts_with("---\r\n")
+        let (mut frontmatter, body) = if content.starts_with("---\n")
+            || content.starts_with("---\r\n")
         {
             let rest = &content[4..];
             if let Some(idx) = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n")) {
                 let frontmatter_str = &rest[..idx];
                 let body = &rest[idx + 5..];
-                let fm: indexmap::IndexMap<String, Value> =
-                    serde_yaml::from_str(frontmatter_str)?;
+                let fm: indexmap::IndexMap<String, Value> = serde_yaml::from_str(frontmatter_str)?;
                 (fm, body.to_string())
             } else {
                 (indexmap::IndexMap::new(), content)
@@ -1081,12 +1085,14 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                     }
                 }
             }
-            
+
             // Update all children's part_of to point to new index
             for child_path in &children_paths {
                 use crate::path_utils::relative_path_from_file_to_target;
                 let new_part_of = relative_path_from_file_to_target(child_path, &new_file_path);
-                let _ = self.set_frontmatter_property(child_path, "part_of", Value::String(new_part_of)).await;
+                let _ = self
+                    .set_frontmatter_property(child_path, "part_of", Value::String(new_part_of))
+                    .await;
             }
 
             // Update grandparent's contents if it exists
@@ -1148,7 +1154,9 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                 let _ = self
                     .remove_from_index_contents(&parent_index, &old_filename)
                     .await;
-                let _ = self.add_to_index_contents(&parent_index, new_filename).await;
+                let _ = self
+                    .add_to_index_contents(&parent_index, new_filename)
+                    .await;
             }
 
             Ok(new_path)
@@ -1283,7 +1291,9 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         self.fs.move_file(path, &new_path).await?;
 
         // Remove contents property
-        let _ = self.remove_frontmatter_property(&new_path, "contents").await;
+        let _ = self
+            .remove_frontmatter_property(&new_path, "contents")
+            .await;
 
         // Update grandparent's contents
         if let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(parent_of_dir).await {
@@ -1360,7 +1370,7 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{block_on_test, FileSystem, InMemoryFileSystem, SyncToAsyncFs};
+    use crate::fs::{FileSystem, InMemoryFileSystem, SyncToAsyncFs, block_on_test};
 
     type TestFs = SyncToAsyncFs<InMemoryFileSystem>;
 
@@ -1463,7 +1473,9 @@ mod tests {
 
         assert!(block_on_test(ws.is_index_file(Path::new("index.md"))));
         assert!(!block_on_test(ws.is_index_file(Path::new("leaf.md"))));
-        assert!(!block_on_test(ws.is_index_file(Path::new("nonexistent.md"))));
+        assert!(!block_on_test(
+            ws.is_index_file(Path::new("nonexistent.md"))
+        ));
     }
 
     #[test]

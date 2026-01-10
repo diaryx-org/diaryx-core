@@ -8,7 +8,7 @@ use diaryx_core::date::parse_date;
 use crate::editor::launch_editor;
 
 use crate::cli::util::{load_config, resolve_paths};
-use crate::cli::{block_on, CliDiaryxAppSync};
+use crate::cli::{CliDiaryxAppSync, block_on};
 
 /// Handle the 'today' command
 pub fn handle_today(app: &CliDiaryxAppSync, template: Option<String>) {

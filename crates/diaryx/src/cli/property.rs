@@ -4,7 +4,7 @@ use serde_yaml::Value;
 
 use crate::cli::args::PropertyCommands;
 use crate::cli::util::{ConfirmResult, format_value, load_config, prompt_confirm, resolve_paths};
-use crate::cli::{block_on, CliDiaryxAppSync};
+use crate::cli::{CliDiaryxAppSync, block_on};
 
 /// Handle the property command
 pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyCommands) {

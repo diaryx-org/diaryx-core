@@ -196,7 +196,10 @@ impl DiaryxAsyncFilesystem {
 
             let result = JsFileList {
                 count: files.len(),
-                files: files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+                files: files
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
             };
 
             serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -216,7 +219,10 @@ impl DiaryxAsyncFilesystem {
 
             let result = JsFileList {
                 count: files.len(),
-                files: files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+                files: files
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
             };
 
             serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -237,7 +243,10 @@ impl DiaryxAsyncFilesystem {
 
             let result = JsFileList {
                 count: files.len(),
-                files: files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+                files: files
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
             };
 
             serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -258,7 +267,10 @@ impl DiaryxAsyncFilesystem {
 
             let result = JsFileList {
                 count: files.len(),
-                files: files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+                files: files
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
             };
 
             serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -307,8 +319,8 @@ impl DiaryxAsyncFilesystem {
     #[wasm_bindgen]
     pub fn load_files(&self, entries: JsValue) -> js_sys::Promise {
         future_to_promise(async move {
-            let entries: Vec<(String, String)> =
-                serde_wasm_bindgen::from_value(entries).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let entries: Vec<(String, String)> = serde_wasm_bindgen::from_value(entries)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             replace_fs(InMemoryFileSystem::load_from_entries(entries));
             Ok(JsValue::UNDEFINED)
         })
@@ -336,7 +348,8 @@ impl DiaryxAsyncFilesystem {
                 .into_iter()
                 .map(|(path, data)| BinaryEntry { path, data })
                 .collect();
-            serde_wasm_bindgen::to_value(&serializable).map_err(|e| JsValue::from_str(&e.to_string()))
+            serde_wasm_bindgen::to_value(&serializable)
+                .map_err(|e| JsValue::from_str(&e.to_string()))
         })
     }
 
@@ -347,8 +360,8 @@ impl DiaryxAsyncFilesystem {
     #[wasm_bindgen]
     pub fn load_binary_files(&self, entries: JsValue) -> js_sys::Promise {
         future_to_promise(async move {
-            let binary_entries: Vec<BinaryEntry> =
-                serde_wasm_bindgen::from_value(entries).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let binary_entries: Vec<BinaryEntry> = serde_wasm_bindgen::from_value(entries)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             let entries: Vec<(String, Vec<u8>)> = binary_entries
                 .into_iter()
                 .map(|e| (e.path, e.data))
@@ -408,10 +421,12 @@ impl DiaryxAsyncFilesystem {
                 binary_files: Vec<BinaryEntry>,
             }
 
-            let backup: BackupData =
-                serde_wasm_bindgen::from_value(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let backup: BackupData = serde_wasm_bindgen::from_value(data)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-            replace_fs(InMemoryFileSystem::load_from_entries(backup.text_files.clone()));
+            replace_fs(InMemoryFileSystem::load_from_entries(
+                backup.text_files.clone(),
+            ));
 
             let binary_entries: Vec<(String, Vec<u8>)> = backup
                 .binary_files
@@ -455,7 +470,10 @@ impl DiaryxAsyncFilesystem {
     pub fn list_all_files(&self) -> js_sys::Promise {
         future_to_promise(async move {
             let files = with_fs(|fs| fs.list_all_files());
-            let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let paths: Vec<String> = files
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
 
             let result = JsFileList {
                 count: paths.len(),

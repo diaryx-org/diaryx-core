@@ -171,7 +171,9 @@ fn js_to_io_error(err: JsValue) -> Error {
     let msg = if let Some(s) = err.as_string() {
         s
     } else if let Some(obj) = err.dyn_ref::<js_sys::Object>() {
-        obj.to_string().as_string().unwrap_or_else(|| "Unknown JS error".to_string())
+        obj.to_string()
+            .as_string()
+            .unwrap_or_else(|| "Unknown JS error".to_string())
     } else {
         "Unknown JS error".to_string()
     };
@@ -191,8 +193,12 @@ async fn call_async_callback(
     name: &str,
     args: &[JsValue],
 ) -> std::result::Result<JsValue, Error> {
-    let callback = get_callback(callbacks, name)
-        .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("Callback '{}' not provided", name)))?;
+    let callback = get_callback(callbacks, name).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("Callback '{}' not provided", name),
+        )
+    })?;
 
     let this = JsValue::NULL;
     let result = match args.len() {
@@ -233,16 +239,16 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let path_str = path.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "readToString",
-                &[JsValue::from_str(&path_str)],
-            )
-            .await?;
+            let result =
+                call_async_callback(&callbacks, "readToString", &[JsValue::from_str(&path_str)])
+                    .await?;
 
-            result
-                .as_string()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "readToString did not return a string"))
+            result.as_string().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "readToString did not return a string",
+                )
+            })
         })
     }
 
@@ -279,15 +285,15 @@ impl AsyncFileSystem for JsAsyncFileSystem {
                 Ok(())
             } else {
                 // Fall back to exists + writeFile
-                let exists_result = call_async_callback(
-                    &callbacks,
-                    "exists",
-                    &[JsValue::from_str(&path_str)],
-                )
-                .await?;
+                let exists_result =
+                    call_async_callback(&callbacks, "exists", &[JsValue::from_str(&path_str)])
+                        .await?;
 
                 if exists_result.as_bool().unwrap_or(false) {
-                    return Err(Error::new(ErrorKind::AlreadyExists, format!("File already exists: {}", path_str)));
+                    return Err(Error::new(
+                        ErrorKind::AlreadyExists,
+                        format!("File already exists: {}", path_str),
+                    ));
                 }
 
                 call_async_callback(
@@ -306,12 +312,7 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let path_str = path.to_string_lossy().to_string();
 
         Box::pin(async move {
-            call_async_callback(
-                &callbacks,
-                "deleteFile",
-                &[JsValue::from_str(&path_str)],
-            )
-            .await?;
+            call_async_callback(&callbacks, "deleteFile", &[JsValue::from_str(&path_str)]).await?;
             Ok(())
         })
     }
@@ -321,12 +322,9 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let dir_str = dir.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "listMdFiles",
-                &[JsValue::from_str(&dir_str)],
-            )
-            .await?;
+            let result =
+                call_async_callback(&callbacks, "listMdFiles", &[JsValue::from_str(&dir_str)])
+                    .await?;
 
             parse_path_array(result)
         })
@@ -337,12 +335,8 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let path_str = path.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "exists",
-                &[JsValue::from_str(&path_str)],
-            )
-            .await;
+            let result =
+                call_async_callback(&callbacks, "exists", &[JsValue::from_str(&path_str)]).await;
 
             match result {
                 Ok(v) => v.as_bool().unwrap_or(false),
@@ -358,12 +352,8 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         Box::pin(async move {
             // createDirAll is optional - many storage backends don't need it
             if get_callback(&callbacks, "createDirAll").is_some() {
-                call_async_callback(
-                    &callbacks,
-                    "createDirAll",
-                    &[JsValue::from_str(&path_str)],
-                )
-                .await?;
+                call_async_callback(&callbacks, "createDirAll", &[JsValue::from_str(&path_str)])
+                    .await?;
             }
             Ok(())
         })
@@ -374,12 +364,8 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let path_str = path.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "isDir",
-                &[JsValue::from_str(&path_str)],
-            )
-            .await;
+            let result =
+                call_async_callback(&callbacks, "isDir", &[JsValue::from_str(&path_str)]).await;
 
             match result {
                 Ok(v) => v.as_bool().unwrap_or(false),
@@ -409,12 +395,9 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let path_str = path.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "readBinary",
-                &[JsValue::from_str(&path_str)],
-            )
-            .await?;
+            let result =
+                call_async_callback(&callbacks, "readBinary", &[JsValue::from_str(&path_str)])
+                    .await?;
 
             // Handle Uint8Array or Array
             if let Some(uint8_array) = result.dyn_ref::<Uint8Array>() {
@@ -428,7 +411,10 @@ impl AsyncFileSystem for JsAsyncFileSystem {
                 }
                 Ok(bytes)
             } else {
-                Err(Error::new(ErrorKind::InvalidData, "readBinary did not return a Uint8Array or Array"))
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "readBinary did not return a Uint8Array or Array",
+                ))
             }
         })
     }
@@ -458,12 +444,9 @@ impl AsyncFileSystem for JsAsyncFileSystem {
         let dir_str = dir.to_string_lossy().to_string();
 
         Box::pin(async move {
-            let result = call_async_callback(
-                &callbacks,
-                "listFiles",
-                &[JsValue::from_str(&dir_str)],
-            )
-            .await?;
+            let result =
+                call_async_callback(&callbacks, "listFiles", &[JsValue::from_str(&dir_str)])
+                    .await?;
 
             parse_path_array(result)
         })
@@ -482,7 +465,10 @@ fn parse_path_array(value: JsValue) -> Result<Vec<PathBuf>> {
         }
         Ok(paths)
     } else {
-        Err(Error::new(ErrorKind::InvalidData, "Expected array of strings"))
+        Err(Error::new(
+            ErrorKind::InvalidData,
+            "Expected array of strings",
+        ))
     }
 }
 

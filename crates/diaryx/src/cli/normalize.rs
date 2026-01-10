@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::cli::util::{
     ConfirmResult, load_config, prompt_confirm, rename_file_with_refs, resolve_paths,
 };
-use crate::cli::{block_on, CliDiaryxAppSync};
+use crate::cli::{CliDiaryxAppSync, block_on};
 
 /// Convert a filename (without extension) to a human-readable title
 /// Replaces underscores and hyphens with spaces, applies title case

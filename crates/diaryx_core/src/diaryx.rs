@@ -472,7 +472,7 @@ impl<'a, FS: AsyncFileSystem + Clone> ValidateOps<'a, FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{SyncToAsyncFs};
+    use crate::fs::SyncToAsyncFs;
     use crate::test_utils::MockFileSystem;
 
     #[test]
@@ -483,16 +483,13 @@ mod tests {
         let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
 
         // Get content
-        let content =
-            crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
+        let content = crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
         assert_eq!(content.trim(), "Original content");
 
         // Set content
-        crate::fs::block_on_test(diaryx.entry().set_content("test.md", "\nNew content"))
-            .unwrap();
+        crate::fs::block_on_test(diaryx.entry().set_content("test.md", "\nNew content")).unwrap();
 
-        let content =
-            crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
+        let content = crate::fs::block_on_test(diaryx.entry().get_content("test.md")).unwrap();
         assert_eq!(content.trim(), "New content");
     }
 
@@ -503,8 +500,7 @@ mod tests {
 
         let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
 
-        let fm =
-            crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
+        let fm = crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
         assert_eq!(fm.get("title").unwrap().as_str().unwrap(), "My Title");
         assert_eq!(fm.get("author").unwrap().as_str().unwrap(), "John");
     }
@@ -522,8 +518,7 @@ mod tests {
         ))
         .unwrap();
 
-        let fm =
-            crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
+        let fm = crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
         assert_eq!(fm.get("title").unwrap().as_str().unwrap(), "Updated");
     }
 }

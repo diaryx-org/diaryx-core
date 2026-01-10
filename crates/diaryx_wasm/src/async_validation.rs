@@ -53,10 +53,12 @@ impl From<diaryx_core::validate::ValidationError> for JsAsyncValidationError {
     fn from(err: diaryx_core::validate::ValidationError) -> Self {
         use diaryx_core::validate::ValidationError;
         match err {
-            ValidationError::BrokenPartOf { file, target } => JsAsyncValidationError::BrokenPartOf {
-                file: file.to_string_lossy().to_string(),
-                target,
-            },
+            ValidationError::BrokenPartOf { file, target } => {
+                JsAsyncValidationError::BrokenPartOf {
+                    file: file.to_string_lossy().to_string(),
+                    target,
+                }
+            }
             ValidationError::BrokenContentsRef { index, target } => {
                 JsAsyncValidationError::BrokenContentsRef {
                     index: index.to_string_lossy().to_string(),
@@ -243,7 +245,7 @@ impl DiaryxAsyncValidation {
             let root_path = PathBuf::from(&workspace_path);
 
             let ws = Workspace::new(&fs);
-            
+
             // Find root index
             let root_index = ws
                 .find_root_index_in_dir(&root_path)
@@ -252,14 +254,13 @@ impl DiaryxAsyncValidation {
 
             let root_index = match root_index {
                 Some(idx) => idx,
-                None => {
-                    ws.find_any_index_in_dir(&root_path)
-                        .await
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?
-                        .ok_or_else(|| {
-                            JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
-                        })?
-                }
+                None => ws
+                    .find_any_index_in_dir(&root_path)
+                    .await
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?
+                    .ok_or_else(|| {
+                        JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
+                    })?,
             };
 
             let result = validator
@@ -493,13 +494,11 @@ impl DiaryxAsyncValidation {
             // Fix warnings
             for warn in &js_result.warnings {
                 let result = match warn {
-                    JsAsyncValidationWarning::UnlistedFile { index, file } => {
-                        Some(
-                            fixer
-                                .fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file))
-                                .await,
-                        )
-                    }
+                    JsAsyncValidationWarning::UnlistedFile { index, file } => Some(
+                        fixer
+                            .fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file))
+                            .await,
+                    ),
                     JsAsyncValidationWarning::NonPortablePath {
                         file,
                         property,

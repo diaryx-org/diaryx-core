@@ -478,7 +478,7 @@ impl std::fmt::Display for ExportStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{block_on_test, FileSystem, InMemoryFileSystem, SyncToAsyncFs};
+    use crate::fs::{FileSystem, InMemoryFileSystem, SyncToAsyncFs, block_on_test};
 
     type TestFs = SyncToAsyncFs<InMemoryFileSystem>;
 

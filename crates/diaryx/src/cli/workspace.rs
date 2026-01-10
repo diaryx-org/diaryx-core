@@ -1,7 +1,7 @@
 //! Workspace command handlers
 
 use diaryx_core::config::Config;
-use diaryx_core::entry::{prettify_filename, slugify, DiaryxAppSync};
+use diaryx_core::entry::{DiaryxAppSync, prettify_filename, slugify};
 use diaryx_core::fs::{FileSystem, RealFileSystem, SyncToAsyncFs};
 use diaryx_core::template::TemplateContext;
 use diaryx_core::validate::ValidationFixer;
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::args::WorkspaceCommands;
 use crate::cli::util::{calculate_relative_path, rename_file_with_refs, resolve_paths};
-use crate::cli::{block_on, CliDiaryxAppSync, CliWorkspace};
+use crate::cli::{CliDiaryxAppSync, CliWorkspace, block_on};
 use crate::editor::launch_editor;
 
 pub fn handle_workspace_command(
@@ -403,7 +403,8 @@ fn handle_validate(
                     suggested,
                 } => {
                     if fix {
-                        let result = block_on(fixer.fix_non_portable_path(file, property, value, suggested));
+                        let result =
+                            block_on(fixer.fix_non_portable_path(file, property, value, suggested));
                         if result.success {
                             println!(
                                 "  ✓ Fixed: Normalized {} '{}' -> '{}' in {}",

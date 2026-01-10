@@ -207,7 +207,11 @@ impl DiaryxValidation {
             let ws = Workspace::new(fs);
             let root_index = block_on(ws.find_root_index_in_dir(&root_path))
                 .js_err()?
-                .or_else(|| block_on(ws.find_any_index_in_dir(&root_path)).ok().flatten())
+                .or_else(|| {
+                    block_on(ws.find_any_index_in_dir(&root_path))
+                        .ok()
+                        .flatten()
+                })
                 .ok_or_else(|| {
                     JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
                 })?;
@@ -312,7 +316,8 @@ impl DiaryxValidation {
         with_async_fs(|fs| {
             let fixer = ValidationFixer::new(fs);
             let path = PathBuf::from(file_path);
-            let result = block_on(fixer.fix_non_portable_path(&path, property, old_value, new_value));
+            let result =
+                block_on(fixer.fix_non_portable_path(&path, property, old_value, new_value));
             serde_wasm_bindgen::to_value(&JsFixResult::from(result)).js_err()
         })
     }
@@ -397,9 +402,9 @@ impl DiaryxValidation {
             // Fix warnings
             for warn in &js_result.warnings {
                 let result = match warn {
-                    JsValidationWarning::UnlistedFile { index, file } => {
-                        Some(block_on(fixer.fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file))))
-                    }
+                    JsValidationWarning::UnlistedFile { index, file } => Some(block_on(
+                        fixer.fix_unlisted_file(&PathBuf::from(index), &PathBuf::from(file)),
+                    )),
                     JsValidationWarning::NonPortablePath {
                         file,
                         property,
@@ -414,14 +419,21 @@ impl DiaryxValidation {
                     JsValidationWarning::OrphanBinaryFile {
                         file,
                         suggested_index,
-                    } => suggested_index.as_ref().map(|index| {
-                        block_on(fixer.fix_orphan_binary_file(&PathBuf::from(index), &PathBuf::from(file)))
-                    }),
+                    } => {
+                        suggested_index.as_ref().map(|index| {
+                            block_on(fixer.fix_orphan_binary_file(
+                                &PathBuf::from(index),
+                                &PathBuf::from(file),
+                            ))
+                        })
+                    }
                     JsValidationWarning::MissingPartOf {
                         file,
                         suggested_index,
                     } => suggested_index.as_ref().map(|index| {
-                        block_on(fixer.fix_missing_part_of(&PathBuf::from(file), &PathBuf::from(index)))
+                        block_on(
+                            fixer.fix_missing_part_of(&PathBuf::from(file), &PathBuf::from(index)),
+                        )
                     }),
                     // These cannot be auto-fixed
                     JsValidationWarning::OrphanFile { .. }

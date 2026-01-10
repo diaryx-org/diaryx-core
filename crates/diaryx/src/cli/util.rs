@@ -8,7 +8,7 @@ use serde_yaml::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::cli::{block_on, CliDiaryxAppSync};
+use crate::cli::{CliDiaryxAppSync, block_on};
 
 /// Result of a workspace-aware file rename operation
 pub struct RenameResult {

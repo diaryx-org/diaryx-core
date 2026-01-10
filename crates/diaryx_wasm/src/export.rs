@@ -168,9 +168,12 @@ impl DiaryxExport {
 
             let exporter = Exporter::new(fs);
 
-            let plan = block_on(exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export")))
-                .js_err()?;
+            let plan = block_on(exporter.plan_export(
+                Path::new(root_path),
+                audience,
+                Path::new("/export"),
+            ))
+            .js_err()?;
 
             let result = ExportPlanJs {
                 included: plan
@@ -249,14 +252,18 @@ impl DiaryxExport {
 
             let exporter = Exporter::new(fs.clone());
 
-            let plan = block_on(exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export")))
-                .js_err()?;
+            let plan = block_on(exporter.plan_export(
+                Path::new(root_path),
+                audience,
+                Path::new("/export"),
+            ))
+            .js_err()?;
 
             let mut files: Vec<ExportedFile> = Vec::new();
 
             for export_file in &plan.included {
-                let content = block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
+                let content =
+                    block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
 
                 let processed = if !export_file.filtered_contents.is_empty() {
                     filter_contents_and_audience(&content, &export_file.filtered_contents)
@@ -380,14 +387,18 @@ impl DiaryxExport {
 
             let exporter = Exporter::new(fs.clone());
 
-            let plan = block_on(exporter
-                .plan_export(Path::new(root_path), audience, Path::new("/export")))
-                .js_err()?;
+            let plan = block_on(exporter.plan_export(
+                Path::new(root_path),
+                audience,
+                Path::new("/export"),
+            ))
+            .js_err()?;
 
             let mut files: Vec<ExportedFile> = Vec::new();
 
             for export_file in &plan.included {
-                let content = block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
+                let content =
+                    block_on(fs.clone().read_to_string(&export_file.source_path)).js_err()?;
                 let body = extract_body(&content);
                 let html = convert_md_to_html(&body);
                 let html_path = export_file

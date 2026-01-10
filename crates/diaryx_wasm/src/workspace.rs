@@ -61,7 +61,11 @@ impl DiaryxWorkspace {
             // Find root index in the workspace
             let root_index = block_on(ws.find_root_index_in_dir(&root_path))
                 .js_err()?
-                .or_else(|| block_on(ws.find_any_index_in_dir(&root_path)).ok().flatten())
+                .or_else(|| {
+                    block_on(ws.find_any_index_in_dir(&root_path))
+                        .ok()
+                        .flatten()
+                })
                 .ok_or_else(|| {
                     JsValue::from_str(&format!("No workspace found at '{}'", workspace_path))
                 })?;

@@ -605,13 +605,13 @@ impl BackupTarget for LocalDriveTarget {
                             // NOTE: For maximum compatibility across Diaryx filesystem implementations (including WASM/in-memory),
                             // we write restored files as UTF-8-ish text. This is a compromise: true binary attachments should be
                             // handled by an attachment-specific restore path in the future.
-                                                        let bytes = std_fs::read(&path)
-                                                            .map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
+                            let bytes = std_fs::read(&path)
+                                .map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
 
-                                                        let s = String::from_utf8_lossy(&bytes).into_owned();
-                                                        fs.write_file(&dest_path, &s).await.map_err(|e| {
-                                                            format!("Failed to write file {:?}: {}", dest_path, e)
-                                                        })?;
+                            let s = String::from_utf8_lossy(&bytes).into_owned();
+                            fs.write_file(&dest_path, &s).await.map_err(|e| {
+                                format!("Failed to write file {:?}: {}", dest_path, e)
+                            })?;
 
                             *files_processed += 1;
                         }
@@ -767,7 +767,9 @@ mod tests {
 
         // Verify restored content (read back via the inner sync fs)
         let fs2_inner = async_fs2.into_inner();
-        let content = fs2_inner.read_to_string(&workspace.join("test.md")).unwrap();
+        let content = fs2_inner
+            .read_to_string(&workspace.join("test.md"))
+            .unwrap();
         assert_eq!(content, "# Hello World");
 
         let nested = fs2_inner

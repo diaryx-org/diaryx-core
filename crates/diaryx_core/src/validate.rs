@@ -356,8 +356,7 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 if !is_index {
                     // Regular file with no part_of = orphan
                     // Try to find an index in the same directory to suggest
-                    let suggested_index =
-                        find_index_in_directory(&self.ws, dir, Some(&path)).await;
+                    let suggested_index = find_index_in_directory(&self.ws, dir, Some(&path)).await;
                     result.warnings.push(ValidationWarning::MissingPartOf {
                         file: path.clone(),
                         suggested_index,
@@ -687,20 +686,18 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
                 frontmatter.insert(key.to_string(), value);
                 let yaml_str = serde_yaml::to_string(&frontmatter)?;
                 let new_content = format!("---\n{}---\n", yaml_str);
-                return self
-                    .fs
-                    .write_file(path, &new_content)
-                    .await
-                    .map_err(|e| crate::error::DiaryxError::FileWrite {
+                return self.fs.write_file(path, &new_content).await.map_err(|e| {
+                    crate::error::DiaryxError::FileWrite {
                         path: path.to_path_buf(),
                         source: e,
-                    });
+                    }
+                });
             }
             Err(e) => {
                 return Err(crate::error::DiaryxError::FileRead {
                     path: path.to_path_buf(),
                     source: e,
-                })
+                });
             }
         };
 
@@ -724,13 +721,12 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
         let yaml_str = serde_yaml::to_string(&frontmatter)?;
         let new_content = format!("---\n{}---\n{}", yaml_str, body);
 
-        self.fs
-            .write_file(path, &new_content)
-            .await
-            .map_err(|e| crate::error::DiaryxError::FileWrite {
+        self.fs.write_file(path, &new_content).await.map_err(|e| {
+            crate::error::DiaryxError::FileWrite {
                 path: path.to_path_buf(),
                 source: e,
-            })
+            }
+        })
     }
 
     /// Remove a frontmatter property from a file
@@ -760,13 +756,12 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
         let yaml_str = serde_yaml::to_string(&frontmatter)?;
         let new_content = format!("---\n{}---\n{}", yaml_str, body);
 
-        self.fs
-            .write_file(path, &new_content)
-            .await
-            .map_err(|e| crate::error::DiaryxError::FileWrite {
+        self.fs.write_file(path, &new_content).await.map_err(|e| {
+            crate::error::DiaryxError::FileWrite {
                 path: path.to_path_buf(),
                 source: e,
-            })
+            }
+        })
     }
 
     // ==================== Fix Methods ====================
@@ -799,7 +794,11 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
                     .collect();
 
                 match self
-                    .set_frontmatter_property(index, "contents", serde_yaml::Value::Sequence(filtered))
+                    .set_frontmatter_property(
+                        index,
+                        "contents",
+                        serde_yaml::Value::Sequence(filtered),
+                    )
                     .await
                 {
                     Ok(_) => FixResult::success(format!(
@@ -1179,7 +1178,7 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::{block_on_test, FileSystem, InMemoryFileSystem, SyncToAsyncFs};
+    use crate::fs::{FileSystem, InMemoryFileSystem, SyncToAsyncFs, block_on_test};
 
     type TestFs = SyncToAsyncFs<InMemoryFileSystem>;
 

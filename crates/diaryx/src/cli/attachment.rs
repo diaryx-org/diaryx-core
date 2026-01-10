@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::args::AttachmentCommands;
 use crate::cli::util::resolve_paths;
-use crate::cli::{block_on, CliDiaryxAppSync, CliWorkspace};
+use crate::cli::{CliDiaryxAppSync, CliWorkspace, block_on};
 
 /// Handle attachment commands
 pub fn handle_attachment_command(
@@ -262,12 +262,7 @@ fn handle_remove(
 }
 
 /// Handle 'attachment list' command
-fn handle_list(
-    ws: &CliWorkspace,
-    app: &CliDiaryxAppSync,
-    config: &Config,
-    entry_arg: &str,
-) {
+fn handle_list(ws: &CliWorkspace, app: &CliDiaryxAppSync, config: &Config, entry_arg: &str) {
     // Resolve entry path
     let entry_paths = resolve_paths(entry_arg, config, app);
     if entry_paths.is_empty() {

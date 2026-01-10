@@ -98,7 +98,11 @@ pub trait AsyncFileSystem: Send + Sync {
     }
 
     /// Write binary content to a file.
-    fn write_binary<'a>(&'a self, _path: &'a Path, _content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+    fn write_binary<'a>(
+        &'a self,
+        _path: &'a Path,
+        _content: &'a [u8],
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             // Default implementation: not supported
             Err(std::io::Error::new(
@@ -137,7 +141,10 @@ pub trait AsyncFileSystem: Send + Sync {
     }
 
     /// Recursively list ALL files and directories in a directory.
-    fn list_all_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+    fn list_all_files_recursive<'a>(
+        &'a self,
+        dir: &'a Path,
+    ) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move {
             let mut all_entries = Vec::new();
 
@@ -206,7 +213,11 @@ pub trait AsyncFileSystem {
     }
 
     /// Write binary content to a file.
-    fn write_binary<'a>(&'a self, _path: &'a Path, _content: &'a [u8]) -> BoxFuture<'a, Result<()>> {
+    fn write_binary<'a>(
+        &'a self,
+        _path: &'a Path,
+        _content: &'a [u8],
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             // Default implementation: not supported
             Err(std::io::Error::new(
@@ -245,7 +256,10 @@ pub trait AsyncFileSystem {
     }
 
     /// Recursively list ALL files and directories in a directory.
-    fn list_all_files_recursive<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
+    fn list_all_files_recursive<'a>(
+        &'a self,
+        dir: &'a Path,
+    ) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move {
             let mut all_entries = Vec::new();
 
@@ -528,9 +542,7 @@ mod tests {
         let sync_fs = InMemoryFileSystem::new();
 
         // Write a file using sync API
-        sync_fs
-            .write_file(Path::new("test.md"), "# Hello")
-            .unwrap();
+        sync_fs.write_file(Path::new("test.md"), "# Hello").unwrap();
 
         // Wrap in async adapter
         let async_fs = SyncToAsyncFs::new(sync_fs);
@@ -599,9 +611,7 @@ mod tests {
     #[test]
     fn test_inner_access() {
         let sync_fs = InMemoryFileSystem::new();
-        sync_fs
-            .write_file(Path::new("test.md"), "content")
-            .unwrap();
+        sync_fs.write_file(Path::new("test.md"), "content").unwrap();
 
         let async_fs = SyncToAsyncFs::new(sync_fs);
 

@@ -94,7 +94,11 @@ impl Config {
     }
 
     /// Save config to a specific path using an AsyncFileSystem.
-    pub async fn save_to<FS: AsyncFileSystem>(&self, fs: &FS, path: &std::path::Path) -> Result<()> {
+    pub async fn save_to<FS: AsyncFileSystem>(
+        &self,
+        fs: &FS,
+        path: &std::path::Path,
+    ) -> Result<()> {
         // Create parent directory if needed
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
