@@ -20,7 +20,13 @@
     AlertCircle,
     Paperclip,
     Trash2,
+    File,
+    FileImage,
+    FileArchive,
+    FileSpreadsheet,
+    FileCode,
   } from "@lucide/svelte";
+  import type { Component } from "svelte";
 
   interface Props {
     entry: EntryData | null;
@@ -73,6 +79,23 @@
 
   function getFilename(path: string): string {
     return path.split("/").pop() ?? path;
+  }
+
+  // Get file type icon based on extension
+  function getFileIcon(filename: string): Component {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
+    const docExts = ['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'];
+    const spreadsheetExts = ['xls', 'xlsx', 'csv'];
+    const archiveExts = ['zip', 'tar', 'gz', '7z', 'rar'];
+    const codeExts = ['json', 'xml', 'html', 'css', 'js', 'ts'];
+
+    if (imageExts.includes(ext)) return FileImage;
+    if (docExts.includes(ext)) return FileText;
+    if (spreadsheetExts.includes(ext)) return FileSpreadsheet;
+    if (archiveExts.includes(ext)) return FileArchive;
+    if (codeExts.includes(ext)) return FileCode;
+    return File;
   }
 
   // State for adding new properties
@@ -491,19 +514,31 @@
         {#if getAttachments().length > 0}
           <div class="space-y-1 mb-2">
             {#each getAttachments() as attachment}
+              {@const Icon = getFileIcon(getFilename(attachment))}
               <div
-                class="flex items-center justify-between gap-2 px-2 py-1 rounded-md bg-secondary/50 group"
+                class="flex items-center justify-between gap-2 px-2 py-1.5 rounded-md bg-secondary/50 group cursor-grab active:cursor-grabbing"
+                draggable="true"
+                ondragstart={(e) => {
+                  if (e.dataTransfer && entry) {
+                    e.dataTransfer.setData('text/x-diaryx-attachment', attachment);
+                    e.dataTransfer.setData('text/x-diaryx-source-entry', entry.path);
+                    e.dataTransfer.effectAllowed = 'move';
+                  }
+                }}
               >
-                <span
-                  class="text-xs text-foreground truncate"
-                  title={attachment}
-                >
-                  {getFilename(attachment)}
-                </span>
+                <div class="flex items-center gap-2 min-w-0">
+                  <Icon class="size-3.5 shrink-0 text-muted-foreground" />
+                  <span
+                    class="text-xs text-foreground truncate"
+                    title={attachment}
+                  >
+                    {getFilename(attachment)}
+                  </span>
+                </div>
                 <Button
                   variant="ghost"
                   size="icon"
-                  class="size-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  class="size-5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                   onclick={() => onDeleteAttachment?.(attachment)}
                   aria-label="Remove attachment"
                 >

@@ -379,6 +379,69 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 }))
             }
 
+            Command::FixCircularReference { file_path, part_of_value } => {
+                let result = self.validate().fixer()
+                    .fix_circular_reference(Path::new(&file_path), &part_of_value)
+                    .await;
+                Ok(Response::FixResult(result))
+            }
+
+            Command::GetAvailableParentIndexes { file_path, workspace_root } => {
+                // Find all index files between the file and the workspace root
+                let ws = self.workspace().inner();
+                let file = Path::new(&file_path);
+                let root_index = Path::new(&workspace_root);
+                let root_dir = root_index.parent().unwrap_or(root_index);
+
+                let mut parents = Vec::new();
+
+                // Start from the file's directory and walk up to the workspace root
+                let file_dir = file.parent().unwrap_or(Path::new("."));
+                let mut current = file_dir.to_path_buf();
+
+                loop {
+                    // Look for index files in this directory
+                    if let Ok(files) = ws.fs_ref().list_files(&current).await {
+                        for file_path in files {
+                            // Check if it's a markdown file
+                            if file_path.extension().is_some_and(|ext| ext == "md")
+                                && !ws.fs_ref().is_dir(&file_path).await
+                            {
+                                // Try to parse and check if it has contents (is an index)
+                                if let Ok(index) = ws.parse_index(&file_path).await {
+                                    if index.frontmatter.is_index() {
+                                        parents.push(file_path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Stop if we've reached or passed the workspace root
+                    if current == root_dir || current.starts_with(root_dir) == false {
+                        break;
+                    }
+
+                    // Go up one level
+                    match current.parent() {
+                        Some(parent) if parent != current => {
+                            current = parent.to_path_buf();
+                        }
+                        _ => break,
+                    }
+                }
+
+                // Always include the workspace root if not already present
+                let root_str = root_index.to_string_lossy().to_string();
+                if !parents.contains(&root_str) && ws.fs_ref().exists(root_index).await {
+                    parents.push(root_str);
+                }
+
+                // Sort for consistent ordering
+                parents.sort();
+                Ok(Response::Strings(parents))
+            }
+
             // === Export Operations ===
             Command::GetAvailableAudiences { root_path } => {
                 // Collect unique audience tags from workspace
@@ -688,6 +751,70 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     })?;
 
                 Ok(Response::Bytes(data))
+            }
+
+            Command::MoveAttachment { source_entry_path, target_entry_path, attachment_path, new_filename } => {
+                // Resolve source paths
+                let source_entry = PathBuf::from(&source_entry_path);
+                let source_dir = source_entry.parent().unwrap_or_else(|| Path::new("."));
+                let source_attachment_path = source_dir.join(&attachment_path);
+
+                // Get the original filename
+                let original_filename = source_attachment_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| DiaryxError::InvalidPath {
+                        path: source_attachment_path.clone(),
+                        message: "Could not extract filename".to_string(),
+                    })?;
+
+                // Determine final filename (use new_filename if provided, otherwise original)
+                let final_filename = new_filename.as_deref().unwrap_or(original_filename);
+
+                // Resolve target paths
+                let target_entry = PathBuf::from(&target_entry_path);
+                let target_dir = target_entry.parent().unwrap_or_else(|| Path::new("."));
+                let target_attachments_dir = target_dir.join("_attachments");
+                let target_attachment_path = target_attachments_dir.join(final_filename);
+
+                // Check for collision at destination
+                if self.fs().exists(&target_attachment_path).await {
+                    return Err(DiaryxError::InvalidPath {
+                        path: target_attachment_path,
+                        message: "File already exists at destination".to_string(),
+                    });
+                }
+
+                // Read the source file data
+                let data = self.fs().read_binary(&source_attachment_path).await
+                    .map_err(|e| DiaryxError::FileRead {
+                        path: source_attachment_path.clone(),
+                        source: e,
+                    })?;
+
+                // Create target _attachments directory if needed
+                self.fs().create_dir_all(&target_attachments_dir).await?;
+
+                // Write to target location
+                self.fs().write_binary(&target_attachment_path, &data).await
+                    .map_err(|e| DiaryxError::FileWrite {
+                        path: target_attachment_path.clone(),
+                        source: e,
+                    })?;
+
+                // Update frontmatter: remove from source, add to target
+                self.entry().remove_attachment(&source_entry_path, &attachment_path).await?;
+                let target_rel_path = format!("_attachments/{}", final_filename);
+                self.entry().add_attachment(&target_entry_path, &target_rel_path).await?;
+
+                // Delete the original file
+                self.fs().delete_file(&source_attachment_path).await
+                    .map_err(|e| DiaryxError::FileWrite {
+                        path: source_attachment_path,
+                        source: e,
+                    })?;
+
+                Ok(Response::String(target_rel_path))
             }
 
             // === Storage Operations ===

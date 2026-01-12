@@ -86,6 +86,10 @@ pub enum ValidationWarning {
     CircularReference {
         /// The files involved in the cycle
         files: Vec<PathBuf>,
+        /// Suggested file to edit to break the cycle (the one that would break it most cleanly)
+        suggested_file: Option<PathBuf>,
+        /// The part_of value to remove from the suggested file
+        suggested_remove_part_of: Option<String>,
     },
     /// A path in frontmatter is not portable (absolute, contains `.`, etc.)
     NonPortablePath {
@@ -168,7 +172,7 @@ impl<FS: AsyncFileSystem> Validator<FS> {
         let mut result = ValidationResult::default();
         let mut visited = HashSet::new();
 
-        self.validate_recursive(root_path, &mut result, &mut visited)
+        self.validate_recursive(root_path, &mut result, &mut visited, None, None)
             .await?;
 
         // Find unlinked entries: files/dirs in workspace not visited during traversal
@@ -243,6 +247,37 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                     let is_dir = self.ws.fs_ref().is_dir(&entry).await;
                     let suggested_index = find_nearest_index(&entry);
 
+                    // For directories, check if they have an index file inside
+                    let index_file = if is_dir {
+                        self.ws.find_root_index_in_dir(&entry).await.ok().flatten()
+                    } else {
+                        None
+                    };
+
+                    // Issue 1 fix: If directory has an index file that IS visited, don't report as unlinked
+                    if is_dir {
+                        if let Some(ref idx_path) = index_file {
+                            let idx_canonical =
+                                idx_path.canonicalize().unwrap_or_else(|_| idx_path.clone());
+                            if visited_normalized.contains(&idx_canonical) {
+                                continue; // Skip - directory's index is properly linked
+                            }
+                        }
+                    }
+
+                    // Issue 2 fix: Check if it's a binary file (non-.md, non-directory)
+                    let extension = entry.extension().and_then(|e| e.to_str());
+                    let is_binary = !is_dir && extension.is_some() && extension != Some("md");
+
+                    if is_binary {
+                        // Report as OrphanBinaryFile instead of UnlinkedEntry
+                        result.warnings.push(ValidationWarning::OrphanBinaryFile {
+                            file: entry.clone(),
+                            suggested_index,
+                        });
+                        continue; // Don't also report as UnlinkedEntry
+                    }
+
                     // Report as OrphanFile if it's an .md file (for backwards compat)
                     if entry.extension().is_some_and(|ext| ext == "md") {
                         result.warnings.push(ValidationWarning::OrphanFile {
@@ -251,14 +286,7 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                         });
                     }
 
-                    // For directories, check if they have an index file inside
-                    let index_file = if is_dir {
-                        self.ws.find_root_index_in_dir(&entry).await.ok().flatten()
-                    } else {
-                        None
-                    };
-
-                    // Always report as UnlinkedEntry for "List All Files" mode
+                    // Report as UnlinkedEntry for "List All Files" mode (md files and dirs without index)
                     result.warnings.push(ValidationWarning::UnlinkedEntry {
                         path: entry,
                         is_dir,
@@ -273,17 +301,27 @@ impl<FS: AsyncFileSystem> Validator<FS> {
     }
 
     /// Recursively validate from a given path.
+    /// `from_parent` tracks which file led us here (for cycle detection).
+    /// `contents_ref` is the reference string used in the parent's contents (for cycle fix suggestions).
     async fn validate_recursive(
         &self,
         path: &Path,
         result: &mut ValidationResult,
         visited: &mut HashSet<PathBuf>,
+        from_parent: Option<&Path>,
+        contents_ref: Option<&str>,
     ) -> Result<()> {
         // Avoid cycles
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if visited.contains(&canonical) {
+            // Cycle detected! Suggest removing the contents reference from the parent
             result.warnings.push(ValidationWarning::CircularReference {
                 files: vec![path.to_path_buf()],
+                // Suggest editing the parent file that led us here
+                suggested_file: from_parent.map(|p| p.to_path_buf()),
+                // The contents ref to remove would be in the parent, but we suggest
+                // removing part_of from the target file as that's often cleaner
+                suggested_remove_part_of: contents_ref.map(|s| s.to_string()),
             });
             return Ok(());
         }
@@ -304,8 +342,15 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                         target: child_ref.clone(),
                     });
                 } else {
-                    // Recurse into child
-                    Box::pin(self.validate_recursive(&child_path, result, visited)).await?;
+                    // Recurse into child, tracking parent info for cycle detection
+                    Box::pin(self.validate_recursive(
+                        &child_path,
+                        result,
+                        visited,
+                        Some(path),
+                        Some(child_ref),
+                    ))
+                    .await?;
                 }
             }
 
@@ -1129,6 +1174,55 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
         }
     }
 
+    /// Fix a circular reference by removing a contents reference from a file.
+    ///
+    /// This removes the specified reference from the file's `contents` array,
+    /// breaking the cycle.
+    pub async fn fix_circular_reference(
+        &self,
+        file: &Path,
+        contents_ref_to_remove: &str,
+    ) -> FixResult {
+        match self.get_frontmatter_property(file, "contents").await {
+            Some(serde_yaml::Value::Sequence(items)) => {
+                let filtered: Vec<serde_yaml::Value> = items
+                    .into_iter()
+                    .filter(|item| {
+                        if let serde_yaml::Value::String(s) = item {
+                            s != contents_ref_to_remove
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                match self
+                    .set_frontmatter_property(
+                        file,
+                        "contents",
+                        serde_yaml::Value::Sequence(filtered),
+                    )
+                    .await
+                {
+                    Ok(_) => FixResult::success(format!(
+                        "Removed circular reference '{}' from {}",
+                        contents_ref_to_remove,
+                        file.display()
+                    )),
+                    Err(e) => FixResult::failure(format!(
+                        "Failed to remove circular reference from {}: {}",
+                        file.display(),
+                        e
+                    )),
+                }
+            }
+            _ => FixResult::failure(format!(
+                "Could not read contents from {}",
+                file.display()
+            )),
+        }
+    }
+
     /// Fix a validation error.
     pub async fn fix_error(&self, error: &ValidationError) -> FixResult {
         match error {
@@ -1215,9 +1309,22 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
                     None
                 }
             }
+            ValidationWarning::CircularReference {
+                suggested_file,
+                suggested_remove_part_of,
+                ..
+            } => {
+                // Can auto-fix if we have a suggestion
+                if let (Some(file), Some(contents_ref)) =
+                    (suggested_file, suggested_remove_part_of)
+                {
+                    Some(self.fix_circular_reference(file, contents_ref).await)
+                } else {
+                    None
+                }
+            }
             // These cannot be auto-fixed
-            ValidationWarning::CircularReference { .. }
-            | ValidationWarning::MultipleIndexes { .. } => None,
+            ValidationWarning::MultipleIndexes { .. } => None,
         }
     }
 

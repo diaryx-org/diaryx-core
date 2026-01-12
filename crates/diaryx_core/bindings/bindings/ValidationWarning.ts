@@ -41,7 +41,15 @@ file: string, } | { "type": "CircularReference",
 /**
  * The files involved in the cycle
  */
-files: Array<string>, } | { "type": "NonPortablePath", 
+files: Array<string>, 
+/**
+ * Suggested file to edit to break the cycle (the one that would break it most cleanly)
+ */
+suggested_file: string | null, 
+/**
+ * The part_of value to remove from the suggested file
+ */
+suggested_remove_part_of: string | null, } | { "type": "NonPortablePath", 
 /**
  * The file containing the non-portable path
  */

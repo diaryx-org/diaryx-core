@@ -404,6 +404,29 @@
         attributes: {
           class: "editor-content",
         },
+        handlePaste: (_view, event) => {
+          const items = event.clipboardData?.items;
+          if (!items) return false;
+
+          for (const item of items) {
+            // Handle pasted images
+            if (item.type.startsWith('image/')) {
+              const file = item.getAsFile();
+              if (file && onFileDrop) {
+                event.preventDefault();
+                onFileDrop(file).then(result => {
+                  if (result && result.blobUrl && editor) {
+                    editor.chain().focus()
+                      .setImage({ src: result.blobUrl, alt: file.name })
+                      .run();
+                  }
+                });
+                return true;
+              }
+            }
+          }
+          return false;
+        },
       },
     });
   }
@@ -594,10 +617,10 @@
     ondrop={async (e) => {
       e.preventDefault();
       const file = e.dataTransfer?.files?.[0];
-      if (file && file.type.startsWith("image/") && onFileDrop) {
+      if (file && onFileDrop) {
         const result = await onFileDrop(file);
-        if (result && editor) {
-          // Insert image at cursor position
+        // Only insert into editor if it's an image with a blob URL
+        if (result && result.blobUrl && editor && file.type.startsWith("image/")) {
           editor
             .chain()
             .focus()

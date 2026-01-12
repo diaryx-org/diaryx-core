@@ -261,6 +261,22 @@ pub enum Command {
         validation_result: ValidationResult,
     },
 
+    /// Fix a circular reference by removing part_of from a file.
+    FixCircularReference {
+        /// Path to the file to edit.
+        file_path: String,
+        /// The part_of value to remove.
+        part_of_value: String,
+    },
+
+    /// Get available parent indexes for a file (for "Choose parent" picker).
+    GetAvailableParentIndexes {
+        /// Path to the file that needs a parent.
+        file_path: String,
+        /// Workspace root to limit scope.
+        workspace_root: String,
+    },
+
     // === Export ===
     /// Get available audiences.
     GetAvailableAudiences {
@@ -364,6 +380,18 @@ pub enum Command {
         entry_path: String,
         /// Path to the attachment.
         attachment_path: String,
+    },
+
+    /// Move an attachment from one entry to another.
+    MoveAttachment {
+        /// Path to the source entry file.
+        source_entry_path: String,
+        /// Path to the target entry file.
+        target_entry_path: String,
+        /// Relative path to the attachment (e.g., "_attachments/image.png").
+        attachment_path: String,
+        /// Optional new filename (for handling collisions).
+        new_filename: Option<String>,
     },
 
     // === File System ===

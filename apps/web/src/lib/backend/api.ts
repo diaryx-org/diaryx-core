@@ -300,6 +300,24 @@ export function createApi(backend: Backend) {
       return expectResponse(response, 'FixSummary').data;
     },
 
+    /** Fix a circular reference by removing a contents reference. */
+    async fixCircularReference(filePath: string, contentsRefToRemove: string): Promise<FixResult> {
+      const response = await backend.execute({
+        type: 'FixCircularReference',
+        params: { file_path: filePath, part_of_value: contentsRefToRemove },
+      });
+      return expectResponse(response, 'FixResult').data;
+    },
+
+    /** Get available parent indexes for a file (for "Choose parent" picker). */
+    async getAvailableParentIndexes(filePath: string, workspaceRoot: string): Promise<string[]> {
+      const response = await backend.execute({
+        type: 'GetAvailableParentIndexes',
+        params: { file_path: filePath, workspace_root: workspaceRoot },
+      });
+      return expectResponse(response, 'Strings').data;
+    },
+
     // =========================================================================
     // Export
     // =========================================================================
@@ -421,6 +439,25 @@ export function createApi(backend: Backend) {
         params: { entry_path: entryPath, attachment_path: attachmentPath },
       });
       return expectResponse(response, 'Bytes').data;
+    },
+
+    /** Move an attachment from one entry to another. Returns the new attachment path. */
+    async moveAttachment(
+      sourceEntryPath: string,
+      targetEntryPath: string,
+      attachmentPath: string,
+      newFilename?: string
+    ): Promise<string> {
+      const response = await backend.execute({
+        type: 'MoveAttachment',
+        params: {
+          source_entry_path: sourceEntryPath,
+          target_entry_path: targetEntryPath,
+          attachment_path: attachmentPath,
+          new_filename: newFilename ?? null,
+        },
+      });
+      return expectResponse(response, 'String').data;
     },
 
     // =========================================================================

@@ -10,6 +10,7 @@
     ChevronDown,
     FileText,
     Folder,
+    FolderPlus,
     Loader2,
     PanelLeftClose,
     AlertCircle,
@@ -22,6 +23,7 @@
     Settings,
     Wrench,
     Eye,
+    X,
   } from "@lucide/svelte";
 
   interface Props {
@@ -43,6 +45,7 @@
     onDeleteEntry: (path: string) => void;
     onExport: (path: string) => void;
     onAddAttachment: (entryPath: string) => void;
+    onMoveAttachment?: (sourceEntryPath: string, targetEntryPath: string, attachmentPath: string) => void;
     onRemoveBrokenPartOf?: (filePath: string) => void;
     onRemoveBrokenContentsRef?: (indexPath: string, target: string) => void;
     onAttachUnlinkedEntry?: (entryPath: string) => void;
@@ -69,6 +72,7 @@
     onDeleteEntry,
     onExport,
     onAddAttachment,
+    onMoveAttachment,
     onRemoveBrokenPartOf,
     onRemoveBrokenContentsRef,
     onAttachUnlinkedEntry,
@@ -185,6 +189,13 @@
         return warning.path ?? null;
       case 'UnlistedFile':
         return warning.file ?? null;
+      case 'CircularReference': {
+        // Return the first file in the cycle for viewing
+        const files = (warning as { files?: string[] }).files;
+        return files && files.length > 0 ? files[0] : null;
+      }
+      case 'NonPortablePath':
+        return warning.file ?? null;
       default:
         return null;
     }
@@ -247,6 +258,11 @@
       case 'UnlistedFile':
       case 'NonPortablePath':
         return true;
+      case 'CircularReference': {
+        // Fixable if we have a suggested file and contents ref to remove
+        const w = warning as { suggested_file?: string | null; suggested_remove_part_of?: string | null };
+        return !!(w.suggested_file && w.suggested_remove_part_of);
+      }
       default:
         return false;
     }
@@ -263,7 +279,26 @@
     if (warning.type === 'OrphanBinaryFile') {
       return false; // Can't view binary files in editor
     }
+    // CircularReference is viewable if the file is a markdown file
+    if (warning.type === 'CircularReference') {
+      return filePath.endsWith('.md');
+    }
     return filePath.endsWith('.md');
+  }
+
+  // Check if a warning supports "Choose parent..." option
+  function supportsParentPicker(warning: ValidationWarning): boolean {
+    // These warning types can be fixed by choosing a different parent index
+    switch (warning.type) {
+      case 'OrphanFile':
+      case 'OrphanBinaryFile':
+      case 'MissingPartOf':
+      case 'UnlinkedEntry':
+      case 'UnlistedFile':
+        return true;
+      default:
+        return false;
+    }
   }
 
   // Derived state: map of index paths to their inherited warnings
@@ -330,6 +365,73 @@
 
   let problemsPanelOpen = $state(true);
   let isFixingAll = $state(false);
+
+  // Parent picker state
+  let showParentPicker = $state(false);
+  let pendingWarningForParentPicker = $state<ValidationWarning | null>(null);
+  let availableParents = $state<string[]>([]);
+  let isLoadingParents = $state(false);
+
+  // Show parent picker for a warning
+  async function handleChooseParent(warning: ValidationWarning) {
+    const filePath = getWarningFilePath(warning);
+    if (!filePath || !api || !tree) return;
+
+    isLoadingParents = true;
+    try {
+      availableParents = await api.getAvailableParentIndexes(filePath, tree.path);
+      pendingWarningForParentPicker = warning;
+      showParentPicker = true;
+    } catch (e) {
+      toast.error('Failed to load available parents');
+    } finally {
+      isLoadingParents = false;
+    }
+  }
+
+  // Select a parent from the picker
+  async function handleSelectParent(parentPath: string) {
+    if (!pendingWarningForParentPicker || !api) return;
+
+    const filePath = getWarningFilePath(pendingWarningForParentPicker);
+    if (!filePath) return;
+
+    try {
+      let result;
+      const warning = pendingWarningForParentPicker;
+
+      if (warning.type === 'OrphanBinaryFile') {
+        result = await api.fixOrphanBinaryFile(parentPath, filePath);
+      } else if (warning.type === 'UnlinkedEntry') {
+        const w = warning as { is_dir?: boolean; index_file?: string | null };
+        if (w.is_dir && w.index_file) {
+          result = await api.fixUnlistedFile(parentPath, w.index_file);
+        } else {
+          result = await api.fixUnlistedFile(parentPath, filePath);
+        }
+      } else {
+        result = await api.fixUnlistedFile(parentPath, filePath);
+      }
+
+      if (result?.success) {
+        toast.success(result.message);
+        onValidationFix?.();
+      } else if (result) {
+        toast.error(result.message);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to fix issue');
+    }
+
+    showParentPicker = false;
+    pendingWarningForParentPicker = null;
+  }
+
+  // Close parent picker
+  function closeParentPicker() {
+    showParentPicker = false;
+    pendingWarningForParentPicker = null;
+  }
 
   // Count total problems
   let totalProblems = $derived(() => {
@@ -418,7 +520,7 @@
         }
         case 'UnlinkedEntry': {
           // Use the backend's suggested_index and index_file for directories
-          const w = warning as { path: string; is_dir: boolean; suggested_index: string | null; index_file: string | null };
+          const w = warning as unknown as { path: string; is_dir: boolean; suggested_index: string | null; index_file: string | null };
           if (!w.suggested_index) {
             toast.error('No parent index found to add this entry to');
             return;
@@ -434,6 +536,17 @@
           } else {
             // For files, link directly
             result = await api.fixUnlistedFile(w.suggested_index, w.path);
+          }
+          break;
+        }
+        case 'CircularReference': {
+          // Fix by removing the suggested contents reference
+          const w = warning as { suggested_file?: string | null; suggested_remove_part_of?: string | null };
+          if (w.suggested_file && w.suggested_remove_part_of) {
+            result = await api.fixCircularReference(w.suggested_file, w.suggested_remove_part_of);
+          } else {
+            toast.error('Cannot auto-fix this circular reference. Manually edit one of the files involved.');
+            return;
           }
           break;
         }
@@ -558,6 +671,14 @@
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       dropTargetPath = path;
+      return;
+    }
+
+    // Allow attachment drops from RightSidebar
+    if (e.dataTransfer && e.dataTransfer.types.includes("text/x-diaryx-attachment")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      dropTargetPath = path;
     }
   }
 
@@ -568,9 +689,25 @@
   function handleDrop(e: DragEvent, targetPath: string) {
     e.preventDefault();
     e.stopPropagation(); // Prevent bubbling to parent tree nodes
+
+    // Handle entry move
     if (draggedPath && draggedPath !== targetPath) {
       onMoveEntry(draggedPath, targetPath);
+      draggedPath = null;
+      dropTargetPath = null;
+      return;
     }
+
+    // Handle attachment move from RightSidebar
+    if (e.dataTransfer) {
+      const attachmentPath = e.dataTransfer.getData("text/x-diaryx-attachment");
+      const sourceEntryPath = e.dataTransfer.getData("text/x-diaryx-source-entry");
+
+      if (attachmentPath && sourceEntryPath && sourceEntryPath !== targetPath) {
+        onMoveAttachment?.(sourceEntryPath, targetPath, attachmentPath);
+      }
+    }
+
     draggedPath = null;
     dropTargetPath = null;
   }
@@ -811,6 +948,18 @@
                         <Wrench class="size-3" />
                       </Button>
                     {/if}
+                    {#if supportsParentPicker(warning) && api}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="h-6 px-1.5"
+                        title="Choose parent..."
+                        onclick={() => handleChooseParent(warning)}
+                        disabled={isLoadingParents}
+                      >
+                        <FolderPlus class="size-3" />
+                      </Button>
+                    {/if}
                   </div>
                 </div>
               {/each}
@@ -840,6 +989,54 @@
     </div>
   {/if}
 </aside>
+
+<!-- Parent Picker Dialog -->
+{#if showParentPicker}
+  <div
+    class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="parent-picker-title"
+    onclick={closeParentPicker}
+    onkeydown={(e) => e.key === 'Escape' && closeParentPicker()}
+    tabindex={-1}
+  >
+    <div
+      class="bg-background rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[80vh] flex flex-col"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-center justify-between p-4 border-b">
+        <h2 id="parent-picker-title" class="text-lg font-semibold">Choose Parent Index</h2>
+        <Button variant="ghost" size="sm" onclick={closeParentPicker}>
+          <X class="size-4" />
+        </Button>
+      </div>
+      <div class="p-4 overflow-y-auto flex-1">
+        {#if availableParents.length === 0}
+          <p class="text-muted-foreground text-sm">No available parent indexes found.</p>
+        {:else}
+          <p class="text-sm text-muted-foreground mb-3">
+            Select which index to add this entry to:
+          </p>
+          <div class="space-y-2">
+            {#each availableParents as parentPath}
+              <Button
+                variant="outline"
+                class="w-full justify-start text-left h-auto py-2"
+                onclick={() => handleSelectParent(parentPath)}
+              >
+                <div class="flex flex-col items-start gap-0.5 overflow-hidden">
+                  <span class="font-medium truncate w-full">{getFileName(parentPath)}</span>
+                  <span class="text-xs text-muted-foreground truncate w-full">{parentPath}</span>
+                </div>
+              </Button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#snippet treeNode(node: TreeNode, depth: number)}
   <ContextMenu.Root>

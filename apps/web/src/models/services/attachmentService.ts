@@ -19,16 +19,41 @@ const blobUrlMap = new Map<string, string>();
 // ============================================================================
 
 const mimeTypes: Record<string, string> = {
+  // Images
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   gif: 'image/gif',
   webp: 'image/webp',
   svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  // Documents
   pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Text
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+  xml: 'application/xml',
+  // Archives
+  zip: 'application/zip',
+  tar: 'application/x-tar',
+  gz: 'application/gzip',
+  '7z': 'application/x-7z-compressed',
+  rar: 'application/vnd.rar',
 };
 
-function getMimeType(path: string): string {
+/**
+ * Get the MIME type for a file based on its extension.
+ */
+export function getMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || '';
   return mimeTypes[ext] || 'application/octet-stream';
 }

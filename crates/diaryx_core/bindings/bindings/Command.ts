@@ -205,7 +205,23 @@ index_path: string, } } | { "type": "FixAll", "params": {
 /**
  * The validation result to fix.
  */
-validation_result: ValidationResult, } } | { "type": "GetAvailableAudiences", "params": { 
+validation_result: ValidationResult, } } | { "type": "FixCircularReference", "params": { 
+/**
+ * Path to the file to edit.
+ */
+file_path: string, 
+/**
+ * The part_of value to remove.
+ */
+part_of_value: string, } } | { "type": "GetAvailableParentIndexes", "params": { 
+/**
+ * Path to the file that needs a parent.
+ */
+file_path: string, 
+/**
+ * Workspace root to limit scope.
+ */
+workspace_root: string, } } | { "type": "GetAvailableAudiences", "params": { 
 /**
  * Root path to scan.
  */
@@ -305,7 +321,23 @@ entry_path: string,
 /**
  * Path to the attachment.
  */
-attachment_path: string, } } | { "type": "FileExists", "params": { 
+attachment_path: string, } } | { "type": "MoveAttachment", "params": { 
+/**
+ * Path to the source entry file.
+ */
+source_entry_path: string, 
+/**
+ * Path to the target entry file.
+ */
+target_entry_path: string, 
+/**
+ * Relative path to the attachment (e.g., "_attachments/image.png").
+ */
+attachment_path: string, 
+/**
+ * Optional new filename (for handling collisions).
+ */
+new_filename: string | null, } } | { "type": "FileExists", "params": { 
 /**
  * Path to check.
  */

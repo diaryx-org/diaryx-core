@@ -27,6 +27,7 @@
   import EditorEmptyState from "./views/editor/EditorEmptyState.svelte";
   import EditorContent from "./views/editor/EditorContent.svelte";
   import { Toaster } from "$lib/components/ui/sonner";
+  import { toast } from "svelte-sonner";
   // Note: Button, icons, and LoadingSpinner are now only used in extracted view components
   
   // Import stores
@@ -933,10 +934,10 @@
     const file = input.files?.[0];
     if (!file || !api || !pendingAttachmentPath) return;
 
-    // Check size limit (5MB)
-    const MAX_SIZE = 5 * 1024 * 1024;
+    // Check size limit (10MB for all files)
+    const MAX_SIZE = 10 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.`;
+      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`;
       input.value = "";
       return;
     }
@@ -1009,16 +1010,16 @@
     attachmentFileInput?.click();
   }
 
-  // Handle file drop in Editor - upload and return blob URL
+  // Handle file drop in Editor - upload and return blob URL for images
   async function handleEditorFileDrop(
     file: File,
   ): Promise<{ blobUrl: string; attachmentPath: string } | null> {
     if (!api || !currentEntry) return null;
 
-    // Check size limit (5MB)
-    const MAX_SIZE = 5 * 1024 * 1024;
+    // Check size limit (10MB for all files)
+    const MAX_SIZE = 10 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.`;
+      attachmentError = `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`;
       return null;
     }
 
@@ -1037,28 +1038,36 @@
       entry.frontmatter = normalizeFrontmatter(entry.frontmatter);
       currentEntry = entry;
 
-      // Get the binary data back and create blob URL
-      const data = await api.getAttachmentData(
-        currentEntry.path,
-        attachmentPath,
-      );
-      const ext = file.name.split(".").pop()?.toLowerCase() || "";
-      const mimeTypes: Record<string, string> = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        gif: "image/gif",
-        webp: "image/webp",
-        svg: "image/svg+xml",
-      };
-      const mimeType = mimeTypes[ext] || "image/png";
-      const blob = new Blob([new Uint8Array(data)], { type: mimeType });
-      const blobUrl = URL.createObjectURL(blob);
+      // For images, create blob URL for display in editor
+      if (file.type.startsWith("image/")) {
+        const data = await api.getAttachmentData(
+          currentEntry.path,
+          attachmentPath,
+        );
+        // Use the file's actual MIME type when available, fall back to extension-based lookup
+        const ext = file.name.split(".").pop()?.toLowerCase() || "";
+        const mimeTypes: Record<string, string> = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+          bmp: "image/bmp",
+          ico: "image/x-icon",
+        };
+        const mimeType = file.type || mimeTypes[ext] || "image/png";
+        const blob = new Blob([new Uint8Array(data)], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
 
-      // Track for cleanup
-      trackBlobUrl(attachmentPath, blobUrl);
+        // Track for cleanup
+        trackBlobUrl(attachmentPath, blobUrl);
 
-      return { blobUrl, attachmentPath };
+        return { blobUrl, attachmentPath };
+      }
+
+      // For non-image files, just return the path (no blob URL for editor display)
+      return { blobUrl: "", attachmentPath };
     } catch (e) {
       attachmentError = e instanceof Error ? e.message : String(e);
       return null;
@@ -1107,6 +1116,32 @@
       await runValidation();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  // Handle moving an attachment from one entry to another
+  async function handleMoveAttachment(
+    sourceEntryPath: string,
+    targetEntryPath: string,
+    attachmentPath: string
+  ) {
+    if (!api) return;
+    if (sourceEntryPath === targetEntryPath) return;
+
+    try {
+      await api.moveAttachment(sourceEntryPath, targetEntryPath, attachmentPath);
+
+      // Refresh current entry if it was affected
+      if (currentEntry?.path === sourceEntryPath || currentEntry?.path === targetEntryPath) {
+        const entry = await api.getEntry(currentEntry.path);
+        entry.frontmatter = normalizeFrontmatter(entry.frontmatter);
+        currentEntry = entry;
+      }
+
+      toast.success("Attachment moved successfully");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      toast.error(`Failed to move attachment: ${message}`);
     }
   }
 
@@ -1469,6 +1504,7 @@
       showExportDialog = true;
     }}
     onAddAttachment={handleAddAttachment}
+    onMoveAttachment={handleMoveAttachment}
     onRemoveBrokenPartOf={handleRemoveBrokenPartOf}
     onRemoveBrokenContentsRef={handleRemoveBrokenContentsRef}
     onAttachUnlinkedEntry={handleAttachUnlinkedEntry}
@@ -1479,13 +1515,12 @@
     onLoadChildren={loadNodeChildren}
   />
 
-  <!-- Hidden file input for attachments -->
+  <!-- Hidden file input for attachments (accepts all file types) -->
   <input
     type="file"
     bind:this={attachmentFileInput}
     onchange={handleAttachmentFileSelect}
     class="hidden"
-    accept="image/*,.pdf,.doc,.docx,.txt,.md"
   />
 
   <!-- Main Content Area -->
