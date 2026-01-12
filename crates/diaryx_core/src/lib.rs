@@ -50,6 +50,10 @@ pub mod utils;
 /// Workspace (specify a directory to work in)
 pub mod workspace;
 
+/// CRDT-based synchronization (requires `crdt` feature)
+#[cfg(feature = "crdt")]
+pub mod crdt;
+
 // Re-exports for backwards compatibility
 pub use utils::date;
 pub use utils::path as path_utils;
