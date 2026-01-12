@@ -22,6 +22,8 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "crdt")]
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use serde_yaml::Value;
@@ -29,6 +31,9 @@ use serde_yaml::Value;
 use crate::error::{DiaryxError, Result};
 use crate::frontmatter;
 use crate::fs::AsyncFileSystem;
+
+#[cfg(feature = "crdt")]
+use crate::crdt::{CrdtStorage, WorkspaceCrdt};
 
 // ============================================================================
 // Value Conversion Helpers
@@ -104,12 +109,43 @@ pub(crate) fn json_to_yaml(json: serde_json::Value) -> Value {
 /// operations through sub-module accessors.
 pub struct Diaryx<FS: AsyncFileSystem> {
     fs: FS,
+    /// CRDT workspace document (optional, requires `crdt` feature).
+    #[cfg(feature = "crdt")]
+    workspace_crdt: Option<WorkspaceCrdt>,
 }
 
 impl<FS: AsyncFileSystem> Diaryx<FS> {
     /// Create a new Diaryx instance with the given filesystem.
     pub fn new(fs: FS) -> Self {
-        Self { fs }
+        Self {
+            fs,
+            #[cfg(feature = "crdt")]
+            workspace_crdt: None,
+        }
+    }
+
+    /// Create a new Diaryx instance with CRDT support.
+    ///
+    /// The CRDT layer enables real-time sync and version history.
+    #[cfg(feature = "crdt")]
+    pub fn with_crdt(fs: FS, storage: Arc<dyn CrdtStorage>) -> Self {
+        Self {
+            fs,
+            workspace_crdt: Some(WorkspaceCrdt::new(storage)),
+        }
+    }
+
+    /// Create a new Diaryx instance with CRDT support, loading existing state.
+    ///
+    /// This attempts to load the workspace CRDT state from storage.
+    /// If no existing state is found, creates a new empty workspace CRDT.
+    #[cfg(feature = "crdt")]
+    pub fn with_crdt_load(fs: FS, storage: Arc<dyn CrdtStorage>) -> Result<Self> {
+        let workspace_crdt = WorkspaceCrdt::load(storage)?;
+        Ok(Self {
+            fs,
+            workspace_crdt: Some(workspace_crdt),
+        })
     }
 
     /// Get a reference to the underlying filesystem.
@@ -130,6 +166,24 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     /// managing files, and working with the index hierarchy.
     pub fn workspace(&self) -> WorkspaceOps<'_, FS> {
         WorkspaceOps { diaryx: self }
+    }
+
+    /// Get CRDT operations accessor.
+    ///
+    /// This provides methods for CRDT sync, history, and file metadata.
+    /// Returns `None` if CRDT support is not enabled.
+    #[cfg(feature = "crdt")]
+    pub fn crdt(&self) -> Option<CrdtOps<'_, FS>> {
+        self.workspace_crdt.as_ref().map(|crdt| CrdtOps {
+            _diaryx: self,
+            crdt,
+        })
+    }
+
+    /// Check if CRDT support is enabled for this instance.
+    #[cfg(feature = "crdt")]
+    pub fn has_crdt(&self) -> bool {
+        self.workspace_crdt.is_some()
     }
 }
 
@@ -538,6 +592,91 @@ impl<'a, FS: AsyncFileSystem + Clone> ValidateOps<'a, FS> {
     }
 }
 
+// ============================================================================
+// CRDT Operations
+// ============================================================================
+
+/// CRDT operations accessor.
+///
+/// Provides methods for CRDT sync, history, and file metadata.
+#[cfg(feature = "crdt")]
+pub struct CrdtOps<'a, FS: AsyncFileSystem> {
+    _diaryx: &'a Diaryx<FS>,
+    crdt: &'a WorkspaceCrdt,
+}
+
+#[cfg(feature = "crdt")]
+impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
+    /// Get the state vector for sync.
+    pub fn get_state_vector(&self) -> Vec<u8> {
+        self.crdt.encode_state_vector()
+    }
+
+    /// Get the full state as an update (for initial sync).
+    pub fn get_full_state(&self) -> Vec<u8> {
+        self.crdt.encode_state_as_update()
+    }
+
+    /// Get updates needed by a remote peer (based on their state vector).
+    pub fn get_missing_updates(&self, remote_state_vector: &[u8]) -> Result<Vec<u8>> {
+        self.crdt.encode_diff(remote_state_vector)
+    }
+
+    /// Apply an update from a remote peer.
+    pub fn apply_update(
+        &self,
+        update: &[u8],
+        origin: crate::crdt::UpdateOrigin,
+    ) -> Result<Option<i64>> {
+        self.crdt.apply_update(update, origin)
+    }
+
+    /// Get file metadata from CRDT.
+    pub fn get_file(&self, path: &str) -> Option<crate::crdt::FileMetadata> {
+        self.crdt.get_file(path)
+    }
+
+    /// Set file metadata in CRDT.
+    pub fn set_file(&self, path: &str, metadata: crate::crdt::FileMetadata) {
+        self.crdt.set_file(path, metadata);
+    }
+
+    /// Delete a file (marks as deleted in CRDT).
+    pub fn delete_file(&self, path: &str) {
+        self.crdt.delete_file(path);
+    }
+
+    /// List all files (including deleted).
+    pub fn list_files(&self) -> Vec<(String, crate::crdt::FileMetadata)> {
+        self.crdt.list_files()
+    }
+
+    /// List active (non-deleted) files only.
+    pub fn list_active_files(&self) -> Vec<(String, crate::crdt::FileMetadata)> {
+        self.crdt.list_active_files()
+    }
+
+    /// Get update history.
+    pub fn get_history(&self) -> Result<Vec<crate::crdt::CrdtUpdate>> {
+        self.crdt.get_history()
+    }
+
+    /// Get updates since a given ID.
+    pub fn get_updates_since(&self, since_id: i64) -> Result<Vec<crate::crdt::CrdtUpdate>> {
+        self.crdt.get_updates_since(since_id)
+    }
+
+    /// Save CRDT state to storage.
+    pub fn save(&self) -> Result<()> {
+        self.crdt.save()
+    }
+
+    /// Get the number of files in the CRDT.
+    pub fn file_count(&self) -> usize {
+        self.crdt.file_count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +728,72 @@ mod tests {
 
         let fm = crate::fs::block_on_test(diaryx.entry().get_frontmatter("test.md")).unwrap();
         assert_eq!(fm.get("title").unwrap().as_str().unwrap(), "Updated");
+    }
+
+    #[cfg(feature = "crdt")]
+    mod crdt_tests {
+        use super::*;
+        use crate::crdt::MemoryStorage;
+
+        #[test]
+        fn test_diaryx_with_crdt() {
+            let fs = MockFileSystem::new();
+            let storage = Arc::new(MemoryStorage::new());
+            let diaryx = Diaryx::with_crdt(SyncToAsyncFs::new(fs), storage);
+
+            // Verify CRDT is available
+            assert!(diaryx.has_crdt());
+            let crdt = diaryx.crdt().unwrap();
+
+            // Test file operations
+            let metadata = crate::crdt::FileMetadata::new(Some("Test File".to_string()));
+            crdt.set_file("test.md", metadata);
+
+            let retrieved = crdt.get_file("test.md");
+            assert!(retrieved.is_some());
+            assert_eq!(retrieved.unwrap().title, Some("Test File".to_string()));
+
+            // Test file count
+            assert_eq!(crdt.file_count(), 1);
+        }
+
+        #[test]
+        fn test_diaryx_without_crdt() {
+            let fs = MockFileSystem::new();
+            let diaryx = Diaryx::new(SyncToAsyncFs::new(fs));
+
+            // CRDT should not be available
+            assert!(!diaryx.has_crdt());
+            assert!(diaryx.crdt().is_none());
+        }
+
+        #[test]
+        fn test_diaryx_crdt_sync() {
+            let fs1 = MockFileSystem::new();
+            let fs2 = MockFileSystem::new();
+            let storage1 = Arc::new(MemoryStorage::new());
+            let storage2 = Arc::new(MemoryStorage::new());
+
+            let diaryx1 = Diaryx::with_crdt(SyncToAsyncFs::new(fs1), storage1);
+            let diaryx2 = Diaryx::with_crdt(SyncToAsyncFs::new(fs2), storage2);
+
+            let crdt1 = diaryx1.crdt().unwrap();
+            let crdt2 = diaryx2.crdt().unwrap();
+
+            // Add file on first instance
+            let metadata = crate::crdt::FileMetadata::new(Some("Shared File".to_string()));
+            crdt1.set_file("shared.md", metadata);
+
+            // Get state and apply to second instance
+            let state = crdt1.get_full_state();
+            crdt2
+                .apply_update(&state, crate::crdt::UpdateOrigin::Remote)
+                .unwrap();
+
+            // Verify sync worked
+            let retrieved = crdt2.get_file("shared.md");
+            assert!(retrieved.is_some());
+            assert_eq!(retrieved.unwrap().title, Some("Shared File".to_string()));
+        }
     }
 }

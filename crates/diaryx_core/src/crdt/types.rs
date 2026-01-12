@@ -5,12 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use ts_rs::TS;
 
 /// Metadata for a file in the workspace CRDT.
 ///
 /// This represents the synchronized state of a file's frontmatter properties,
 /// stored in a Y.Map within the workspace document.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct FileMetadata {
     /// Display title from frontmatter
     pub title: Option<String>,
@@ -66,7 +68,8 @@ impl FileMetadata {
 ///
 /// Binary files (images, PDFs, etc.) are stored separately from the CRDT,
 /// with only their metadata tracked in the synchronization system.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
 pub struct BinaryRef {
     /// Relative path within workspace (e.g., "_attachments/image.png")
     pub path: String,

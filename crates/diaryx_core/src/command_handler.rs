@@ -969,6 +969,117 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     attachment_limit: None,
                 }))
             }
+
+            // === CRDT Operations ===
+            #[cfg(feature = "crdt")]
+            Command::GetSyncState { doc_name: _ } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                Ok(Response::Binary(crdt.get_state_vector()))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::ApplyRemoteUpdate {
+                doc_name: _,
+                update,
+            } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let update_id = crdt.apply_update(&update, crate::crdt::UpdateOrigin::Remote)?;
+                Ok(Response::UpdateId(update_id))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetMissingUpdates {
+                doc_name: _,
+                remote_state_vector,
+            } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let update = crdt.get_missing_updates(&remote_state_vector)?;
+                Ok(Response::Binary(update))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetFullState { doc_name: _ } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                Ok(Response::Binary(crdt.get_full_state()))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetHistory { doc_name: _, limit } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let history = crdt.get_history()?;
+                let entries: Vec<crate::command::CrdtHistoryEntry> = history
+                    .into_iter()
+                    .take(limit.unwrap_or(usize::MAX))
+                    .map(|u| crate::command::CrdtHistoryEntry {
+                        update_id: u.update_id,
+                        timestamp: u.timestamp,
+                        origin: u.origin.to_string(),
+                    })
+                    .collect();
+                Ok(Response::CrdtHistory(entries))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::RestoreVersion {
+                doc_name: _,
+                update_id: _,
+            } => {
+                // TODO: Implement version restore
+                Err(DiaryxError::Unsupported(
+                    "Version restore not yet implemented".to_string(),
+                ))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetCrdtFile { path } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                Ok(Response::CrdtFile(crdt.get_file(&path)))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::SetCrdtFile { path, metadata } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let file_metadata: crate::crdt::FileMetadata = serde_json::from_value(metadata)
+                    .map_err(|e| DiaryxError::Unsupported(format!("Invalid metadata: {}", e)))?;
+                crdt.set_file(&path, file_metadata);
+                Ok(Response::Ok)
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::ListCrdtFiles { include_deleted } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let files = if include_deleted {
+                    crdt.list_files()
+                } else {
+                    crdt.list_active_files()
+                };
+                Ok(Response::CrdtFiles(files))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::SaveCrdtState { doc_name: _ } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                crdt.save()?;
+                Ok(Response::Ok)
+            }
         }
     }
 }

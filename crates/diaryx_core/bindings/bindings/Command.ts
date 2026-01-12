@@ -357,4 +357,64 @@ content: string, } } | { "type": "DeleteFile", "params": {
 /**
  * Path to delete.
  */
-path: string, } } | { "type": "GetStorageUsage" };
+path: string, } } | { "type": "GetStorageUsage" } | { "type": "GetSyncState", "params": { 
+/**
+ * Document name (e.g., "workspace").
+ */
+doc_name: string, } } | { "type": "ApplyRemoteUpdate", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Binary update data.
+ */
+update: Array<number>, } } | { "type": "GetMissingUpdates", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Remote state vector to diff against.
+ */
+remote_state_vector: Array<number>, } } | { "type": "GetFullState", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, } } | { "type": "GetHistory", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Optional limit on number of entries.
+ */
+limit: number | null, } } | { "type": "RestoreVersion", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Update ID to restore to.
+ */
+update_id: bigint, } } | { "type": "GetCrdtFile", "params": { 
+/**
+ * File path in workspace.
+ */
+path: string, } } | { "type": "SetCrdtFile", "params": { 
+/**
+ * File path in workspace.
+ */
+path: string, 
+/**
+ * File metadata as JSON.
+ */
+metadata: JsonValue, } } | { "type": "ListCrdtFiles", "params": { 
+/**
+ * Whether to include deleted files.
+ */
+include_deleted: boolean, } } | { "type": "SaveCrdtState", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, } };

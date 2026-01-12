@@ -424,6 +424,90 @@ pub enum Command {
     // === Storage ===
     /// Get storage usage information.
     GetStorageUsage,
+
+    // === CRDT Sync Operations ===
+    /// Get the CRDT state vector for sync.
+    #[cfg(feature = "crdt")]
+    GetSyncState {
+        /// Document name (e.g., "workspace").
+        doc_name: String,
+    },
+
+    /// Apply an update from a remote peer.
+    #[cfg(feature = "crdt")]
+    ApplyRemoteUpdate {
+        /// Document name.
+        doc_name: String,
+        /// Binary update data.
+        update: Vec<u8>,
+    },
+
+    /// Get updates since a given state for sync.
+    #[cfg(feature = "crdt")]
+    GetMissingUpdates {
+        /// Document name.
+        doc_name: String,
+        /// Remote state vector to diff against.
+        remote_state_vector: Vec<u8>,
+    },
+
+    /// Get the full encoded state as an update.
+    #[cfg(feature = "crdt")]
+    GetFullState {
+        /// Document name.
+        doc_name: String,
+    },
+
+    // === CRDT History Operations ===
+    /// Get the version history for a document.
+    #[cfg(feature = "crdt")]
+    GetHistory {
+        /// Document name.
+        doc_name: String,
+        /// Optional limit on number of entries.
+        limit: Option<usize>,
+    },
+
+    /// Restore a document to a previous version.
+    #[cfg(feature = "crdt")]
+    RestoreVersion {
+        /// Document name.
+        doc_name: String,
+        /// Update ID to restore to.
+        update_id: i64,
+    },
+
+    // === CRDT File Metadata Operations ===
+    /// Get file metadata from CRDT.
+    #[cfg(feature = "crdt")]
+    GetCrdtFile {
+        /// File path in workspace.
+        path: String,
+    },
+
+    /// Set file metadata in CRDT.
+    #[cfg(feature = "crdt")]
+    SetCrdtFile {
+        /// File path in workspace.
+        path: String,
+        /// File metadata as JSON.
+        metadata: serde_json::Value,
+    },
+
+    /// List all files in CRDT.
+    #[cfg(feature = "crdt")]
+    ListCrdtFiles {
+        /// Whether to include deleted files.
+        #[serde(default)]
+        include_deleted: bool,
+    },
+
+    /// Save CRDT state to persistent storage.
+    #[cfg(feature = "crdt")]
+    SaveCrdtState {
+        /// Document name.
+        doc_name: String,
+    },
 }
 
 // ============================================================================
@@ -484,6 +568,26 @@ pub enum Response {
 
     /// Storage info response.
     StorageInfo(StorageInfo),
+
+    /// Binary data response (for CRDT state vectors, updates).
+    #[cfg(feature = "crdt")]
+    Binary(Vec<u8>),
+
+    /// CRDT file metadata response.
+    #[cfg(feature = "crdt")]
+    CrdtFile(Option<crate::crdt::FileMetadata>),
+
+    /// CRDT files list response.
+    #[cfg(feature = "crdt")]
+    CrdtFiles(Vec<(String, crate::crdt::FileMetadata)>),
+
+    /// CRDT history response.
+    #[cfg(feature = "crdt")]
+    CrdtHistory(Vec<CrdtHistoryEntry>),
+
+    /// Update ID response.
+    #[cfg(feature = "crdt")]
+    UpdateId(Option<i64>),
 }
 
 // ============================================================================
@@ -580,6 +684,19 @@ pub struct FixSummary {
     pub total_fixed: usize,
     /// Total number of fixes that failed.
     pub total_failed: usize,
+}
+
+/// CRDT history entry for version tracking.
+#[cfg(feature = "crdt")]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct CrdtHistoryEntry {
+    /// Update ID.
+    pub update_id: i64,
+    /// Timestamp of the update (Unix milliseconds).
+    pub timestamp: i64,
+    /// Origin of the update.
+    pub origin: String,
 }
 
 // ============================================================================
