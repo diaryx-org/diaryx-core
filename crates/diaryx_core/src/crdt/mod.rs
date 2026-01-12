@@ -45,7 +45,9 @@
 mod memory_storage;
 mod storage;
 mod types;
+mod workspace_doc;
 
 pub use memory_storage::MemoryStorage;
 pub use storage::{CrdtStorage, StorageResult};
 pub use types::{BinaryRef, CrdtUpdate, FileMetadata, UpdateOrigin};
+pub use workspace_doc::WorkspaceCrdt;
