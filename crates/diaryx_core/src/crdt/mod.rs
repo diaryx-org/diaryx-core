@@ -11,9 +11,10 @@
 //!
 //! 1. **Types** ([`types`]): Core data structures like [`FileMetadata`] and [`BinaryRef`]
 //! 2. **Storage** ([`storage`]): Abstraction for persisting CRDT state to SQLite/memory
-//! 3. **Workspace CRDT** (coming soon): Y.Doc for workspace file hierarchy
-//! 4. **Body CRDT** (coming soon): Per-file Y.Doc for document content
-//! 5. **Sync Protocol** (coming soon): Y-sync for Hocuspocus server communication
+//! 3. **Workspace CRDT** ([`WorkspaceCrdt`]): Y.Doc for workspace file hierarchy
+//! 4. **Body CRDT** ([`BodyDoc`]): Per-file Y.Doc for document content
+//! 5. **Sync Protocol** ([`SyncProtocol`]): Y-sync for Hocuspocus server communication
+//! 6. **History** ([`HistoryManager`]): Version history and time-travel
 //!
 //! # Feature Flag
 //!
@@ -44,6 +45,7 @@
 
 mod body_doc;
 mod body_doc_manager;
+mod history;
 mod memory_storage;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crdt-sqlite"))]
 mod sqlite_storage;
@@ -54,6 +56,7 @@ mod workspace_doc;
 
 pub use body_doc::BodyDoc;
 pub use body_doc_manager::BodyDocManager;
+pub use history::{ChangeType, FileDiff, HistoryEntry, HistoryManager};
 pub use memory_storage::MemoryStorage;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crdt-sqlite"))]
 pub use sqlite_storage::SqliteStorage;

@@ -477,6 +477,26 @@ pub enum Command {
         update_id: i64,
     },
 
+    /// Get the diff between two versions of a document.
+    #[cfg(feature = "crdt")]
+    GetVersionDiff {
+        /// Document name.
+        doc_name: String,
+        /// Starting update ID.
+        from_id: i64,
+        /// Ending update ID.
+        to_id: i64,
+    },
+
+    /// Get the state of a document at a specific point in history.
+    #[cfg(feature = "crdt")]
+    GetStateAt {
+        /// Document name.
+        doc_name: String,
+        /// Update ID to reconstruct state at.
+        update_id: i64,
+    },
+
     // === CRDT File Metadata Operations ===
     /// Get file metadata from CRDT.
     #[cfg(feature = "crdt")]
@@ -689,6 +709,14 @@ pub enum Response {
     /// Update ID response.
     #[cfg(feature = "crdt")]
     UpdateId(Option<i64>),
+
+    /// Version diff response.
+    #[cfg(feature = "crdt")]
+    VersionDiff(Vec<crate::crdt::FileDiff>),
+
+    /// History entries response (newer format with more details).
+    #[cfg(feature = "crdt")]
+    HistoryEntries(Vec<crate::crdt::HistoryEntry>),
 }
 
 // ============================================================================

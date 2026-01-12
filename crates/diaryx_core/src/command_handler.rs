@@ -1031,13 +1031,47 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
             #[cfg(feature = "crdt")]
             Command::RestoreVersion {
-                doc_name: _,
-                update_id: _,
+                doc_name,
+                update_id,
             } => {
-                // TODO: Implement version restore
-                Err(DiaryxError::Unsupported(
-                    "Version restore not yet implemented".to_string(),
-                ))
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let history_manager = crate::crdt::HistoryManager::new(crdt.storage().clone());
+                let restore_update = history_manager.create_restore_update(&doc_name, update_id)?;
+                crdt.apply_update(&restore_update, crate::crdt::UpdateOrigin::Local)?;
+                crdt.save()?;
+                Ok(Response::Ok)
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetVersionDiff {
+                doc_name,
+                from_id,
+                to_id,
+            } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let history_manager = crate::crdt::HistoryManager::new(crdt.storage().clone());
+                let diffs = history_manager.diff(&doc_name, from_id, to_id)?;
+                Ok(Response::VersionDiff(diffs))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetStateAt {
+                doc_name,
+                update_id,
+            } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let history_manager = crate::crdt::HistoryManager::new(crdt.storage().clone());
+                let state = history_manager.get_state_at(&doc_name, update_id)?;
+                match state {
+                    Some(data) => Ok(Response::Binary(data)),
+                    None => Ok(Response::Ok),
+                }
             }
 
             #[cfg(feature = "crdt")]

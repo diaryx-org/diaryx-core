@@ -117,6 +117,11 @@ impl WorkspaceCrdt {
         &self.doc_name
     }
 
+    /// Get a reference to the storage backend.
+    pub fn storage(&self) -> &Arc<dyn CrdtStorage> {
+        &self.storage
+    }
+
     // ==================== File Operations ====================
 
     /// Get metadata for a file at the given path.

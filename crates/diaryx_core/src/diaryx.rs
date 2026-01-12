@@ -678,6 +678,11 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         self.crdt.get_updates_since(since_id)
     }
 
+    /// Get access to the storage backend.
+    pub fn storage(&self) -> &std::sync::Arc<dyn crate::crdt::CrdtStorage> {
+        self.crdt.storage()
+    }
+
     /// Save CRDT state to storage.
     pub fn save(&self) -> Result<()> {
         self.crdt.save()

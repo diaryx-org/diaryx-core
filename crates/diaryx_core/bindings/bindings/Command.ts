@@ -397,6 +397,26 @@ doc_name: string,
 /**
  * Update ID to restore to.
  */
+update_id: bigint, } } | { "type": "GetVersionDiff", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Starting update ID.
+ */
+from_id: bigint, 
+/**
+ * Ending update ID.
+ */
+to_id: bigint, } } | { "type": "GetStateAt", "params": { 
+/**
+ * Document name.
+ */
+doc_name: string, 
+/**
+ * Update ID to reconstruct state at.
+ */
 update_id: bigint, } } | { "type": "GetCrdtFile", "params": { 
 /**
  * File path in workspace.
