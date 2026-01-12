@@ -444,7 +444,8 @@ fn handle_validate(
                         if let Some(index) = suggested_index {
                             if *is_dir {
                                 if let Some(dir_index) = index_file {
-                                    let result = block_on(fixer.fix_unlisted_file(index, dir_index));
+                                    let result =
+                                        block_on(fixer.fix_unlisted_file(index, dir_index));
                                     if result.success {
                                         println!(
                                             "  ✓ Fixed: Added {} '{}' (via {}) to {}",

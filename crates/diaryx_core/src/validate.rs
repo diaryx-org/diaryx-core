@@ -196,13 +196,14 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 std::collections::HashMap::new();
             for visited_path in &visited {
                 if visited_path.extension().is_some_and(|ext| ext == "md")
-                    && let Some(parent) = visited_path.parent() {
-                        // Only add if this is likely an index file (has contents or is named index/README)
-                        // For simplicity, we add all visited markdown files and let the first one win
-                        dir_to_index
-                            .entry(parent.to_path_buf())
-                            .or_insert_with(|| visited_path.clone());
-                    }
+                    && let Some(parent) = visited_path.parent()
+                {
+                    // Only add if this is likely an index file (has contents or is named index/README)
+                    // For simplicity, we add all visited markdown files and let the first one win
+                    dir_to_index
+                        .entry(parent.to_path_buf())
+                        .or_insert_with(|| visited_path.clone());
+                }
             }
 
             // Helper to find nearest parent index for a given path
@@ -259,14 +260,13 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                     };
 
                     // Issue 1 fix: If directory has an index file that IS visited, don't report as unlinked
-                    if is_dir
-                        && let Some(ref idx_path) = index_file {
-                            let idx_canonical =
-                                idx_path.canonicalize().unwrap_or_else(|_| idx_path.clone());
-                            if visited_normalized.contains(&idx_canonical) {
-                                continue; // Skip - directory's index is properly linked
-                            }
+                    if is_dir && let Some(ref idx_path) = index_file {
+                        let idx_canonical =
+                            idx_path.canonicalize().unwrap_or_else(|_| idx_path.clone());
+                        if visited_normalized.contains(&idx_canonical) {
+                            continue; // Skip - directory's index is properly linked
                         }
+                    }
 
                     // Issue 2 fix: Check if it's a binary file (non-.md, non-directory)
                     let extension = entry.extension().and_then(|e| e.to_str());
