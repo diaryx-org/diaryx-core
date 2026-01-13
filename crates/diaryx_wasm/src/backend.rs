@@ -35,7 +35,9 @@ use std::collections::HashSet;
 use std::io::Result as IoResult;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
+use diaryx_core::crdt::{CrdtStorage, MemoryStorage};
 use diaryx_core::diaryx::Diaryx;
 use diaryx_core::frontmatter;
 use diaryx_core::fs::AsyncFileSystem;
@@ -261,6 +263,8 @@ impl AsyncFileSystem for StorageBackend {
 #[wasm_bindgen]
 pub struct DiaryxBackend {
     fs: Rc<StorageBackend>,
+    /// CRDT storage for sync and history features.
+    crdt_storage: Arc<dyn CrdtStorage>,
 }
 
 #[wasm_bindgen]
@@ -270,7 +274,8 @@ impl DiaryxBackend {
     pub async fn create_opfs() -> std::result::Result<DiaryxBackend, JsValue> {
         let opfs = OpfsFileSystem::create().await?;
         let fs = Rc::new(StorageBackend::Opfs(opfs));
-        Ok(Self { fs })
+        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        Ok(Self { fs, crdt_storage })
     }
 
     /// Create a new DiaryxBackend with IndexedDB storage.
@@ -278,7 +283,8 @@ impl DiaryxBackend {
     pub async fn create_indexed_db() -> std::result::Result<DiaryxBackend, JsValue> {
         let idb = IndexedDbFileSystem::create().await?;
         let fs = Rc::new(StorageBackend::IndexedDb(idb));
-        Ok(Self { fs })
+        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        Ok(Self { fs, crdt_storage })
     }
 
     /// Create backend with specific storage type.
@@ -317,7 +323,8 @@ impl DiaryxBackend {
     ) -> std::result::Result<DiaryxBackend, JsValue> {
         let fsa = FsaFileSystem::from_handle(handle);
         let fs = Rc::new(StorageBackend::Fsa(fsa));
-        Ok(Self { fs })
+        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        Ok(Self { fs, crdt_storage })
     }
 
     // ========================================================================
@@ -343,8 +350,8 @@ impl DiaryxBackend {
         let cmd: Command = serde_json::from_str(command_json)
             .map_err(|e| JsValue::from_str(&format!("Invalid command JSON: {}", e)))?;
 
-        // Create a Diaryx instance with our filesystem
-        let diaryx = Diaryx::new((*self.fs).clone());
+        // Create a Diaryx instance with CRDT support
+        let diaryx = Diaryx::with_crdt((*self.fs).clone(), Arc::clone(&self.crdt_storage));
 
         // Execute the command
         let result = diaryx
@@ -367,8 +374,8 @@ impl DiaryxBackend {
         // Parse command from JS object
         let cmd: Command = serde_wasm_bindgen::from_value(command)?;
 
-        // Create a Diaryx instance with our filesystem
-        let diaryx = Diaryx::new((*self.fs).clone());
+        // Create a Diaryx instance with CRDT support
+        let diaryx = Diaryx::with_crdt((*self.fs).clone(), Arc::clone(&self.crdt_storage));
 
         // Execute the command
         let result = diaryx

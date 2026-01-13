@@ -39,5 +39,13 @@ export type { TemplateInfo } from './TemplateInfo';
 // Storage types
 export type { StorageInfo } from './StorageInfo';
 
+// CRDT types
+export type { CrdtHistoryEntry } from './CrdtHistoryEntry';
+export type { ChangeType } from './ChangeType';
+export type { FileDiff } from './FileDiff';
+export type { HistoryEntry } from './HistoryEntry';
+export type { BinaryRef } from './BinaryRef';
+export type { FileMetadata } from './FileMetadata';
+
 // JSON value type
 export type { JsonValue } from './serde_json/JsonValue';
