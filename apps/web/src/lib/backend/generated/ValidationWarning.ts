@@ -89,4 +89,12 @@ file: string,
 /**
  * Suggested index to connect to (if exactly one index in same directory)
  */
-suggested_index: string | null, };
+suggested_index: string | null, } | { "type": "InvalidContentsRef", 
+/**
+ * The index file containing the invalid reference
+ */
+index: string, 
+/**
+ * The non-markdown file that was referenced
+ */
+target: string, };

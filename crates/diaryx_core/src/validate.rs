@@ -145,6 +145,125 @@ pub enum ValidationWarning {
         /// Suggested index to connect to (if exactly one index in same directory)
         suggested_index: Option<PathBuf>,
     },
+    /// A non-markdown file is referenced in `contents` (should be in `attachments` instead).
+    InvalidContentsRef {
+        /// The index file containing the invalid reference
+        index: PathBuf,
+        /// The non-markdown file that was referenced
+        target: String,
+    },
+}
+
+impl ValidationWarning {
+    /// Get a human-readable description of this warning.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::OrphanFile { .. } => "Not in any index contents",
+            Self::UnlinkedEntry { is_dir: true, .. } => "Unlinked directory",
+            Self::UnlinkedEntry { is_dir: false, .. } => "Unlinked file",
+            Self::UnlistedFile { .. } => "Not listed in index",
+            Self::CircularReference { .. } => "Circular reference detected",
+            Self::NonPortablePath { .. } => "Non-portable path",
+            Self::MultipleIndexes { .. } => "Multiple indexes in directory",
+            Self::OrphanBinaryFile { .. } => "Binary file not attached",
+            Self::MissingPartOf { .. } => "Missing part_of reference",
+            Self::InvalidContentsRef { .. } => "Non-markdown file in contents",
+        }
+    }
+
+    /// Check if this warning can be automatically fixed.
+    pub fn can_auto_fix(&self) -> bool {
+        match self {
+            Self::OrphanFile { suggested_index, .. } => suggested_index.is_some(),
+            Self::OrphanBinaryFile { suggested_index, .. } => suggested_index.is_some(),
+            Self::MissingPartOf { suggested_index, .. } => suggested_index.is_some(),
+            Self::UnlinkedEntry {
+                suggested_index,
+                is_dir,
+                index_file,
+                ..
+            } => {
+                if suggested_index.is_none() {
+                    return false;
+                }
+                // Directories need an index file inside to be linkable
+                if *is_dir {
+                    index_file.is_some()
+                } else {
+                    true
+                }
+            }
+            Self::UnlistedFile { .. } => true,
+            Self::NonPortablePath { .. } => true,
+            Self::CircularReference {
+                suggested_file,
+                suggested_remove_part_of,
+                ..
+            } => suggested_file.is_some() && suggested_remove_part_of.is_some(),
+            Self::MultipleIndexes { .. } => false,
+            Self::InvalidContentsRef { .. } => false,
+        }
+    }
+
+    /// Get the primary file path associated with this warning.
+    pub fn file_path(&self) -> Option<&Path> {
+        match self {
+            Self::OrphanFile { file, .. } => Some(file),
+            Self::OrphanBinaryFile { file, .. } => Some(file),
+            Self::MissingPartOf { file, .. } => Some(file),
+            Self::UnlinkedEntry { path, .. } => Some(path),
+            Self::UnlistedFile { file, .. } => Some(file),
+            Self::CircularReference { files, .. } => files.first().map(|p| p.as_path()),
+            Self::NonPortablePath { file, .. } => Some(file),
+            Self::MultipleIndexes { directory, .. } => Some(directory),
+            Self::InvalidContentsRef { index, .. } => Some(index),
+        }
+    }
+
+    /// Check if the associated file can be viewed/edited (i.e., is a markdown file).
+    pub fn is_viewable(&self) -> bool {
+        match self {
+            Self::OrphanBinaryFile { .. } => false,
+            Self::UnlinkedEntry { is_dir: true, .. } => false,
+            Self::MultipleIndexes { .. } => false,
+            _ => self
+                .file_path()
+                .and_then(|p| p.extension())
+                .is_some_and(|ext| ext == "md"),
+        }
+    }
+
+    /// Check if this warning supports choosing a different parent index.
+    pub fn supports_parent_picker(&self) -> bool {
+        matches!(
+            self,
+            Self::OrphanFile { .. }
+                | Self::OrphanBinaryFile { .. }
+                | Self::MissingPartOf { .. }
+                | Self::UnlinkedEntry { .. }
+                | Self::UnlistedFile { .. }
+        )
+    }
+}
+
+impl ValidationError {
+    /// Get a human-readable description of this error.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::BrokenPartOf { .. } => "Broken part_of reference",
+            Self::BrokenContentsRef { .. } => "Broken contents reference",
+            Self::BrokenAttachment { .. } => "Broken attachment reference",
+        }
+    }
+
+    /// Get the primary file path associated with this error.
+    pub fn file_path(&self) -> &Path {
+        match self {
+            Self::BrokenPartOf { file, .. } => file,
+            Self::BrokenContentsRef { index, .. } => index,
+            Self::BrokenAttachment { file, .. } => file,
+        }
+    }
 }
 
 /// Result of validating a workspace.
@@ -169,6 +288,84 @@ impl ValidationResult {
     pub fn has_issues(&self) -> bool {
         !self.errors.is_empty() || !self.warnings.is_empty()
     }
+
+    /// Convert to a result with computed metadata fields for frontend use.
+    pub fn with_metadata(self) -> ValidationResultWithMeta {
+        ValidationResultWithMeta {
+            errors: self
+                .errors
+                .into_iter()
+                .map(ValidationErrorWithMeta::from)
+                .collect(),
+            warnings: self
+                .warnings
+                .into_iter()
+                .map(ValidationWarningWithMeta::from)
+                .collect(),
+            files_checked: self.files_checked,
+        }
+    }
+}
+
+/// A validation warning with computed metadata for frontend display.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct ValidationWarningWithMeta {
+    /// The warning data
+    #[serde(flatten)]
+    pub warning: ValidationWarning,
+    /// Human-readable description
+    pub description: String,
+    /// Whether this warning can be auto-fixed
+    pub can_auto_fix: bool,
+    /// Whether the associated file can be viewed in editor
+    pub is_viewable: bool,
+    /// Whether this warning supports choosing a different parent
+    pub supports_parent_picker: bool,
+}
+
+impl From<ValidationWarning> for ValidationWarningWithMeta {
+    fn from(warning: ValidationWarning) -> Self {
+        Self {
+            description: warning.description().to_string(),
+            can_auto_fix: warning.can_auto_fix(),
+            is_viewable: warning.is_viewable(),
+            supports_parent_picker: warning.supports_parent_picker(),
+            warning,
+        }
+    }
+}
+
+/// A validation error with computed metadata for frontend display.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct ValidationErrorWithMeta {
+    /// The error data
+    #[serde(flatten)]
+    pub error: ValidationError,
+    /// Human-readable description
+    pub description: String,
+}
+
+impl From<ValidationError> for ValidationErrorWithMeta {
+    fn from(error: ValidationError) -> Self {
+        Self {
+            description: error.description().to_string(),
+            error,
+        }
+    }
+}
+
+/// Validation result with computed metadata for frontend display.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct ValidationResultWithMeta {
+    /// Validation errors with metadata
+    pub errors: Vec<ValidationErrorWithMeta>,
+    /// Validation warnings with metadata
+    pub warnings: Vec<ValidationWarningWithMeta>,
+    /// Number of files checked
+    pub files_checked: usize,
 }
 
 /// Validator for checking workspace link integrity (async-first).
@@ -396,6 +593,12 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
                 if !self.ws.fs_ref().exists(&child_path).await {
                     result.errors.push(ValidationError::BrokenContentsRef {
+                        index: path.to_path_buf(),
+                        target: child_ref.clone(),
+                    });
+                } else if child_path.extension().is_none_or(|ext| ext != "md") {
+                    // Non-markdown file in contents - should be in attachments instead
+                    result.warnings.push(ValidationWarning::InvalidContentsRef {
                         index: path.to_path_buf(),
                         target: child_ref.clone(),
                     });
@@ -1387,6 +1590,7 @@ impl<FS: AsyncFileSystem> ValidationFixer<FS> {
             }
             // These cannot be auto-fixed
             ValidationWarning::MultipleIndexes { .. } => None,
+            ValidationWarning::InvalidContentsRef { .. } => None,
         }
     }
 

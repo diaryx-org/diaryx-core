@@ -12,6 +12,7 @@ import type {
   TreeNode,
   SearchResults,
   ValidationResult,
+  ValidationResultWithMeta,
   FixResult,
   FixSummary,
   ExportPlan,
@@ -211,8 +212,8 @@ export function createApi(backend: Backend) {
     // Validation
     // =========================================================================
 
-    /** Validate workspace links. */
-    async validateWorkspace(path?: string): Promise<ValidationResult> {
+    /** Validate workspace links. Returns result with computed metadata. */
+    async validateWorkspace(path?: string): Promise<ValidationResultWithMeta> {
       const response = await backend.execute({
         type: 'ValidateWorkspace',
         params: { path: path ?? null },
@@ -220,8 +221,8 @@ export function createApi(backend: Backend) {
       return expectResponse(response, 'ValidationResult').data;
     },
 
-    /** Validate a single file's links. */
-    async validateFile(path: string): Promise<ValidationResult> {
+    /** Validate a single file's links. Returns result with computed metadata. */
+    async validateFile(path: string): Promise<ValidationResultWithMeta> {
       const response = await backend.execute({ type: 'ValidateFile', params: { path } });
       return expectResponse(response, 'ValidationResult').data;
     },

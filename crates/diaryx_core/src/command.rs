@@ -25,7 +25,7 @@ use ts_rs::TS;
 
 use crate::export::ExportPlan;
 use crate::search::SearchResults;
-use crate::validate::{FixResult, ValidationResult};
+use crate::validate::{FixResult, ValidationResult, ValidationResultWithMeta};
 use crate::workspace::TreeNode;
 
 // ============================================================================
@@ -660,8 +660,8 @@ pub enum Response {
     /// Search results response.
     SearchResults(SearchResults),
 
-    /// Validation result response.
-    ValidationResult(ValidationResult),
+    /// Validation result response (with computed metadata for frontend).
+    ValidationResult(ValidationResultWithMeta),
 
     /// Fix result response.
     FixResult(FixResult),

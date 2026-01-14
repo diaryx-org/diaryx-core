@@ -636,6 +636,14 @@ fn handle_validate(
                         println!("  ⚠ Missing part_of (orphan): {}", file.display());
                     }
                 }
+                ValidationWarning::InvalidContentsRef { index, target } => {
+                    // Can't auto-fix - user should move to attachments or remove
+                    println!(
+                        "  ⚠ Invalid contents ref: '{}' in {} (non-markdown, should be in attachments)",
+                        target,
+                        index.display()
+                    );
+                }
             }
         }
     }
@@ -1027,6 +1035,14 @@ fn report_and_fix_validation(
                     } else {
                         println!("  ⚠ Missing part_of (orphan): {}", file.display());
                     }
+                }
+                ValidationWarning::InvalidContentsRef { index, target } => {
+                    // Can't auto-fix - user should move to attachments or remove
+                    println!(
+                        "  ⚠ Invalid contents ref: '{}' in {} (non-markdown, should be in attachments)",
+                        target,
+                        index.display()
+                    );
                 }
             }
         }

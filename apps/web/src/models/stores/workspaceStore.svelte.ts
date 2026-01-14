@@ -5,7 +5,7 @@
  * including the file tree, validation results, and expanded nodes.
  */
 
-import type { TreeNode, ValidationResult, Backend } from '$lib/backend';
+import type { TreeNode, ValidationResultWithMeta, Backend } from '$lib/backend';
 
 // ============================================================================
 // State
@@ -16,7 +16,7 @@ let tree = $state<TreeNode | null>(null);
 let expandedNodes = $state(new Set<string>());
 
 // Validation
-let validationResult = $state<ValidationResult | null>(null);
+let validationResult = $state<ValidationResultWithMeta | null>(null);
 
 // Workspace CRDT state
 let workspaceCrdtInitialized = $state(false);
@@ -106,7 +106,7 @@ export function getWorkspaceStore() {
     },
     
     // Validation
-    setValidationResult(result: ValidationResult | null) {
+    setValidationResult(result: ValidationResultWithMeta | null) {
       validationResult = result;
     },
     

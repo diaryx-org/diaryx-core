@@ -20,8 +20,11 @@ export type { SearchMatch } from './SearchMatch';
 
 // Validation types
 export type { ValidationResult } from './ValidationResult';
+export type { ValidationResultWithMeta } from './ValidationResultWithMeta';
 export type { ValidationError } from './ValidationError';
+export type { ValidationErrorWithMeta } from './ValidationErrorWithMeta';
 export type { ValidationWarning } from './ValidationWarning';
+export type { ValidationWarningWithMeta } from './ValidationWarningWithMeta';
 export type { FixResult } from './FixResult';
 export type { FixSummary } from './FixSummary';
 

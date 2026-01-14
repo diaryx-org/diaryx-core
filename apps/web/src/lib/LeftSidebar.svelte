@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { TreeNode, EntryData, ValidationResult, ValidationError, ValidationWarning, Api } from "./backend";
+  import type { TreeNode, EntryData, ValidationResultWithMeta, ValidationErrorWithMeta, ValidationWarningWithMeta, Api } from "./backend";
   import { Button } from "$lib/components/ui/button";
   import { toast } from "svelte-sonner";
 
@@ -32,7 +32,7 @@
     isLoading: boolean;
     error: string | null;
     expandedNodes: Set<string>;
-    validationResult: ValidationResult | null;
+    validationResult: ValidationResultWithMeta | null;
     collapsed: boolean;
     showUnlinkedFiles: boolean;
     api: Api | null;
@@ -179,7 +179,7 @@
   }
 
   // Extract file path from any warning type
-  function getWarningFilePath(warning: ValidationWarning): string | null {
+  function getWarningFilePath(warning: ValidationWarningWithMeta): string | null {
     switch (warning.type) {
       case 'OrphanFile':
       case 'OrphanBinaryFile':
@@ -196,6 +196,10 @@
       }
       case 'NonPortablePath':
         return warning.file ?? null;
+      case 'MultipleIndexes':
+        return warning.directory ?? null;
+      case 'InvalidContentsRef':
+        return warning.index ?? null;
       default:
         return null;
     }
@@ -207,28 +211,9 @@
     return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
   }
 
-  // Get human-readable description for a warning
-  function getWarningDescription(warning: ValidationWarning): string {
-    switch (warning.type) {
-      case 'OrphanFile':
-        return 'Not in any index contents';
-      case 'OrphanBinaryFile':
-        return 'Binary file not attached';
-      case 'MissingPartOf':
-        return 'Missing part_of reference';
-      case 'UnlinkedEntry':
-        return (warning as { is_dir?: boolean }).is_dir ? 'Unlinked directory' : 'Unlinked file';
-      case 'UnlistedFile':
-        return 'Not listed in index';
-      case 'CircularReference':
-        return 'Circular reference detected';
-      case 'NonPortablePath':
-        return 'Non-portable path';
-      case 'MultipleIndexes':
-        return 'Multiple indexes in directory';
-      default:
-        return 'Validation warning';
-    }
+  // Get human-readable description for a warning (uses metadata from core)
+  function getWarningDescription(warning: ValidationWarningWithMeta): string {
+    return warning.description;
   }
 
   // Computed tree index map for reuse
@@ -237,75 +222,26 @@
     return buildTreeIndexMap(tree);
   });
 
-  // Check if a warning is auto-fixable
-  function isWarningFixable(warning: ValidationWarning): boolean {
-    switch (warning.type) {
-      case 'OrphanBinaryFile':
-      case 'MissingPartOf':
-      case 'OrphanFile':
-        // These are fixable if the backend found a suggested_index
-        return !!(warning as { suggested_index?: string | null }).suggested_index;
-      case 'UnlinkedEntry': {
-        // Fixable if we have a suggested_index AND (it's a file OR it's a directory with an index_file)
-        const w = warning as { suggested_index?: string | null; is_dir?: boolean; index_file?: string | null };
-        if (!w.suggested_index) return false;
-        if (w.is_dir) {
-          // Directories need an index file inside to be linkable
-          return !!w.index_file;
-        }
-        return true;
-      }
-      case 'UnlistedFile':
-      case 'NonPortablePath':
-        return true;
-      case 'CircularReference': {
-        // Fixable if we have a suggested file and contents ref to remove
-        const w = warning as { suggested_file?: string | null; suggested_remove_part_of?: string | null };
-        return !!(w.suggested_file && w.suggested_remove_part_of);
-      }
-      default:
-        return false;
-    }
+  // Check if a warning is auto-fixable (uses metadata from core)
+  function isWarningFixable(warning: ValidationWarningWithMeta): boolean {
+    return warning.can_auto_fix;
   }
 
-  // Check if a warning can be viewed (navigated to)
-  function isWarningViewable(warning: ValidationWarning): boolean {
-    const filePath = getWarningFilePath(warning);
-    // Can view if it's a markdown file (not binary, not directory)
-    if (!filePath) return false;
-    if (warning.type === 'UnlinkedEntry' && (warning as { is_dir?: boolean }).is_dir) {
-      return false; // Can't view directories
-    }
-    if (warning.type === 'OrphanBinaryFile') {
-      return false; // Can't view binary files in editor
-    }
-    // CircularReference is viewable if the file is a markdown file
-    if (warning.type === 'CircularReference') {
-      return filePath.endsWith('.md');
-    }
-    return filePath.endsWith('.md');
+  // Check if a warning can be viewed (uses metadata from core)
+  function isWarningViewable(warning: ValidationWarningWithMeta): boolean {
+    return warning.is_viewable;
   }
 
-  // Check if a warning supports "Choose parent..." option
-  function supportsParentPicker(warning: ValidationWarning): boolean {
-    // These warning types can be fixed by choosing a different parent index
-    switch (warning.type) {
-      case 'OrphanFile':
-      case 'OrphanBinaryFile':
-      case 'MissingPartOf':
-      case 'UnlinkedEntry':
-      case 'UnlistedFile':
-        return true;
-      default:
-        return false;
-    }
+  // Check if a warning supports "Choose parent..." option (uses metadata from core)
+  function supportsParentPicker(warning: ValidationWarningWithMeta): boolean {
+    return warning.supports_parent_picker;
   }
 
   // Derived state: map of index paths to their inherited warnings
   // Only active when showUnlinkedFiles is OFF (hierarchy mode)
   // When showUnlinkedFiles is ON, orphan files appear directly in the tree
   let inheritedWarnings = $derived(() => {
-    const map = new Map<string, ValidationWarning[]>();
+    const map = new Map<string, ValidationWarningWithMeta[]>();
 
     // Skip inherited warnings when showing all files - orphans are visible directly
     if (!tree || !validationResult?.warnings || showUnlinkedFiles) {
@@ -355,7 +291,7 @@
   }
 
   // Get inherited warnings for an index
-  function getInheritedWarnings(path: string): ValidationWarning[] {
+  function getInheritedWarnings(path: string): ValidationWarningWithMeta[] {
     return inheritedWarnings().get(path) ?? [];
   }
 
@@ -368,12 +304,12 @@
 
   // Parent picker state
   let showParentPicker = $state(false);
-  let pendingWarningForParentPicker = $state<ValidationWarning | null>(null);
+  let pendingWarningForParentPicker = $state<ValidationWarningWithMeta | null>(null);
   let availableParents = $state<string[]>([]);
   let isLoadingParents = $state(false);
 
   // Show parent picker for a warning
-  async function handleChooseParent(warning: ValidationWarning) {
+  async function handleChooseParent(warning: ValidationWarningWithMeta) {
     const filePath = getWarningFilePath(warning);
     if (!filePath || !api || !tree) return;
 
@@ -477,7 +413,7 @@
   }
 
   // Fix individual warning
-  async function handleFixWarning(warning: ValidationWarning) {
+  async function handleFixWarning(warning: ValidationWarningWithMeta) {
     if (!api) return;
 
     try {
@@ -564,7 +500,7 @@
   }
 
   // Navigate to a file from a warning
-  function handleViewWarning(warning: ValidationWarning) {
+  function handleViewWarning(warning: ValidationWarningWithMeta) {
     const filePath = getWarningFilePath(warning);
     if (filePath && filePath.endsWith('.md')) {
       onOpenEntry(filePath);
@@ -572,7 +508,7 @@
   }
 
   // Extract file path from any error type
-  function getErrorFilePath(error: ValidationError): string | null {
+  function getErrorFilePath(error: ValidationErrorWithMeta): string | null {
     switch (error.type) {
       case 'BrokenPartOf':
       case 'BrokenAttachment':
@@ -584,14 +520,25 @@
     }
   }
 
+  // Extract target from errors that have it
+  function getErrorTarget(error: ValidationErrorWithMeta): string | null {
+    switch (error.type) {
+      case 'BrokenPartOf':
+      case 'BrokenContentsRef':
+        return error.target ?? null;
+      case 'BrokenAttachment':
+        return error.attachment ?? null;
+    }
+  }
+
   // Check if an error can be viewed
-  function isErrorViewable(error: ValidationError): boolean {
+  function isErrorViewable(error: ValidationErrorWithMeta): boolean {
     const filePath = getErrorFilePath(error);
     return filePath !== null && filePath.endsWith('.md');
   }
 
   // Navigate to a file from an error
-  function handleViewError(error: ValidationError) {
+  function handleViewError(error: ValidationErrorWithMeta) {
     const filePath = getErrorFilePath(error);
     if (filePath && filePath.endsWith('.md')) {
       onOpenEntry(filePath);
@@ -599,7 +546,7 @@
   }
 
   // Fix individual error
-  async function handleFixError(error: ValidationError) {
+  async function handleFixError(error: ValidationErrorWithMeta) {
     if (!api) return;
 
     try {
@@ -717,32 +664,36 @@
     dropTargetPath = null;
   }
 
+  // Get the file path associated with an error (for filtering)
+  function getErrorAssociatedPath(error: ValidationErrorWithMeta): string | null {
+    switch (error.type) {
+      case 'BrokenPartOf':
+      case 'BrokenAttachment':
+        return error.file;
+      case 'BrokenContentsRef':
+        return error.index;
+    }
+  }
+
   // Check if a file has validation errors
   function hasValidationError(path: string): boolean {
     if (!validationResult) return false;
     return validationResult.errors.some(
-      (err) => err.file === path || err.index === path,
+      (err) => getErrorAssociatedPath(err) === path,
     );
   }
 
   // Get validation errors for a specific path
-  function getValidationErrors(path: string): ValidationError[] {
+  function getValidationErrors(path: string): ValidationErrorWithMeta[] {
     if (!validationResult) return [];
     return validationResult.errors.filter(
-      (err) => err.file === path || err.index === path,
+      (err) => getErrorAssociatedPath(err) === path,
     );
   }
 
   // Get human-readable description for a validation error
-  function getErrorDescription(error: ValidationError): string {
-    switch (error.type) {
-      case "BrokenPartOf":
-        return `This file's "part_of" references a file that doesn't exist`;
-      case "BrokenContentsRef":
-        return `This index's "contents" references a file that doesn't exist`;
-      default:
-        return "Unknown validation error";
-    }
+  function getErrorDescription(error: ValidationErrorWithMeta): string {
+    return error.description;
   }
 
 
@@ -872,8 +823,8 @@
               {#each validationResult.errors as error}
                 <div class="text-xs p-2 bg-destructive/10 rounded flex items-start justify-between gap-2">
                   <div class="min-w-0 flex-1">
-                    <span class="font-mono truncate block" title={error.file ?? error.index ?? ''}>
-                      {getFileName(error.file ?? error.index ?? '')}
+                    <span class="font-mono truncate block" title={getErrorFilePath(error) ?? ''}>
+                      {getFileName(getErrorFilePath(error) ?? '')}
                     </span>
                     <span class="text-muted-foreground">
                       {getErrorDescription(error)}
@@ -1124,8 +1075,8 @@
                         {#each errors as error}
                           <div class="text-sm text-muted-foreground">
                             <p>{getErrorDescription(error)}</p>
-                            <p class="font-mono text-xs mt-1 truncate" title={error.target}>
-                              Target: {error.target}
+                            <p class="font-mono text-xs mt-1 truncate" title={getErrorTarget(error) ?? ''}>
+                              Target: {getErrorTarget(error)}
                             </p>
                           </div>
                           {#if error.type === "BrokenPartOf" && onRemoveBrokenPartOf}

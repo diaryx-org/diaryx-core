@@ -77,18 +77,20 @@ export interface ValidationWarning {
     | "NonPortablePath"
     | "MultipleIndexes"
     | "OrphanBinaryFile"
-    | "MissingPartOf";
+    | "MissingPartOf"
+    | "InvalidContentsRef";
   file?: string; // For OrphanFile, UnlistedFile, NonPortablePath, OrphanBinaryFile, MissingPartOf
   files?: string[]; // For CircularReference
   path?: string; // For UnlinkedEntry
   is_dir?: boolean; // For UnlinkedEntry
-  index?: string; // For UnlistedFile
+  index?: string; // For UnlistedFile, InvalidContentsRef
   property?: string; // For NonPortablePath
   value?: string; // For NonPortablePath
   suggested?: string; // For NonPortablePath
   directory?: string; // For MultipleIndexes
   indexes?: string[]; // For MultipleIndexes
   suggested_index?: string | null; // For OrphanBinaryFile, MissingPartOf
+  target?: string; // For InvalidContentsRef
 }
 
 export interface ValidationResult {
@@ -96,6 +98,14 @@ export interface ValidationResult {
   warnings: ValidationWarning[];
   files_checked: number;
 }
+
+// Re-export the "with metadata" types from generated bindings
+// These include computed display properties from core
+export type {
+  ValidationResultWithMeta,
+  ValidationErrorWithMeta,
+  ValidationWarningWithMeta,
+} from './generated';
 
 // Fix types
 export interface FixResult {

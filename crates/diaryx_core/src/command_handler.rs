@@ -136,12 +136,14 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .validate()
                     .validate_workspace(Path::new(&root_path), Some(2))
                     .await?;
-                Ok(Response::ValidationResult(result))
+                // Include computed metadata for frontend display
+                Ok(Response::ValidationResult(result.with_metadata()))
             }
 
             Command::ValidateFile { path } => {
                 let result = self.validate().validate_file(Path::new(&path)).await?;
-                Ok(Response::ValidationResult(result))
+                // Include computed metadata for frontend display
+                Ok(Response::ValidationResult(result.with_metadata()))
             }
 
             Command::FixBrokenPartOf { path } => {
