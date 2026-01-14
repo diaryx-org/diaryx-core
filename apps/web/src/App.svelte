@@ -814,6 +814,40 @@
     }
   }
 
+  // Validate a specific path (file or subtree)
+  async function handleValidate(path: string) {
+    if (!api) return;
+    try {
+      // Determine if this is an index file (validate subtree) or regular file
+      const isIndex = path.endsWith('/index.md') || path.endsWith('\\index.md') ||
+                      path.match(/[/\\]index\.[^/\\]+$/);
+
+      let result;
+      if (isIndex) {
+        // Validate from this index down
+        result = await api.validateWorkspace(path);
+      } else {
+        // Validate just this file
+        result = await api.validateFile(path);
+      }
+
+      // Update the validation result
+      workspaceStore.setValidationResult(result);
+
+      // Show a summary toast
+      const errorCount = result.errors.length;
+      const warningCount = result.warnings.length;
+      if (errorCount === 0 && warningCount === 0) {
+        toast.success('No issues found');
+      } else {
+        toast.info(`Found ${errorCount} error${errorCount !== 1 ? 's' : ''} and ${warningCount} warning${warningCount !== 1 ? 's' : ''}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Validation failed');
+      console.error("[App] Validation error:", e);
+    }
+  }
+
   // Quick fix: Remove broken part_of reference from a file
   async function handleRemoveBrokenPartOf(filePath: string) {
     if (!api) return;
@@ -1511,6 +1545,7 @@
       await runValidation();
     }}
     onLoadChildren={loadNodeChildren}
+    onValidate={handleValidate}
   />
 
   <!-- Hidden file input for attachments (accepts all file types) -->

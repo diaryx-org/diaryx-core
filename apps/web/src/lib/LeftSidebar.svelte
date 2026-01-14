@@ -24,6 +24,7 @@
     Wrench,
     Eye,
     X,
+    SearchCheck,
   } from "@lucide/svelte";
 
   interface Props {
@@ -51,6 +52,7 @@
     onAttachUnlinkedEntry?: (entryPath: string) => void;
     onValidationFix?: () => void;
     onLoadChildren?: (path: string) => Promise<void>;
+    onValidate?: (path: string) => void;
   }
 
   let {
@@ -78,6 +80,7 @@
     onAttachUnlinkedEntry,
     onValidationFix,
     onLoadChildren,
+    onValidate,
   }: Props = $props();
 
   // Track which nodes are currently loading children
@@ -1258,6 +1261,12 @@
         <Paperclip class="size-4 mr-2" />
         Add Attachment...
       </ContextMenu.Item>
+      {#if onValidate}
+        <ContextMenu.Item onclick={() => onValidate(node.path)}>
+          <SearchCheck class="size-4 mr-2" />
+          Validate
+        </ContextMenu.Item>
+      {/if}
       <ContextMenu.Separator />
       <ContextMenu.Item
         variant="destructive"
