@@ -38,7 +38,7 @@
 </script>
 
 <header
-  class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-border bg-card shrink-0"
+  class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b border-border bg-background shrink-0"
 >
   <!-- Left side: toggle + title -->
   <div class="flex items-center gap-2 min-w-0 flex-1">

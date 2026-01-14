@@ -591,14 +591,9 @@
   });
 </script>
 
-<!--
-  Container:
-  - On desktop: bordered, rounded container
-  - On mobile: edge-to-edge, no border/rounding for maximum writing space
--->
+<!-- Container: blends with background on all screen sizes -->
 <div
-  class="relative flex flex-col h-full overflow-hidden bg-card
-         md:border md:border-border md:rounded-lg"
+  class="relative flex flex-col h-full overflow-hidden bg-background"
 >
   <!-- Desktop inline toolbar: fixed at top, hidden on mobile -->
   {#if !readonly && (!mobileState.isMobile || (mobileState.isMobile && !mobileState.keyboardVisible))}
