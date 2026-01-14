@@ -113,7 +113,7 @@
     {/if}
 
     <!-- Separator -->
-    <div class="border-t border-border my-2" />
+    <div class="border-t border-border my-2"></div>
 
     <!-- Delete - Destructive -->
     <button

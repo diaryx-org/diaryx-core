@@ -5,6 +5,8 @@
 
   import * as ContextMenu from "$lib/components/ui/context-menu";
   import * as Popover from "$lib/components/ui/popover";
+  import MobileActionSheet from "../views/sidebar/MobileActionSheet.svelte";
+  import { createContextMenuState, type TreeNodeMenuData } from "./hooks/useContextMenu.svelte";
   import {
     ChevronRight,
     ChevronDown,
@@ -80,6 +82,9 @@
     onLoadChildren,
     onValidate,
   }: Props = $props();
+
+  // Context menu state for mobile/desktop switching
+  const contextMenuState = createContextMenuState<TreeNodeMenuData>();
 
   // Track which nodes are currently loading children
   let loadingNodes = $state(new Set<string>());
@@ -935,6 +940,20 @@
   {/if}
 </aside>
 
+<!-- Mobile Action Sheet for context menu -->
+<MobileActionSheet
+  open={contextMenuState.bottomSheetOpen}
+  nodePath={contextMenuState.targetData?.path ?? ''}
+  nodeName={contextMenuState.targetData?.name ?? ''}
+  onClose={contextMenuState.closeMenu}
+  onCreateChild={onCreateChildEntry}
+  onCopyPath={copyPathToClipboard}
+  onExport={onExport}
+  onAddAttachment={onAddAttachment}
+  onValidate={onValidate}
+  onDelete={onDeleteEntry}
+/>
+
 <!-- Parent Picker Dialog -->
 {#if showParentPicker}
   <div
@@ -985,7 +1004,7 @@
 
 {#snippet treeNode(node: TreeNode, depth: number)}
   <ContextMenu.Root>
-    <ContextMenu.Trigger>
+    <ContextMenu.Trigger disabled={contextMenuState.useBottomSheet}>
       <div
         class="select-none"
         role="treeitem"
@@ -998,6 +1017,12 @@
         draggable="true"
         ondragstart={(e) => handleDragStart(e, node.path)}
         ondragend={handleDragEnd}
+        oncontextmenu={(e) => {
+          if (contextMenuState.useBottomSheet) {
+            e.preventDefault();
+            contextMenuState.openMenu({ path: node.path, name: node.name, hasChildren: node.children.length > 0 });
+          }
+        }}
       >
         <div
           class="group flex items-center gap-1 rounded-md hover:bg-sidebar-accent transition-colors

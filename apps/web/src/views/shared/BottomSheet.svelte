@@ -51,7 +51,7 @@
   >
     <!-- Drag Handle -->
     <div class="flex justify-center pt-3 pb-2">
-      <div class="w-10 h-1 rounded-full bg-muted-foreground/30" />
+      <div class="w-10 h-1 rounded-full bg-muted-foreground/30"></div>
     </div>
 
     {#if title}

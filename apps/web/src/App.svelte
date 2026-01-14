@@ -59,6 +59,27 @@
     addFileToCrdt,
   } from "./models/services";
 
+  // Import controllers
+  import {
+    refreshTree as refreshTreeController,
+    loadNodeChildren as loadNodeChildrenController,
+    runValidation as runValidationController,
+    validatePath,
+    setupWorkspaceCrdt as setupWorkspaceCrdtController,
+  } from "./controllers";
+  import {
+    openEntry as openEntryController,
+    saveEntry as saveEntryController,
+    createChildEntry as createChildEntryController,
+    createEntry as createEntryController,
+    ensureDailyEntry,
+    deleteEntry as deleteEntryController,
+    moveEntry as moveEntryController,
+    handlePropertyChange as handlePropertyChangeController,
+    removeProperty,
+    addProperty,
+  } from "./controllers";
+
   // Dynamically import Editor to avoid SSR issues
   let Editor: typeof import("./lib/Editor.svelte").default | null =
     $state(null);
@@ -797,55 +818,16 @@
     }
   }
 
-  // Run workspace validation
+  // Run workspace validation (delegates to controller)
   async function runValidation() {
     if (!api || !backend) return;
-    try {
-      // Pass the actual workspace root path for validation
-      // tree?.path is the root index file path (e.g., "/Users/.../workspace/index.md")
-      // This is required for Tauri which uses absolute filesystem paths
-      // Fall back to backend.getWorkspacePath() if tree is not yet loaded
-      const rootPath = tree?.path ?? backend.getWorkspacePath();
-      workspaceStore.setValidationResult(await api.validateWorkspace(rootPath));
-      console.log("[App] Validation result:", validationResult);
-      console.log("[App] Warnings:", validationResult?.warnings);
-    } catch (e) {
-      console.error("[App] Validation error:", e);
-    }
+    await runValidationController(api, backend, tree);
   }
 
-  // Validate a specific path (file or subtree)
+  // Validate a specific path (delegates to controller)
   async function handleValidate(path: string) {
     if (!api) return;
-    try {
-      // Determine if this is an index file (validate subtree) or regular file
-      const isIndex = path.endsWith('/index.md') || path.endsWith('\\index.md') ||
-                      path.match(/[/\\]index\.[^/\\]+$/);
-
-      let result;
-      if (isIndex) {
-        // Validate from this index down
-        result = await api.validateWorkspace(path);
-      } else {
-        // Validate just this file
-        result = await api.validateFile(path);
-      }
-
-      // Update the validation result
-      workspaceStore.setValidationResult(result);
-
-      // Show a summary toast
-      const errorCount = result.errors.length;
-      const warningCount = result.warnings.length;
-      if (errorCount === 0 && warningCount === 0) {
-        toast.success('No issues found');
-      } else {
-        toast.info(`Found ${errorCount} error${errorCount !== 1 ? 's' : ''} and ${warningCount} warning${warningCount !== 1 ? 's' : ''}`);
-      }
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Validation failed');
-      console.error("[App] Validation error:", e);
-    }
+    await validatePath(api, path);
   }
 
   // Quick fix: Remove broken part_of reference from a file
@@ -899,58 +881,15 @@
     }
   }
 
-  // Depth limit for initial tree loading (lazy loading)
-  const TREE_INITIAL_DEPTH = 2;
-
-  // Refresh the tree using the appropriate method based on showUnlinkedFiles setting
+  // Wrapper functions that delegate to controllers
   async function refreshTree() {
     if (!api || !backend) return;
-    try {
-      // Get the workspace directory from the backend
-      const workspaceDir = backend.getWorkspacePath().replace(/\/index\.md$/, '').replace(/\/README\.md$/, '');
-
-      if (showUnlinkedFiles) {
-        // "Show All Files" mode - use filesystem tree with depth limit
-        workspaceStore.setTree(await api.getFilesystemTree(workspaceDir, showHiddenFiles, TREE_INITIAL_DEPTH));
-      } else {
-        // Normal mode - find the actual root index and use hierarchy tree with depth limit
-        try {
-          const rootIndexPath = await api.findRootIndex(workspaceDir);
-          workspaceStore.setTree(await api.getWorkspaceTree(rootIndexPath, TREE_INITIAL_DEPTH));
-        } catch (e) {
-          console.warn("[App] Could not find root index for tree:", e);
-          // Fall back to filesystem tree if no root index found
-          workspaceStore.setTree(await api.getFilesystemTree(workspaceDir, showHiddenFiles, TREE_INITIAL_DEPTH));
-        }
-      }
-    } catch (e) {
-      console.error("[App] Error refreshing tree:", e);
-    }
+    await refreshTreeController(api, backend, showUnlinkedFiles, showHiddenFiles);
   }
 
-  // Load children for a node (lazy loading when user expands)
   async function loadNodeChildren(nodePath: string) {
     if (!api) return;
-    try {
-      let subtree: TreeNode;
-
-      if (showUnlinkedFiles) {
-        // Filesystem tree mode - need directory path
-        // If nodePath ends with .md, it's an index file - use parent directory
-        const dirPath = nodePath.endsWith('.md')
-          ? nodePath.substring(0, nodePath.lastIndexOf('/'))
-          : nodePath;
-        subtree = await api.getFilesystemTree(dirPath, showHiddenFiles, TREE_INITIAL_DEPTH);
-      } else {
-        // Workspace tree mode - use index file path directly
-        subtree = await api.getWorkspaceTree(nodePath, TREE_INITIAL_DEPTH);
-      }
-
-      // Merge into existing tree
-      workspaceStore.updateSubtree(nodePath, subtree);
-    } catch (e) {
-      console.error("[App] Error loading children for", nodePath, e);
-    }
+    await loadNodeChildrenController(api, nodePath, showUnlinkedFiles, showHiddenFiles);
   }
 
   // Handle add attachment from context menu
