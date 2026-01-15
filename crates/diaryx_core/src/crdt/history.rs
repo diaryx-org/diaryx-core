@@ -282,9 +282,10 @@ impl HistoryManager {
 
         // If asking for the latest or beyond, return current state
         if let Some(last) = all_updates.last()
-            && update_id >= last.update_id {
-                return self.storage.load_doc(doc_name);
-            }
+            && update_id >= last.update_id
+        {
+            return self.storage.load_doc(doc_name);
+        }
 
         // Find the nearest cached snapshot before the target update_id
         let (start_update_id, base_state) = self.find_nearest_snapshot(doc_name, update_id);
@@ -295,10 +296,11 @@ impl HistoryManager {
 
         // Apply base state from cache if available
         if let Some(state) = base_state
-            && let Ok(decoded) = Update::decode_v1(&state) {
-                let mut txn = doc.transact_mut();
-                let _ = txn.apply_update(decoded);
-            }
+            && let Ok(decoded) = Update::decode_v1(&state)
+        {
+            let mut txn = doc.transact_mut();
+            let _ = txn.apply_update(decoded);
+        }
 
         // Track updates for potential caching
         let mut updates_applied_since_cache = 0i64;

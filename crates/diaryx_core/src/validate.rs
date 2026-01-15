@@ -530,9 +530,10 @@ impl<FS: AsyncFileSystem> Validator<FS> {
     ) -> Vec<PathBuf> {
         // Check if we've exceeded max depth
         if let Some(max) = max_depth
-            && current_depth >= max {
-                return Vec::new();
-            }
+            && current_depth >= max
+        {
+            return Vec::new();
+        }
 
         let mut all_entries = Vec::new();
 
