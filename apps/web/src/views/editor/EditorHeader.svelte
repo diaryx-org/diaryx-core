@@ -12,6 +12,7 @@
 
   import { Button } from "$lib/components/ui/button";
   import * as Tooltip from "$lib/components/ui/tooltip";
+  import { getMobileState } from "$lib/hooks/useMobile.svelte";
   import {
     Save,
     PanelLeft,
@@ -20,6 +21,9 @@
     Loader2,
     Search,
   } from "@lucide/svelte";
+
+  // Mobile state for hiding keyboard shortcut tooltips
+  const mobileState = getMobileState();
 
   interface Props {
     title: string;
@@ -88,7 +92,9 @@
             <PanelLeft class="size-4" />
           </Button>
         </Tooltip.Trigger>
-        <Tooltip.Content>Open sidebar</Tooltip.Content>
+        {#if !mobileState.isMobile}
+          <Tooltip.Content>Open sidebar ({modKey}[)</Tooltip.Content>
+        {/if}
       </Tooltip.Root>
     {/if}
 
@@ -141,7 +147,9 @@
           {/if}
         </Button>
       </Tooltip.Trigger>
-      <Tooltip.Content>Save ({modKey}S)</Tooltip.Content>
+      {#if !mobileState.isMobile}
+        <Tooltip.Content>Save ({modKey}S)</Tooltip.Content>
+      {/if}
     </Tooltip.Root>
 
     <!-- Command palette button with tooltip -->
@@ -157,7 +165,9 @@
           <Search class="size-4" />
         </Button>
       </Tooltip.Trigger>
-      <Tooltip.Content>Search ({modKey}K)</Tooltip.Content>
+      {#if !mobileState.isMobile}
+        <Tooltip.Content>Search ({modKey}K)</Tooltip.Content>
+      {/if}
     </Tooltip.Root>
 
     <!-- Right sidebar toggle (only when sidebar is closed) -->
@@ -174,7 +184,9 @@
             <PanelRight class="size-4" />
           </Button>
         </Tooltip.Trigger>
-        <Tooltip.Content>Open properties</Tooltip.Content>
+        {#if !mobileState.isMobile}
+          <Tooltip.Content>Open properties ({modKey}])</Tooltip.Content>
+        {/if}
       </Tooltip.Root>
     {/if}
   </div>

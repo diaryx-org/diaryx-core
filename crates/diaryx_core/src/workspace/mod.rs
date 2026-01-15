@@ -240,14 +240,13 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         title: Option<&str>,
         description: Option<&str>,
     ) -> Result<PathBuf> {
-        let readme_path = dir.join("README.md");
-
-        if self.fs.exists(&readme_path).await {
-            // Check if it's already a root index
-            if self.is_root_index(&readme_path).await {
-                return Err(DiaryxError::WorkspaceAlreadyExists(dir.to_path_buf()));
-            }
+        // Check if ANY root index already exists in this directory
+        // (not just README.md - could be index.md or any other .md file)
+        if let Ok(Some(existing_root)) = self.find_root_index_in_dir(dir).await {
+            return Err(DiaryxError::WorkspaceAlreadyExists(existing_root));
         }
+
+        let readme_path = dir.join("README.md");
 
         // Create directory if needed
         self.fs.create_dir_all(dir).await?;
@@ -1198,6 +1197,193 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         }
     }
 
+    /// Duplicate an entry, creating a copy with a unique name.
+    ///
+    /// This method:
+    /// - For leaf files: copies the file with a "-copy" suffix (or "-copy-N" if exists)
+    /// - For index files: copies the entire directory structure recursively
+    /// - Updates the copy's `part_of` to point to the same parent
+    /// - Adds the copy to the parent's `contents`
+    ///
+    /// Returns the path to the new duplicated entry.
+    pub async fn duplicate_entry(&self, source_path: &Path) -> Result<PathBuf> {
+        use crate::path_utils::relative_path_from_file_to_target;
+
+        let is_index = self.is_index_file(source_path).await;
+
+        if is_index {
+            // For index files, we duplicate the entire directory
+            let source_dir = source_path.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: source_path.to_path_buf(),
+                message: "Index file has no parent directory".to_string(),
+            })?;
+
+            let parent_of_dir = source_dir.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: source_path.to_path_buf(),
+                message: "Directory has no parent".to_string(),
+            })?;
+
+            // Get source directory name and generate unique copy name
+            let source_dir_name = source_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: source_path.to_path_buf(),
+                    message: "Invalid directory name".to_string(),
+                })?;
+
+            let new_dir_name = self
+                .generate_unique_copy_name(parent_of_dir, source_dir_name, false)
+                .await;
+            let new_dir_path = parent_of_dir.join(&new_dir_name);
+            let new_index_path = new_dir_path.join(format!("{}.md", new_dir_name));
+
+            // Create new directory
+            self.fs.create_dir_all(&new_dir_path).await?;
+
+            // Copy all files from source directory to new directory
+            if let Ok(files) = self.fs.list_files(source_dir).await {
+                for file in files {
+                    let file_name = file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default();
+
+                    // For the index file, use the new directory name
+                    let new_path = if file == source_path {
+                        new_index_path.clone()
+                    } else {
+                        new_dir_path.join(file_name)
+                    };
+
+                    // Copy file content
+                    let content = self.fs.read_to_string(&file).await.map_err(|e| {
+                        DiaryxError::FileRead {
+                            path: file.clone(),
+                            source: e,
+                        }
+                    })?;
+                    self.fs
+                        .write_file(&new_path, &content)
+                        .await
+                        .map_err(|e| DiaryxError::FileWrite {
+                            path: new_path.clone(),
+                            source: e,
+                        })?;
+
+                    // Update part_of for child files to point to new index
+                    if new_path != new_index_path {
+                        let new_part_of =
+                            relative_path_from_file_to_target(&new_path, &new_index_path);
+                        let _ = self
+                            .set_frontmatter_property(&new_path, "part_of", Value::String(new_part_of))
+                            .await;
+                    }
+                }
+            }
+
+            // Update the copied index's part_of to point to grandparent (same as source)
+            if let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(parent_of_dir).await {
+                let new_part_of =
+                    relative_path_from_file_to_target(&new_index_path, &grandparent_index);
+                let _ = self
+                    .set_frontmatter_property(&new_index_path, "part_of", Value::String(new_part_of))
+                    .await;
+
+                // Add to grandparent's contents
+                let rel_path = format!("{}/{}.md", new_dir_name, new_dir_name);
+                let _ = self
+                    .add_to_index_contents(&grandparent_index, &rel_path)
+                    .await;
+            }
+
+            Ok(new_index_path)
+        } else {
+            // For leaf files, simple copy in same directory
+            let parent = source_path.parent().ok_or_else(|| DiaryxError::InvalidPath {
+                path: source_path.to_path_buf(),
+                message: "File has no parent directory".to_string(),
+            })?;
+
+            let source_filename = source_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: source_path.to_path_buf(),
+                    message: "Invalid file name".to_string(),
+                })?;
+
+            // Generate unique copy name
+            let new_filename = self
+                .generate_unique_copy_name(parent, source_filename, true)
+                .await;
+            let new_path = parent.join(&new_filename);
+
+            // Copy file content
+            let content = self
+                .fs
+                .read_to_string(source_path)
+                .await
+                .map_err(|e| DiaryxError::FileRead {
+                    path: source_path.to_path_buf(),
+                    source: e,
+                })?;
+            self.fs
+                .write_file(&new_path, &content)
+                .await
+                .map_err(|e| DiaryxError::FileWrite {
+                    path: new_path.clone(),
+                    source: e,
+                })?;
+
+            // Update parent's contents if it exists
+            if let Ok(Some(parent_index)) = self.find_any_index_in_dir(parent).await {
+                // Update part_of to point to parent
+                let new_part_of = relative_path_from_file_to_target(&new_path, &parent_index);
+                let _ = self
+                    .set_frontmatter_property(&new_path, "part_of", Value::String(new_part_of))
+                    .await;
+
+                // Add to parent's contents
+                let _ = self
+                    .add_to_index_contents(&parent_index, &new_filename)
+                    .await;
+            }
+
+            Ok(new_path)
+        }
+    }
+
+    /// Generate a unique copy name for a file or directory.
+    ///
+    /// For files: "name.md" → "name-copy.md", "name-copy-2.md", etc.
+    /// For directories: "name" → "name-copy", "name-copy-2", etc.
+    async fn generate_unique_copy_name(
+        &self,
+        parent_dir: &Path,
+        original_name: &str,
+        is_file: bool,
+    ) -> String {
+        let (base_name, extension) = if is_file {
+            // Strip .md extension for files
+            let base = original_name.trim_end_matches(".md");
+            (base.to_string(), ".md".to_string())
+        } else {
+            (original_name.to_string(), String::new())
+        };
+
+        // Try "name-copy" first
+        let mut candidate = format!("{}-copy{}", base_name, extension);
+        let mut counter = 2;
+
+        while self.fs.exists(&parent_dir.join(&candidate)).await {
+            candidate = format!("{}-copy-{}{}", base_name, counter, extension);
+            counter += 1;
+        }
+
+        candidate
+    }
+
     /// Convert a leaf file into an index file with a directory.
     ///
     /// This method:
@@ -1253,6 +1439,23 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         // Add contents property
         self.set_frontmatter_property(&new_path, "contents", Value::Sequence(vec![]))
             .await?;
+
+        // Update part_of path since file moved one level deeper
+        if let Ok(Some(Value::String(old_part_of))) =
+            self.get_frontmatter_property(&new_path, "part_of").await
+        {
+            use crate::path_utils::{normalize_path, relative_path_from_file_to_target};
+
+            // Resolve the old relative path to absolute (from the original location)
+            let target_path = normalize_path(&parent.join(&old_part_of));
+
+            // Calculate new relative path from the new location
+            let new_part_of = relative_path_from_file_to_target(&new_path, &target_path);
+
+            let _ = self
+                .set_frontmatter_property(&new_path, "part_of", Value::String(new_part_of))
+                .await;
+        }
 
         // Update parent's contents to point to new location
         if let Ok(Some(parent_index)) = self.find_any_index_in_dir(parent).await {
@@ -1329,6 +1532,23 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let _ = self
             .remove_frontmatter_property(&new_path, "contents")
             .await;
+
+        // Update part_of path since file moved one level up
+        if let Ok(Some(Value::String(old_part_of))) =
+            self.get_frontmatter_property(&new_path, "part_of").await
+        {
+            use crate::path_utils::{normalize_path, relative_path_from_file_to_target};
+
+            // Resolve the old relative path to absolute (from the original location)
+            let target_path = normalize_path(&current_dir.join(&old_part_of));
+
+            // Calculate new relative path from the new location
+            let new_part_of = relative_path_from_file_to_target(&new_path, &target_path);
+
+            let _ = self
+                .set_frontmatter_property(&new_path, "part_of", Value::String(new_part_of))
+                .await;
+        }
 
         // Update grandparent's contents
         if let Ok(Some(grandparent_index)) = self.find_any_index_in_dir(parent_of_dir).await {

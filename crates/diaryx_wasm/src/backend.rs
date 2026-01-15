@@ -1157,6 +1157,21 @@ impl DiaryxBackend {
         })
     }
 
+    /// Duplicate an entry, creating a copy.
+    #[wasm_bindgen(js_name = "duplicateEntry")]
+    pub fn duplicate_entry(&self, path: String) -> Promise {
+        let fs = self.fs.clone();
+
+        future_to_promise(async move {
+            let ws = Workspace::new(&*fs);
+            let result = ws
+                .duplicate_entry(&PathBuf::from(&path))
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&result.to_string_lossy()))
+        })
+    }
+
     /// Ensure today's daily entry exists.
     #[wasm_bindgen(js_name = "ensureDailyEntry")]
     pub fn ensure_daily_entry(&self) -> Promise {
@@ -1617,11 +1632,14 @@ impl DiaryxBackend {
         let fs = self.fs.clone();
 
         future_to_promise(async move {
+            use diaryx_core::path_utils::normalize_path;
+
             let entry_dir = PathBuf::from(&entry_path)
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."));
-            let full_path = entry_dir.join(&attachment_path);
+            // Normalize path to handle .. components (important for inherited attachments)
+            let full_path = normalize_path(&entry_dir.join(&attachment_path));
 
             let data = fs
                 .read_binary(&full_path)

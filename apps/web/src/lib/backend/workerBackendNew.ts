@@ -173,6 +173,7 @@ export class WorkerBackendNew implements Backend {
   deleteEntry = (path: string) => this.remote!.deleteEntry(path);
   moveEntry = (from: string, to: string) => this.remote!.moveEntry(from, to);
   renameEntry = (path: string, newName: string) => this.remote!.renameEntry(path, newName);
+  duplicateEntry = (path: string) => this.remote!.duplicateEntry(path);
 
   getFrontmatter = (path: string) => this.remote!.getFrontmatter(path);
   setFrontmatterProperty = (path: string, key: string, value: any) =>

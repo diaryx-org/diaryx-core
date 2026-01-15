@@ -97,15 +97,15 @@
     <Switch id="readable-line-length" bind:checked={readableLineLength} />
   </div>
 
-  <!-- Show Unlinked Files -->
-  <div class="flex items-center justify-between gap-4 px-1">
-    <Label for="show-unlinked" class="text-sm cursor-pointer flex flex-col gap-0.5">
+  <!-- Show Unlinked Files (temporarily disabled) -->
+  <div class="flex items-center justify-between gap-4 px-1 opacity-50">
+    <Label for="show-unlinked" class="text-sm flex flex-col gap-0.5">
       <span>Show all files</span>
       <span class="font-normal text-xs text-muted-foreground">
-        Switch to a filesystem view to see files not linked in hierarchy.
+        Temporarily disabled. Will show files not linked in hierarchy.
       </span>
     </Label>
-    <Switch id="show-unlinked" bind:checked={showUnlinkedFiles} />
+    <Switch id="show-unlinked" bind:checked={showUnlinkedFiles} disabled />
   </div>
 
   <!-- Show Hidden Files -->

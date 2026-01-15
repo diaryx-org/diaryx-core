@@ -33,6 +33,17 @@
   } from "@lucide/svelte";
   import type { Component } from "svelte";
   import VersionDiff from "./history/VersionDiff.svelte";
+  import * as Tooltip from "$lib/components/ui/tooltip";
+  import { getMobileState } from "$lib/hooks/useMobile.svelte";
+
+  // Platform detection for keyboard shortcut display
+  const isMac =
+    typeof navigator !== "undefined" &&
+    navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+  const modKey = isMac ? "⌘" : "Ctrl+";
+
+  // Mobile state for hiding tooltips
+  const mobileState = getMobileState();
 
   interface Props {
     entry: EntryData | null;
@@ -415,15 +426,22 @@
   <div
     class="flex items-center justify-between px-4 py-3 border-b border-sidebar-border shrink-0"
   >
-    <Button
-      variant="ghost"
-      size="icon"
-      onclick={onToggleCollapse}
-      class="size-8"
-      aria-label="Collapse panel"
-    >
-      <PanelRightClose class="size-4" />
-    </Button>
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        <Button
+          variant="ghost"
+          size="icon"
+          onclick={onToggleCollapse}
+          class="size-8"
+          aria-label="Collapse panel"
+        >
+          <PanelRightClose class="size-4" />
+        </Button>
+      </Tooltip.Trigger>
+      {#if !mobileState.isMobile}
+        <Tooltip.Content>Collapse panel ({modKey}])</Tooltip.Content>
+      {/if}
+    </Tooltip.Root>
     
     <!-- Tab Toggle -->
     <div class="flex items-center gap-1 bg-muted rounded-md p-0.5">

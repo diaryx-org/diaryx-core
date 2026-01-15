@@ -49,7 +49,11 @@ path: string,
 /**
  * New filename (e.g., "new-name.md").
  */
-new_filename: string, } } | { "type": "ConvertToIndex", "params": { 
+new_filename: string, } } | { "type": "DuplicateEntry", "params": {
+/**
+ * Path to the entry to duplicate.
+ */
+path: string, } } | { "type": "ConvertToIndex", "params": { 
 /**
  * Path to the leaf file to convert.
  */

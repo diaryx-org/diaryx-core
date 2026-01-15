@@ -9,11 +9,12 @@
   import * as Drawer from "$lib/components/ui/drawer";
   import {
     Plus,
-    Clipboard,
     Download,
-    Paperclip,
     SearchCheck,
     Trash2,
+    Pencil,
+    Copy,
+    FolderInput,
   } from "@lucide/svelte";
 
   interface Props {
@@ -23,9 +24,11 @@
     onClose: () => void;
     onCreateChild: (path: string) => void;
     onExport: (path: string) => void;
-    onAddAttachment: (path: string) => void;
     onValidate?: (path: string) => void;
     onDelete: (path: string) => void;
+    onRename?: (path: string, name: string) => void;
+    onDuplicate?: (path: string) => void;
+    onMoveTo?: (path: string) => void;
   }
 
   let {
@@ -35,23 +38,16 @@
     onClose,
     onCreateChild,
     onExport,
-    onAddAttachment,
     onValidate,
     onDelete,
+    onRename,
+    onDuplicate,
+    onMoveTo,
   }: Props = $props();
 
   // Action handlers that close the sheet after action
   function handleAction(action: () => void) {
     action();
-    onClose();
-  }
-
-  async function handleCopyPath() {
-    try {
-      await navigator.clipboard.writeText(nodePath);
-    } catch (e) {
-      console.error("Failed to copy path:", e);
-    }
     onClose();
   }
 
@@ -80,15 +76,44 @@
           <span class="text-base">New Entry Here</span>
         </button>
 
-        <!-- Copy Path -->
-        <button
-          type="button"
-          class="flex items-center gap-4 px-6 py-4 hover:bg-muted active:bg-muted/80 transition-colors text-left"
-          onclick={handleCopyPath}
-        >
-          <Clipboard class="size-5 text-muted-foreground" />
-          <span class="text-base">Copy Path</span>
-        </button>
+        <!-- Rename -->
+        {#if onRename}
+          <button
+            type="button"
+            class="flex items-center gap-4 px-6 py-4 hover:bg-muted active:bg-muted/80 transition-colors text-left"
+            onclick={() => handleAction(() => onRename(nodePath, nodeName))}
+          >
+            <Pencil class="size-5 text-muted-foreground" />
+            <span class="text-base">Rename</span>
+          </button>
+        {/if}
+
+        <!-- Duplicate -->
+        {#if onDuplicate}
+          <button
+            type="button"
+            class="flex items-center gap-4 px-6 py-4 hover:bg-muted active:bg-muted/80 transition-colors text-left"
+            onclick={() => handleAction(() => onDuplicate(nodePath))}
+          >
+            <Copy class="size-5 text-muted-foreground" />
+            <span class="text-base">Duplicate</span>
+          </button>
+        {/if}
+
+        <!-- Move to -->
+        {#if onMoveTo}
+          <button
+            type="button"
+            class="flex items-center gap-4 px-6 py-4 hover:bg-muted active:bg-muted/80 transition-colors text-left"
+            onclick={() => handleAction(() => onMoveTo(nodePath))}
+          >
+            <FolderInput class="size-5 text-muted-foreground" />
+            <span class="text-base">Move to...</span>
+          </button>
+        {/if}
+
+        <!-- Separator -->
+        <div class="border-t border-border my-2"></div>
 
         <!-- Export -->
         <button
@@ -98,16 +123,6 @@
         >
           <Download class="size-5 text-muted-foreground" />
           <span class="text-base">Export...</span>
-        </button>
-
-        <!-- Add Attachment -->
-        <button
-          type="button"
-          class="flex items-center gap-4 px-6 py-4 hover:bg-muted active:bg-muted/80 transition-colors text-left"
-          onclick={() => handleAction(() => onAddAttachment(nodePath))}
-        >
-          <Paperclip class="size-5 text-muted-foreground" />
-          <span class="text-base">Add Attachment...</span>
         </button>
 
         <!-- Validate -->

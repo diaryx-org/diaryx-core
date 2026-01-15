@@ -225,6 +225,10 @@ const workerApi = {
     return result;
   },
 
+  async duplicateEntry(path: string): Promise<string> {
+    return getBackend().duplicateEntry(path);
+  },
+
   // =========================================================================
   // Frontmatter
   // =========================================================================

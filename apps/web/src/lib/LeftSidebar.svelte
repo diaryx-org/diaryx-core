@@ -21,15 +21,16 @@
     AlertTriangle,
     Plus,
     Trash2,
-    Clipboard,
     Download,
-    Paperclip,
     Settings,
     Wrench,
     Eye,
     X,
     SearchCheck,
     MoreVertical,
+    Pencil,
+    Copy,
+    FolderInput,
   } from "@lucide/svelte";
 
   interface Props {
@@ -57,6 +58,8 @@
     onValidationFix?: () => void;
     onLoadChildren?: (path: string) => Promise<void>;
     onValidate?: (path: string) => void;
+    onRenameEntry?: (path: string, newFilename: string) => Promise<string>;
+    onDuplicateEntry?: (path: string) => Promise<string>;
   }
 
   let {
@@ -84,6 +87,8 @@
     onValidationFix,
     onLoadChildren,
     onValidate,
+    onRenameEntry,
+    onDuplicateEntry,
   }: Props = $props();
 
   // Platform detection for keyboard shortcut display
@@ -381,6 +386,114 @@
   function closeParentPicker() {
     showParentPicker = false;
     pendingWarningForParentPicker = null;
+  }
+
+  // =========================================================================
+  // Rename Dialog State
+  // =========================================================================
+
+  let showRenameDialog = $state(false);
+  let renameTargetPath = $state<string | null>(null);
+  let renameTargetName = $state('');
+  let renameNewName = $state('');
+  let isRenaming = $state(false);
+
+  // Open rename dialog for an entry
+  function handleRenameClick(path: string, currentName: string) {
+    renameTargetPath = path;
+    renameTargetName = currentName;
+    // Pre-fill with the current filename
+    renameNewName = currentName;
+    showRenameDialog = true;
+  }
+
+  // Perform the rename
+  async function handleRenameSubmit() {
+    if (!renameTargetPath || !renameNewName.trim() || !onRenameEntry) return;
+
+    // Ensure .md extension
+    let newFilename = renameNewName.trim();
+    if (!newFilename.endsWith('.md')) {
+      newFilename += '.md';
+    }
+
+    isRenaming = true;
+    try {
+      const newPath = await onRenameEntry(renameTargetPath, newFilename);
+      toast.success(`Renamed to ${newFilename}`);
+      closeRenameDialog();
+      // Open the renamed entry
+      onOpenEntry(newPath);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to rename');
+    } finally {
+      isRenaming = false;
+    }
+  }
+
+  // Close rename dialog
+  function closeRenameDialog() {
+    showRenameDialog = false;
+    renameTargetPath = null;
+    renameTargetName = '';
+    renameNewName = '';
+  }
+
+  // =========================================================================
+  // Move To Picker State
+  // =========================================================================
+
+  let showMovePicker = $state(false);
+  let moveTargetPath = $state<string | null>(null);
+  let moveAvailableParents = $state<string[]>([]);
+  let isLoadingMoveParents = $state(false);
+
+  // Open move picker for an entry
+  async function handleMoveToClick(path: string) {
+    if (!api || !tree) return;
+
+    moveTargetPath = path;
+    isLoadingMoveParents = true;
+    try {
+      moveAvailableParents = await api.getAvailableParentIndexes(path, tree.path);
+      showMovePicker = true;
+    } catch (e) {
+      toast.error('Failed to load available parents');
+    } finally {
+      isLoadingMoveParents = false;
+    }
+  }
+
+  // Select a parent to move to
+  async function handleMoveToParent(parentPath: string) {
+    if (!moveTargetPath) return;
+
+    onMoveEntry(moveTargetPath, parentPath);
+    closeMovePicker();
+  }
+
+  // Close move picker
+  function closeMovePicker() {
+    showMovePicker = false;
+    moveTargetPath = null;
+    moveAvailableParents = [];
+  }
+
+  // =========================================================================
+  // Duplicate Handler
+  // =========================================================================
+
+  async function handleDuplicate(path: string) {
+    if (!onDuplicateEntry) return;
+
+    try {
+      const newPath = await onDuplicateEntry(path);
+      toast.success('Entry duplicated');
+      // Open the duplicated entry
+      onOpenEntry(newPath);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to duplicate');
+    }
   }
 
   // Count total problems
@@ -711,14 +824,6 @@
   }
 
 
-  // Copy path to clipboard
-  async function copyPathToClipboard(path: string) {
-    try {
-      await navigator.clipboard.writeText(path);
-    } catch (e) {
-      console.error("Failed to copy path:", e);
-    }
-  }
 </script>
 
 <!-- Mobile overlay backdrop -->
@@ -759,7 +864,9 @@
             <Settings class="size-4" />
           </Button>
         </Tooltip.Trigger>
-        <Tooltip.Content>Settings ({settingsShortcut})</Tooltip.Content>
+        {#if !mobileState.isMobile}
+          <Tooltip.Content>Settings ({settingsShortcut})</Tooltip.Content>
+        {/if}
       </Tooltip.Root>
       <Tooltip.Root>
         <Tooltip.Trigger>
@@ -773,7 +880,9 @@
             <PanelLeftClose class="size-4" />
           </Button>
         </Tooltip.Trigger>
-        <Tooltip.Content>Collapse sidebar ({modKey}B)</Tooltip.Content>
+        {#if !mobileState.isMobile}
+          <Tooltip.Content>Collapse sidebar ({modKey}[)</Tooltip.Content>
+        {/if}
       </Tooltip.Root>
     </div>
   </div>
@@ -804,7 +913,7 @@
     <div class="border-t border-sidebar-border shrink-0">
       <button
         type="button"
-        class="w-full flex items-center justify-between px-4 py-2 hover:bg-sidebar-accent transition-colors"
+        class="w-full flex items-center justify-between px-4 py-2 hover:bg-sidebar-accent active:bg-sidebar-accent transition-colors"
         onclick={() => problemsPanelOpen = !problemsPanelOpen}
       >
         <div class="flex items-center gap-2">
@@ -956,12 +1065,14 @@
   onClose={contextMenuState.closeMenu}
   onCreateChild={onCreateChildEntry}
   onExport={onExport}
-  onAddAttachment={onAddAttachment}
   onValidate={onValidate}
   onDelete={onDeleteEntry}
+  onRename={onRenameEntry ? handleRenameClick : undefined}
+  onDuplicate={onDuplicateEntry ? handleDuplicate : undefined}
+  onMoveTo={api ? handleMoveToClick : undefined}
 />
 
-<!-- Parent Picker Dialog -->
+<!-- Parent Picker Dialog (for validation fixes) -->
 {#if showParentPicker}
   <div
     class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center"
@@ -997,6 +1108,123 @@
                 variant="outline"
                 class="w-full justify-start text-left h-auto py-2"
                 onclick={() => handleSelectParent(parentPath)}
+              >
+                <div class="flex flex-col items-start gap-0.5 overflow-hidden">
+                  <span class="font-medium truncate w-full">{getFileName(parentPath)}</span>
+                  <span class="text-xs text-muted-foreground truncate w-full">{parentPath}</span>
+                </div>
+              </Button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Rename Dialog -->
+{#if showRenameDialog}
+  <div
+    class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="rename-dialog-title"
+    onclick={closeRenameDialog}
+    onkeydown={(e) => e.key === 'Escape' && closeRenameDialog()}
+    tabindex={-1}
+  >
+    <div
+      class="bg-background rounded-lg shadow-xl max-w-md w-full mx-4"
+      role="presentation"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-center justify-between p-4 border-b">
+        <h2 id="rename-dialog-title" class="text-lg font-semibold">Rename Entry</h2>
+        <Button variant="ghost" size="sm" onclick={closeRenameDialog}>
+          <X class="size-4" />
+        </Button>
+      </div>
+      <form
+        class="p-4 space-y-4"
+        onsubmit={(e) => {
+          e.preventDefault();
+          handleRenameSubmit();
+        }}
+      >
+        <div class="space-y-2">
+          <label for="rename-input" class="text-sm font-medium">
+            New name
+          </label>
+          <input
+            id="rename-input"
+            type="text"
+            class="w-full px-3 py-2 border rounded-md bg-background text-foreground
+              focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+            bind:value={renameNewName}
+            placeholder="Enter new filename"
+            disabled={isRenaming}
+          />
+          <p class="text-xs text-muted-foreground">
+            The .md extension will be added automatically if not provided.
+          </p>
+        </div>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" type="button" onclick={closeRenameDialog} disabled={isRenaming}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={isRenaming || !renameNewName.trim()}>
+            {#if isRenaming}
+              <Loader2 class="size-4 mr-2 animate-spin" />
+            {/if}
+            Rename
+          </Button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
+<!-- Move To Picker Dialog -->
+{#if showMovePicker}
+  <div
+    class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="move-picker-title"
+    onclick={closeMovePicker}
+    onkeydown={(e) => e.key === 'Escape' && closeMovePicker()}
+    tabindex={-1}
+  >
+    <div
+      class="bg-background rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[80vh] flex flex-col"
+      role="presentation"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-center justify-between p-4 border-b">
+        <h2 id="move-picker-title" class="text-lg font-semibold">Move to</h2>
+        <Button variant="ghost" size="sm" onclick={closeMovePicker}>
+          <X class="size-4" />
+        </Button>
+      </div>
+      <div class="p-4 overflow-y-auto flex-1">
+        {#if isLoadingMoveParents}
+          <div class="flex items-center justify-center py-4">
+            <Loader2 class="size-6 animate-spin text-muted-foreground" />
+          </div>
+        {:else if moveAvailableParents.length === 0}
+          <p class="text-muted-foreground text-sm">No available destinations found.</p>
+        {:else}
+          <p class="text-sm text-muted-foreground mb-3">
+            Select a new parent for this entry:
+          </p>
+          <div class="space-y-2">
+            {#each moveAvailableParents as parentPath}
+              <Button
+                variant="outline"
+                class="w-full justify-start text-left h-auto py-2"
+                onclick={() => handleMoveToParent(parentPath)}
               >
                 <div class="flex flex-col items-start gap-0.5 overflow-hidden">
                   <span class="font-medium truncate w-full">{getFileName(parentPath)}</span>
@@ -1047,7 +1275,7 @@
           {#if node.children.length > 0}
             <button
               type="button"
-              class="p-1 rounded-sm hover:bg-sidebar-accent-foreground/10 transition-colors"
+              class="p-1 rounded-sm hover:bg-sidebar-accent-foreground/10 active:bg-sidebar-accent-foreground/20 transition-colors"
               onclick={(e) => {
                 e.stopPropagation();
                 handleToggleNode(node.path, node);
@@ -1073,9 +1301,9 @@
           {/if}
           <button
             type="button"
-            class="flex-1 flex items-center gap-2 py-1.5 pr-2 text-sm text-left rounded-md transition-colors {currentEntry?.path ===
+            class="flex-1 flex items-center gap-2 py-1.5 pr-2 text-sm text-left rounded-md transition-colors hover:bg-sidebar-accent active:bg-sidebar-accent {currentEntry?.path ===
             node.path
-              ? 'text-sidebar-primary font-medium'
+              ? 'text-sidebar-primary font-medium bg-sidebar-accent'
               : 'text-sidebar-foreground'}"
             onclick={() => handleEntryClick(node.path)}
           >
@@ -1289,17 +1517,28 @@
         <Plus class="size-4 mr-2" />
         New Entry Here
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={() => copyPathToClipboard(node.path)}>
-        <Clipboard class="size-4 mr-2" />
-        Copy Path
-      </ContextMenu.Item>
+      {#if onRenameEntry}
+        <ContextMenu.Item onclick={() => handleRenameClick(node.path, node.name)}>
+          <Pencil class="size-4 mr-2" />
+          Rename
+        </ContextMenu.Item>
+      {/if}
+      {#if onDuplicateEntry}
+        <ContextMenu.Item onclick={() => handleDuplicate(node.path)}>
+          <Copy class="size-4 mr-2" />
+          Duplicate
+        </ContextMenu.Item>
+      {/if}
+      {#if api}
+        <ContextMenu.Item onclick={() => handleMoveToClick(node.path)}>
+          <FolderInput class="size-4 mr-2" />
+          Move to...
+        </ContextMenu.Item>
+      {/if}
+      <ContextMenu.Separator />
       <ContextMenu.Item onclick={() => onExport(node.path)}>
         <Download class="size-4 mr-2" />
         Export...
-      </ContextMenu.Item>
-      <ContextMenu.Item onclick={() => onAddAttachment(node.path)}>
-        <Paperclip class="size-4 mr-2" />
-        Add Attachment...
       </ContextMenu.Item>
       {#if onValidate}
         <ContextMenu.Item onclick={() => onValidate(node.path)}>

@@ -321,12 +321,9 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
 
             Command::DeleteEntry { path } => {
-                self.fs().delete_file(Path::new(&path)).await.map_err(|e| {
-                    DiaryxError::FileWrite {
-                        path: PathBuf::from(&path),
-                        source: e,
-                    }
-                })?;
+                // Use Workspace::delete_entry which handles contents cleanup
+                let ws = self.workspace().inner();
+                ws.delete_entry(Path::new(&path)).await?;
                 Ok(Response::Ok)
             }
 
@@ -354,6 +351,12 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let ws = self.workspace().inner();
                 ws.move_entry(&from_path, &to_path).await?;
                 Ok(Response::String(to_path.to_string_lossy().to_string()))
+            }
+
+            Command::DuplicateEntry { path } => {
+                let ws = self.workspace().inner();
+                let new_path = ws.duplicate_entry(Path::new(&path)).await?;
+                Ok(Response::String(new_path.to_string_lossy().to_string()))
             }
 
             // === Hierarchy Operations ===

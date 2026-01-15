@@ -701,17 +701,13 @@
       event.preventDefault();
       uiStore.openCommandPalette();
     }
-    // Toggle left sidebar with Cmd/Ctrl + B
-    if ((event.metaKey || event.ctrlKey) && event.key === "b") {
+    // Toggle left sidebar with Cmd/Ctrl + [ (bracket)
+    if ((event.metaKey || event.ctrlKey) && event.key === "[") {
       event.preventDefault();
       toggleLeftSidebar();
     }
-    // Toggle right sidebar with Cmd/Ctrl + Shift + I (for Info)
-    if (
-      (event.metaKey || event.ctrlKey) &&
-      event.shiftKey &&
-      event.key === "I"
-    ) {
+    // Toggle right sidebar with Cmd/Ctrl + ]
+    if ((event.metaKey || event.ctrlKey) && event.key === "]") {
       event.preventDefault();
       toggleRightSidebar();
     }
@@ -773,6 +769,28 @@
     } catch (e) {
       uiStore.setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  async function handleRenameEntry(path: string, newFilename: string): Promise<string> {
+    if (!api) throw new Error("API not initialized");
+    const newPath = await api.renameEntry(path, newFilename);
+    await refreshTree();
+    await runValidation();
+    return newPath;
+  }
+
+  async function handleDuplicateEntry(path: string): Promise<string> {
+    if (!api) throw new Error("API not initialized");
+    const newPath = await api.duplicateEntry(path);
+
+    // Update CRDT with new file
+    const entry = await api.getEntry(newPath);
+    const parentPath = newPath.split('/').slice(0, -1).join('/');
+    addFileToCrdt(newPath, entry.frontmatter, parentPath || null);
+
+    await refreshTree();
+    await runValidation();
+    return newPath;
   }
 
   async function handleDeleteEntry(path: string) {
@@ -1466,6 +1484,8 @@
     }}
     onLoadChildren={loadNodeChildren}
     onValidate={handleValidate}
+    onRenameEntry={handleRenameEntry}
+    onDuplicateEntry={handleDuplicateEntry}
   />
 
   <!-- Hidden file input for attachments (accepts all file types) -->

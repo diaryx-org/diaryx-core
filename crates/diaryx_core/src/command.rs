@@ -85,6 +85,12 @@ pub enum Command {
         new_filename: String,
     },
 
+    /// Duplicate an entry, creating a copy.
+    DuplicateEntry {
+        /// Path to the entry to duplicate.
+        path: String,
+    },
+
     /// Convert a leaf file to an index file with a directory.
     ConvertToIndex {
         /// Path to the leaf file to convert.

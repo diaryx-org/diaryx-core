@@ -382,11 +382,15 @@ export async function handlePropertyChange(
           }
 
           // Update current entry
+          const newFrontmatter = { ...currentEntry.frontmatter, [key]: value };
           entryStore.setCurrentEntry({
             ...currentEntry,
             path: newPath,
-            frontmatter: { ...currentEntry.frontmatter, [key]: value },
+            frontmatter: newFrontmatter,
           });
+
+          // Update CRDT with new path and frontmatter
+          updateCrdtFileMetadata(newPath, newFrontmatter);
 
           if (onRefreshTree) {
             await onRefreshTree();
@@ -414,14 +418,15 @@ export async function handlePropertyChange(
         }
       } else {
         // No rename needed, just update title
+        const newFrontmatter = { ...currentEntry.frontmatter, [key]: value };
         await api.setFrontmatterProperty(currentEntry.path, key, value);
         entryStore.setCurrentEntry({
           ...currentEntry,
-          frontmatter: { ...currentEntry.frontmatter, [key]: value },
+          frontmatter: newFrontmatter,
         });
 
-        // Update CRDT
-        updateCrdtFileMetadata(path, currentEntry.frontmatter);
+        // Update CRDT with new frontmatter (not the old one)
+        updateCrdtFileMetadata(path, newFrontmatter);
         entryStore.setTitleError(null);
 
         if (onRefreshTree) {
@@ -432,14 +437,15 @@ export async function handlePropertyChange(
       }
     } else {
       // Non-title properties: update normally
+      const newFrontmatter = { ...currentEntry.frontmatter, [key]: value };
       await api.setFrontmatterProperty(currentEntry.path, key, value as JsonValue);
       entryStore.setCurrentEntry({
         ...currentEntry,
-        frontmatter: { ...currentEntry.frontmatter, [key]: value },
+        frontmatter: newFrontmatter,
       });
 
-      // Update CRDT
-      updateCrdtFileMetadata(path, currentEntry.frontmatter);
+      // Update CRDT with new frontmatter (not the old one)
+      updateCrdtFileMetadata(path, newFrontmatter);
 
       // Refresh tree if contents or part_of changed (affects hierarchy)
       if ((key === 'contents' || key === 'part_of') && onRefreshTree) {

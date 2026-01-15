@@ -90,6 +90,15 @@ export function createApi(backend: Backend) {
       return expectResponse(response, 'String').data;
     },
 
+    /** Duplicate an entry, creating a copy. Returns the new path. */
+    async duplicateEntry(path: string): Promise<string> {
+      const response = await backend.execute({
+        type: 'DuplicateEntry',
+        params: { path },
+      });
+      return expectResponse(response, 'String').data;
+    },
+
     /** Convert a leaf file to an index file with a directory. */
     async convertToIndex(path: string): Promise<string> {
       const response = await backend.execute({ type: 'ConvertToIndex', params: { path } });
