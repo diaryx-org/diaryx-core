@@ -210,7 +210,7 @@
   }
 
   // Server sync handlers (advanced)
-  function applySyncServer() {
+  async function applySyncServer() {
     const url = syncServerUrl.trim();
     if (url) {
       try {
@@ -222,7 +222,7 @@
       }
       isApplyingServer = true;
       setCollaborationServer(syncServerUrl);
-      setWorkspaceServer(syncServerUrl);
+      await setWorkspaceServer(syncServerUrl);
       if (typeof window !== "undefined") {
         localStorage.setItem("diaryx-collab-server-url", syncServerUrl);
       }
@@ -233,13 +233,13 @@
     }
   }
 
-  function clearSyncServer() {
+  async function clearSyncServer() {
     syncServerUrl = "";
     if (typeof window !== "undefined") {
       localStorage.removeItem("diaryx-collab-server-url");
     }
     setCollaborationServer(null);
-    setWorkspaceServer(null);
+    await setWorkspaceServer(null);
     onCollaborationToggle?.(false);
   }
 

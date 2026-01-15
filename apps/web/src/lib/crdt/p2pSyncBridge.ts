@@ -17,6 +17,7 @@ import {
   type ConflictInfo,
 } from './p2pFileTransfer';
 import { getApi } from '../backend';
+import { getDeviceId, getDeviceName } from '../device/deviceId';
 
 // ============================================================================
 // Types
@@ -55,9 +56,7 @@ const STORAGE_KEY_P2P_ENABLED = 'diaryx-p2p-enabled';
 
 const DEFAULT_CONFIG: P2PConfig = {
   signalingServers: [
-    'wss://y-webrtc-signaling-eu.herokuapp.com',
-    'wss://y-webrtc-signaling-us.herokuapp.com',
-    'wss://signaling.yjs.dev',
+    'wss://vps.adammharris.me',
   ],
   maxConns: 10,
 };
@@ -281,20 +280,40 @@ export function createP2PProvider(
 
   console.log(`[P2PSyncBridge] Creating provider for room: ${roomName}`);
 
+  console.log(`[P2PSyncBridge] Connecting to signaling servers:`, config.signalingServers);
+
   const provider = new WebrtcProvider(roomName, ydoc, {
     signaling: config.signalingServers,
     password: syncCode, // Encrypts connection with the sync code
     maxConns: config.maxConns,
+    // Use default ICE servers - no custom config for now
+  });
+
+  // Set device awareness for multi-device attribution
+  provider.awareness.setLocalStateField('device', {
+    id: getDeviceId(),
+    name: getDeviceName(),
   });
 
   // Track peer connections
   provider.on('peers', (event: { added: string[]; removed: string[]; webrtcPeers: string[]; bcPeers: string[] }) => {
-    const peerCount = event.webrtcPeers.length;
-    updatePeerCount(peerCount);
+    try {
+      console.log('[P2PSyncBridge] Peers event:', {
+        added: event.added,
+        removed: event.removed,
+        webrtcPeers: event.webrtcPeers,
+        bcPeers: event.bcPeers,
+      });
+      const peerCount = event.webrtcPeers.length;
+      updatePeerCount(peerCount);
+    } catch (e) {
+      console.error('[P2PSyncBridge] Error in peers handler:', e);
+    }
   });
 
   // Track connection status
   provider.on('status', (event: { connected: boolean }) => {
+    console.log('[P2PSyncBridge] Status event:', event);
     if (event.connected) {
       status = 'connected';
     } else if (enabled) {
@@ -303,11 +322,22 @@ export function createP2PProvider(
     notifyStatusChange();
   });
 
+  // Track synced state
+  provider.on('synced', (event: { synced: boolean }) => {
+    console.log('[P2PSyncBridge] Synced event:', event);
+  });
+
   // Track signaling errors
   // @ts-expect-error - signalingError event exists but isn't in type definitions
   provider.on('signalingError', (event: { error: Error }) => {
     console.error('[P2PSyncBridge] Signaling error:', event.error);
     // Don't set error status immediately - other signaling servers may work
+  });
+
+  // Log awareness changes (other devices connecting)
+  provider.awareness.on('change', () => {
+    const states = provider.awareness.getStates();
+    console.log('[P2PSyncBridge] Awareness states:', states.size, 'devices');
   });
 
   // Setup message listeners for file transfer
@@ -406,7 +436,7 @@ function updatePeerCount(newCount: number): void {
     const peers = provider?.room?.webrtcConns?.size ?? 0;
     totalPeers = Math.max(totalPeers, peers);
   }
-  
+
   // Use the provided count if we can't aggregate
   connectedPeers = totalPeers || newCount;
 
@@ -498,7 +528,7 @@ function handleIncomingMessage(data: string, peerId: string): void {
     // Check if this is a file transfer message
     if (parsed.type === FILE_TRANSFER_CHANNEL && parsed.data) {
       const msg = JSON.parse(parsed.data) as P2PFileMessage;
-      
+
       for (const callback of messageCallbacks) {
         try {
           callback(msg, peerId);

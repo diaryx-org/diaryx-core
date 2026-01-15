@@ -11,7 +11,7 @@
 
 import * as Y from 'yjs';
 import type { RustCrdtApi } from './rustCrdtApi';
-import type { HocuspocusBridge } from './hocuspocusBridge';
+import { HocuspocusBridge, createHocuspocusBridge } from './hocuspocusBridge';
 import type { FileMetadata, BinaryRef } from '../backend/generated';
 import {
   isP2PEnabled,
@@ -29,6 +29,9 @@ let serverUrl: string | null = null;
 let _workspaceId: string | null = null;
 let initialized = false;
 let _initializing = false;
+
+// Track last state vector for incremental sync
+let lastStateVector: Uint8Array | null = null;
 
 // Per-file mutex to prevent race conditions on concurrent updates
 // Map of path -> Promise that resolves when the lock is released
@@ -73,9 +76,55 @@ const fileChangeCallbacks = new Set<FileChangeCallback>();
 
 /**
  * Set the Hocuspocus server URL for workspace sync.
+ * Creates and connects a HocuspocusBridge if the URL is set.
  */
-export function setWorkspaceServer(url: string | null): void {
+export async function setWorkspaceServer(url: string | null): Promise<void> {
+  const previousUrl = serverUrl;
   serverUrl = url;
+
+  // Skip if URL hasn't changed or not initialized
+  if (previousUrl === url || !initialized || !rustApi) {
+    return;
+  }
+
+  // Disconnect existing bridge if any
+  if (syncBridge) {
+    console.log('[WorkspaceCrdtBridge] Disconnecting existing Hocuspocus bridge');
+    syncBridge.destroy();
+    syncBridge = null;
+  }
+
+  // Create new bridge if URL is set
+  if (url) {
+    console.log('[WorkspaceCrdtBridge] Creating Hocuspocus bridge for workspace:', url);
+
+    syncBridge = createHocuspocusBridge({
+      url,
+      docName: 'workspace',
+      rustApi,
+      onStatusChange: (connected) => {
+        console.log('[WorkspaceCrdtBridge] Hocuspocus connection status:', connected);
+      },
+      onSynced: () => {
+        console.log('[WorkspaceCrdtBridge] Hocuspocus sync complete');
+      },
+      onUpdate: async (update) => {
+        // Remote update received from server - notify file change callbacks
+        console.log('[WorkspaceCrdtBridge] Remote update received from Hocuspocus:', update.length, 'bytes');
+        // Refresh file list to pick up any changes
+        try {
+          const files = await rustApi!.listFiles(false);
+          for (const [path, metadata] of files) {
+            notifyFileChange(path, metadata);
+          }
+        } catch (error) {
+          console.error('[WorkspaceCrdtBridge] Failed to refresh files after remote update:', error);
+        }
+      },
+    });
+
+    await syncBridge.connect();
+  }
 }
 
 /**
@@ -146,7 +195,10 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
   try {
     rustApi = options.rustApi;
     syncBridge = options.syncBridge ?? null;
-    serverUrl = options.serverUrl ?? null;
+    // Keep existing serverUrl if set (from setWorkspaceServer called before init)
+    if (options.serverUrl) {
+      serverUrl = options.serverUrl;
+    }
     _workspaceId = options.workspaceId ?? null;
 
     if (options.onFileChange) {
@@ -155,6 +207,33 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
 
     // Connect sync bridge if provided
     if (syncBridge) {
+      await syncBridge.connect();
+    } else if (serverUrl && rustApi) {
+      // Create Hocuspocus bridge if serverUrl was set (either from options or prior setWorkspaceServer call)
+      const workspaceDocName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
+      console.log('[WorkspaceCrdtBridge] Creating Hocuspocus bridge during init:', serverUrl, 'docName:', workspaceDocName);
+      syncBridge = createHocuspocusBridge({
+        url: serverUrl,
+        docName: workspaceDocName,
+        rustApi,
+        onStatusChange: (connected) => {
+          console.log('[WorkspaceCrdtBridge] Hocuspocus connection status:', connected);
+        },
+        onSynced: () => {
+          console.log('[WorkspaceCrdtBridge] Hocuspocus sync complete');
+        },
+        onUpdate: async (update) => {
+          console.log('[WorkspaceCrdtBridge] Remote update received from Hocuspocus:', update.length, 'bytes');
+          try {
+            const files = await rustApi!.listFiles(false);
+            for (const [path, metadata] of files) {
+              notifyFileChange(path, metadata);
+            }
+          } catch (error) {
+            console.error('[WorkspaceCrdtBridge] Failed to refresh files after remote update:', error);
+          }
+        },
+      });
       await syncBridge.connect();
     }
 
@@ -183,26 +262,49 @@ async function initP2PWorkspaceSync(): Promise<void> {
   // Load initial state from Rust CRDT
   try {
     const fullState = await rustApi.getFullState('workspace');
+    console.log('[WorkspaceCrdtBridge] Loading initial state from Rust, bytes:', fullState.length);
     if (fullState.length > 0) {
       Y.applyUpdate(workspaceYDoc, fullState, 'rust');
+      // Log what's in the Y.Doc after loading
+      const filesMap = workspaceYDoc.getMap('files');
+      console.log('[WorkspaceCrdtBridge] Loaded Y.Doc has', filesMap.size, 'files');
     }
+    // Store initial state vector for incremental sync
+    lastStateVector = await rustApi.getSyncState('workspace');
+    console.log('[WorkspaceCrdtBridge] Initial state vector stored, bytes:', lastStateVector.length);
   } catch (error) {
     console.warn('[WorkspaceCrdtBridge] Failed to load workspace state for P2P:', error);
   }
 
   // Create P2P provider
-  const docName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
-  p2pProvider = createP2PProvider(workspaceYDoc, docName);
+  // For P2P sync, use just 'workspace' as docName - the sync code already uniquely identifies the room.
+  // Including workspace ID would prevent sync since each device has a different workspace ID.
+  p2pProvider = createP2PProvider(workspaceYDoc, 'workspace');
 
   if (p2pProvider) {
     console.log('[WorkspaceCrdtBridge] P2P provider created for workspace');
+    console.log('[WorkspaceCrdtBridge] Provider connected:', p2pProvider.connected);
+    console.log('[WorkspaceCrdtBridge] Provider synced:', (p2pProvider as any).synced);
+
+    // Log when provider syncs
+    p2pProvider.on('synced', (event: { synced: boolean }) => {
+      console.log('[WorkspaceCrdtBridge] Provider synced event:', event);
+    });
 
     // Sync Y.Doc changes back to Rust CRDT
     workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
-      if (origin === 'rust' || !rustApi) return;
-      
+      // Log ALL updates with their origin to see if peer updates arrive
+      const originStr = origin === p2pProvider ? 'p2p-provider' : String(origin);
+      console.log('[WorkspaceCrdtBridge] Y.Doc update received, origin:', originStr, 'bytes:', update.length);
+      if (origin === 'rust' || !rustApi || !workspaceYDoc) return;
+
       try {
+        console.log('[WorkspaceCrdtBridge] Applying remote update to Rust CRDT...');
         await rustApi.applyRemoteUpdate(update, 'workspace');
+        console.log('[WorkspaceCrdtBridge] Remote update applied successfully');
+        // Log what's in the Y.Doc after update
+        const filesMap = workspaceYDoc.getMap('files');
+        console.log('[WorkspaceCrdtBridge] Y.Doc now has', filesMap.size, 'files');
       } catch (error) {
         console.error('[WorkspaceCrdtBridge] Failed to sync P2P update to Rust:', error);
       }
@@ -217,13 +319,14 @@ async function initP2PWorkspaceSync(): Promise<void> {
 export async function refreshWorkspaceP2P(): Promise<void> {
   // Cleanup existing P2P
   if (p2pProvider) {
-    destroyP2PProvider(_workspaceId ? `${_workspaceId}:workspace` : 'workspace');
+    destroyP2PProvider('workspace');
     p2pProvider = null;
   }
   if (workspaceYDoc) {
     workspaceYDoc.destroy();
     workspaceYDoc = null;
   }
+  lastStateVector = null;
 
   // Reinitialize if P2P is enabled
   if (isP2PEnabled() && initialized) {
@@ -254,13 +357,14 @@ export async function destroyWorkspace(): Promise<void> {
 
   // Cleanup P2P
   if (p2pProvider) {
-    destroyP2PProvider(_workspaceId ? `${_workspaceId}:workspace` : 'workspace');
+    destroyP2PProvider('workspace');
     p2pProvider = null;
   }
   if (workspaceYDoc) {
     workspaceYDoc.destroy();
     workspaceYDoc = null;
   }
+  lastStateVector = null;
 
   // Clear pending intervals/timeouts to prevent memory leaks
   for (const interval of pendingIntervals) {
@@ -337,10 +441,15 @@ export async function getAllFilesIncludingDeleted(): Promise<Map<string, FileMet
  * Set file metadata in the CRDT.
  */
 export async function setFileMetadata(path: string, metadata: FileMetadata): Promise<void> {
+  console.log('[WorkspaceCrdtBridge] setFileMetadata called:', path);
   if (!rustApi) {
     throw new Error('Workspace not initialized');
   }
   await rustApi.setFile(path, metadata);
+  console.log('[WorkspaceCrdtBridge] Rust setFile complete, now syncing to P2P...');
+  // Sync to P2P Y.Doc so peers receive the update
+  await syncRustChangesToP2P();
+  console.log('[WorkspaceCrdtBridge] setFileMetadata complete:', path);
   notifyFileChange(path, metadata);
 }
 
@@ -352,6 +461,7 @@ export async function updateFileMetadata(
   path: string,
   updates: Partial<FileMetadata>
 ): Promise<void> {
+  console.log('[WorkspaceCrdtBridge] updateFileMetadata called:', path, updates);
   if (!rustApi) {
     throw new Error('Workspace not initialized');
   }
@@ -376,6 +486,8 @@ export async function updateFileMetadata(
     console.log('[WorkspaceCrdtBridge] Updating file metadata:', path, updated);
     await rustApi.setFile(path, updated);
     console.log('[WorkspaceCrdtBridge] File metadata updated successfully:', path);
+    // Sync to P2P Y.Doc so peers receive the update
+    await syncRustChangesToP2P();
     notifyFileChange(path, updated);
   } finally {
     releaseLock();
@@ -418,6 +530,8 @@ export async function purgeFile(path: string): Promise<void> {
   };
 
   await rustApi.setFile(path, metadata);
+  // Sync to P2P Y.Doc so peers receive the update
+  await syncRustChangesToP2P();
   notifyFileChange(path, null);
 }
 
@@ -446,6 +560,8 @@ export async function addToContents(parentPath: string, childPath: string): Prom
         modified_at: BigInt(Date.now()),
       };
       await rustApi.setFile(parentPath, updated);
+      // Sync to P2P Y.Doc so peers receive the update
+      await syncRustChangesToP2P();
       notifyFileChange(parentPath, updated);
     }
   } finally {
@@ -475,6 +591,8 @@ export async function removeFromContents(parentPath: string, childPath: string):
         modified_at: BigInt(Date.now()),
       };
       await rustApi.setFile(parentPath, updated);
+      // Sync to P2P Y.Doc so peers receive the update
+      await syncRustChangesToP2P();
       notifyFileChange(parentPath, updated);
     }
   } finally {
@@ -564,6 +682,8 @@ export async function addAttachment(filePath: string, attachment: BinaryRef): Pr
       modified_at: BigInt(Date.now()),
     };
     await rustApi.setFile(filePath, updated);
+    // Sync to P2P Y.Doc so peers receive the update
+    await syncRustChangesToP2P();
     notifyFileChange(filePath, updated);
   } finally {
     releaseLock();
@@ -589,6 +709,8 @@ export async function removeAttachment(filePath: string, attachmentPath: string)
       modified_at: BigInt(Date.now()),
     };
     await rustApi.setFile(filePath, updated);
+    // Sync to P2P Y.Doc so peers receive the update
+    await syncRustChangesToP2P();
     notifyFileChange(filePath, updated);
   } finally {
     releaseLock();
@@ -684,6 +806,56 @@ export function onFileChange(callback: FileChangeCallback): () => void {
 
 // Private helpers
 
+/**
+ * Sync Rust CRDT changes to P2P Y.Doc.
+ * Call this after any operation that modifies the Rust workspace CRDT.
+ * This ensures P2P peers receive the update.
+ */
+async function syncRustChangesToP2P(): Promise<void> {
+  console.log('[WorkspaceCrdtBridge] syncRustChangesToP2P called, hasYDoc:', !!workspaceYDoc, 'hasProvider:', !!p2pProvider);
+
+  if (!workspaceYDoc || !rustApi || !p2pProvider) {
+    console.log('[WorkspaceCrdtBridge] syncRustChangesToP2P skipped: missing dependencies');
+    return;
+  }
+
+  try {
+    // Get updates since last known state
+    if (lastStateVector) {
+      console.log('[WorkspaceCrdtBridge] Getting missing updates, lastStateVector bytes:', lastStateVector.length);
+      const missingUpdates = await rustApi.getMissingUpdates(lastStateVector, 'workspace');
+      console.log('[WorkspaceCrdtBridge] getMissingUpdates returned', missingUpdates.length, 'bytes');
+      if (missingUpdates.length > 0) {
+        console.log('[WorkspaceCrdtBridge] Syncing', missingUpdates.length, 'bytes to P2P Y.Doc');
+        // Apply with 'rust' origin to prevent the update listener from syncing back
+        Y.applyUpdate(workspaceYDoc, missingUpdates, 'rust');
+        const filesMap = workspaceYDoc.getMap('files');
+        console.log('[WorkspaceCrdtBridge] P2P Y.Doc now has', filesMap.size, 'files');
+      } else {
+        console.log('[WorkspaceCrdtBridge] No new updates from Rust CRDT');
+      }
+    } else {
+      // No previous state, get full state
+      console.log('[WorkspaceCrdtBridge] No lastStateVector, getting full state');
+      const fullState = await rustApi.getFullState('workspace');
+      console.log('[WorkspaceCrdtBridge] getFullState returned', fullState.length, 'bytes');
+      if (fullState.length > 0) {
+        console.log('[WorkspaceCrdtBridge] Syncing full state to P2P Y.Doc, bytes:', fullState.length);
+        Y.applyUpdate(workspaceYDoc, fullState, 'rust');
+        const filesMap = workspaceYDoc.getMap('files');
+        console.log('[WorkspaceCrdtBridge] P2P Y.Doc now has', filesMap.size, 'files');
+      }
+    }
+
+    // Update state vector for next incremental sync
+    const newStateVector = await rustApi.getSyncState('workspace');
+    console.log('[WorkspaceCrdtBridge] Updated lastStateVector, bytes:', newStateVector.length);
+    lastStateVector = newStateVector;
+  } catch (error) {
+    console.error('[WorkspaceCrdtBridge] Failed to sync Rust changes to P2P:', error);
+  }
+}
+
 function notifyFileChange(path: string, metadata: FileMetadata | null): void {
   for (const callback of fileChangeCallbacks) {
     try {
@@ -692,6 +864,78 @@ function notifyFileChange(path: string, metadata: FileMetadata | null): void {
       console.error('[WorkspaceCrdtBridge] File change callback error:', error);
     }
   }
+}
+
+// ===========================================================================
+// Debug
+// ===========================================================================
+
+/**
+ * Debug function to check P2P sync state.
+ * Call this from browser console: window.debugP2PSync()
+ */
+export async function debugP2PSync(): Promise<void> {
+  console.log('=== P2P Sync Debug ===');
+  console.log('workspaceYDoc:', workspaceYDoc ? 'exists' : 'null');
+  console.log('p2pProvider:', p2pProvider ? 'exists' : 'null');
+  console.log('p2pProvider.connected:', p2pProvider?.connected);
+  console.log('p2pProvider.synced:', (p2pProvider as any)?.synced);
+  console.log('rustApi:', rustApi ? 'exists' : 'null');
+  console.log('lastStateVector:', lastStateVector ? `${lastStateVector.length} bytes` : 'null');
+
+  if (p2pProvider) {
+    // Access internal state for debugging
+    const providerAny = p2pProvider as any;
+    console.log('p2pProvider.room:', providerAny.room ? 'exists' : 'null');
+    if (providerAny.room) {
+      console.log('p2pProvider.room.webrtcConns size:', providerAny.room.webrtcConns?.size);
+      console.log('p2pProvider.room.bcConns size:', providerAny.room.bcConns?.size);
+    }
+  }
+
+  if (workspaceYDoc) {
+    const filesMap = workspaceYDoc.getMap('files');
+    console.log('workspaceYDoc files count:', filesMap.size);
+    console.log('workspaceYDoc files:', Array.from(filesMap.keys()));
+
+    // Log Y.Doc state
+    const stateVector = Y.encodeStateVector(workspaceYDoc);
+    console.log('workspaceYDoc stateVector:', stateVector.length, 'bytes');
+  }
+
+  if (rustApi) {
+    try {
+      const fullState = await rustApi.getFullState('workspace');
+      console.log('Rust CRDT full state:', fullState.length, 'bytes');
+      const files = await rustApi.listFiles(false);
+      console.log('Rust CRDT files count:', files.length);
+      console.log('Rust CRDT files:', files.map(([path]) => path));
+    } catch (e) {
+      console.error('Error getting Rust state:', e);
+    }
+  }
+  console.log('=== End Debug ===');
+}
+
+/**
+ * Debug function to check Hocuspocus sync state.
+ * Call this from browser console: window.debugHocuspocusSync()
+ */
+export function debugHocuspocusSync(): void {
+  console.log('=== Hocuspocus Sync Debug ===');
+  console.log('serverUrl:', serverUrl);
+  console.log('syncBridge:', syncBridge ? 'exists' : 'null');
+  console.log('syncBridge.status:', syncBridge?.getStatus());
+  console.log('syncBridge.synced:', syncBridge?.isSynced());
+  console.log('initialized:', initialized);
+  console.log('rustApi:', rustApi ? 'exists' : 'null');
+  console.log('=== End Debug ===');
+}
+
+// Expose debug functions globally for browser console
+if (typeof window !== 'undefined') {
+  (window as any).debugP2PSync = debugP2PSync;
+  (window as any).debugHocuspocusSync = debugHocuspocusSync;
 }
 
 // Re-export types

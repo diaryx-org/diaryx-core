@@ -633,7 +633,7 @@
       // Reconnect with the current server URL
       if (collaborationServerUrl) {
         setCollaborationServer(collaborationServerUrl);
-        setWorkspaceServer(collaborationServerUrl);
+        await setWorkspaceServer(collaborationServerUrl);
       }
       // Re-initialize workspace CRDT if needed
       if (!workspaceCrdtInitialized && !workspaceCrdtDisabled) {
@@ -669,7 +669,7 @@
     if (savedUrl) {
       collaborationStore.setServerUrl(savedUrl);
       setCollaborationServer(savedUrl);
-      setWorkspaceServer(savedUrl);
+      await setWorkspaceServer(savedUrl);
     }
 
     // Disconnect and reconnect

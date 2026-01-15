@@ -62,6 +62,12 @@ pub struct HistoryEntry {
 
     /// Files that were changed in this update (if determinable)
     pub files_changed: Vec<String>,
+
+    /// Device ID that created this update (for multi-device attribution)
+    pub device_id: Option<String>,
+
+    /// Human-readable device name (e.g., "MacBook Pro", "iPhone")
+    pub device_name: Option<String>,
 }
 
 /// Type of change made to a file.
@@ -130,21 +136,137 @@ impl HistoryManager {
         doc_name: &str,
         limit: Option<usize>,
     ) -> StorageResult<Vec<HistoryEntry>> {
+        self.get_history_with_files_changed(doc_name, limit)
+    }
+
+    /// Get history with files_changed populated by analyzing the updates.
+    ///
+    /// For workspace documents, this reconstructs state incrementally to determine
+    /// which files changed in each update. For body documents, the changed file
+    /// is simply the document name (file path) itself.
+    fn get_history_with_files_changed(
+        &self,
+        doc_name: &str,
+        limit: Option<usize>,
+    ) -> StorageResult<Vec<HistoryEntry>> {
         let updates = self.storage.get_all_updates(doc_name)?;
 
-        let entries: Vec<HistoryEntry> = updates
-            .into_iter()
-            .rev() // Newest first
-            .take(limit.unwrap_or(usize::MAX))
-            .map(|u| HistoryEntry {
-                update_id: u.update_id,
-                timestamp: u.timestamp,
-                origin: u.origin.to_string(),
-                files_changed: Vec::new(), // Would need to decode update to determine
-            })
-            .collect();
+        // For body documents (not "workspace"), the file changed is just the doc_name
+        if doc_name != "workspace" {
+            let entries: Vec<HistoryEntry> = updates
+                .into_iter()
+                .rev()
+                .take(limit.unwrap_or(usize::MAX))
+                .map(|u| HistoryEntry {
+                    update_id: u.update_id,
+                    timestamp: u.timestamp,
+                    origin: u.origin.to_string(),
+                    files_changed: vec![doc_name.to_string()],
+                    device_id: u.device_id,
+                    device_name: u.device_name,
+                })
+                .collect();
+            return Ok(entries);
+        }
+
+        // For workspace documents, we need to analyze each update to determine
+        // which files changed. We do this by incrementally reconstructing state.
+        let mut entries = Vec::new();
+        let doc = Doc::new();
+        let files_map = doc.get_or_insert_map(FILES_MAP_NAME);
+
+        // Track previous state to compute diffs
+        let mut prev_files: HashMap<String, String> = HashMap::new();
+
+        for update in &updates {
+            // Apply update to get new state
+            if let Ok(decoded) = Update::decode_v1(&update.data) {
+                let mut txn = doc.transact_mut();
+                let _ = txn.apply_update(decoded);
+            }
+
+            // Read current files state
+            let txn = doc.transact();
+            let mut current_files: HashMap<String, String> = HashMap::new();
+            for (key, value) in files_map.iter(&txn) {
+                current_files.insert(key.to_string(), value.to_string(&txn));
+            }
+
+            // Compute files that changed
+            let mut files_changed = Vec::new();
+            for (path, new_value) in &current_files {
+                match prev_files.get(path) {
+                    None => files_changed.push(path.clone()), // New file
+                    Some(old_value) if old_value != new_value => {
+                        files_changed.push(path.clone()) // Modified
+                    }
+                    _ => {}
+                }
+            }
+            // Check for deleted files (in prev but not in current)
+            for path in prev_files.keys() {
+                if !current_files.contains_key(path) {
+                    files_changed.push(path.clone());
+                }
+            }
+            files_changed.sort();
+
+            entries.push(HistoryEntry {
+                update_id: update.update_id,
+                timestamp: update.timestamp,
+                origin: update.origin.to_string(),
+                files_changed,
+                device_id: update.device_id.clone(),
+                device_name: update.device_name.clone(),
+            });
+
+            prev_files = current_files;
+        }
+
+        // Reverse to get newest first and apply limit
+        entries.reverse();
+        if let Some(limit) = limit {
+            entries.truncate(limit);
+        }
 
         Ok(entries)
+    }
+
+    /// Get history for a specific file, combining workspace and body document changes.
+    ///
+    /// Returns entries where:
+    /// - The file's body document was modified (content changes)
+    /// - The file's metadata was changed in the workspace document (title, deleted, etc.)
+    pub fn get_file_history(
+        &self,
+        file_path: &str,
+        limit: Option<usize>,
+    ) -> StorageResult<Vec<HistoryEntry>> {
+        // Get workspace history, filtered to this file
+        let workspace_history = self.get_history_with_files_changed("workspace", None)?;
+        let filtered_workspace: Vec<HistoryEntry> = workspace_history
+            .into_iter()
+            .filter(|e| e.files_changed.contains(&file_path.to_string()))
+            .collect();
+
+        // Get body document history for this file
+        let body_history = self.get_history_with_files_changed(file_path, None)?;
+
+        // Merge both histories by timestamp (newest first)
+        let mut combined: Vec<HistoryEntry> = filtered_workspace
+            .into_iter()
+            .chain(body_history)
+            .collect();
+
+        // Sort by timestamp descending (newest first)
+        combined.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        // Apply limit
+        if let Some(limit) = limit {
+            combined.truncate(limit);
+        }
+
+        Ok(combined)
     }
 
     /// Reconstruct document state at a specific update ID.

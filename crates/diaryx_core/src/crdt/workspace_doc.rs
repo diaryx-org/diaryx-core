@@ -84,17 +84,32 @@ impl WorkspaceCrdt {
     }
 
     /// Load a workspace CRDT with a custom document name from storage.
+    ///
+    /// This loads both the base snapshot (if any) and all incremental updates
+    /// to reconstruct the current state.
     pub fn load_with_name(storage: Arc<dyn CrdtStorage>, doc_name: String) -> StorageResult<Self> {
         let doc = Doc::new();
 
-        // Try to load existing state from storage
-        if let Some(state) = storage.load_doc(&doc_name)? {
-            let update = Update::decode_v1(&state).map_err(|e| {
-                DiaryxError::Unsupported(format!("Failed to decode CRDT state: {}", e))
-            })?;
+        {
             let mut txn = doc.transact_mut();
-            txn.apply_update(update)
-                .map_err(|e| DiaryxError::Unsupported(format!("Failed to apply update: {}", e)))?;
+
+            // Try to load base snapshot from storage
+            if let Some(state) = storage.load_doc(&doc_name)? {
+                let update = Update::decode_v1(&state).map_err(|e| {
+                    DiaryxError::Unsupported(format!("Failed to decode CRDT state: {}", e))
+                })?;
+                txn.apply_update(update)
+                    .map_err(|e| DiaryxError::Unsupported(format!("Failed to apply snapshot: {}", e)))?;
+            }
+
+            // Apply all incremental updates from storage
+            // This is critical for WASM where updates are stored but snapshots may not be saved
+            let updates = storage.get_all_updates(&doc_name)?;
+            for crdt_update in updates {
+                if let Ok(update) = Update::decode_v1(&crdt_update.data) {
+                    let _ = txn.apply_update(update);
+                }
+            }
         }
 
         let files_map = doc.get_or_insert_map(FILES_MAP_NAME);

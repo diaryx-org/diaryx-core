@@ -13,12 +13,17 @@
 //!
 //! After the handshake, updates are exchanged bidirectionally.
 //!
-//! # Wire Format
+//! # Wire Format (y-protocols compatible)
 //!
-//! Messages are prefixed with a message type byte:
-//! - `0`: Sync message (followed by sync type: 0=Step1, 1=Step2, 2=Update)
-//! - `1`: Awareness message
-//! - `2`: Auth message
+//! Messages use varUint encoding (variable-length unsigned integers):
+//! - `varUint(0)`: Sync message type
+//!   - `varUint(0)`: SyncStep1 - contains state vector
+//!   - `varUint(1)`: SyncStep2 - contains missing updates
+//!   - `varUint(2)`: Update - contains incremental update
+//! - `varUint(1)`: Awareness message
+//! - `varUint(2)`: Auth message
+//!
+//! Byte arrays are encoded as: `varUint(length) + raw bytes`
 //!
 //! # Example
 //!
@@ -45,6 +50,62 @@ use super::storage::StorageResult;
 use super::types::UpdateOrigin;
 use super::workspace_doc::WorkspaceCrdt;
 use crate::error::DiaryxError;
+
+// ===========================================================================
+// VarUint encoding/decoding (y-protocols compatible)
+// ===========================================================================
+
+/// Write a variable-length unsigned integer to a buffer.
+/// Uses 7 bits per byte, with MSB indicating continuation.
+fn write_var_uint(buf: &mut Vec<u8>, mut num: u64) {
+    loop {
+        let mut byte = (num & 0x7F) as u8;
+        num >>= 7;
+        if num > 0 {
+            byte |= 0x80; // Set continuation bit
+        }
+        buf.push(byte);
+        if num == 0 {
+            break;
+        }
+    }
+}
+
+/// Read a variable-length unsigned integer from a buffer.
+/// Returns (value, bytes_consumed) or None if buffer is too short.
+fn read_var_uint(data: &[u8]) -> Option<(u64, usize)> {
+    let mut num: u64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        num |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return Some((num, i + 1));
+        }
+        shift += 7;
+        if shift > 63 {
+            return None; // Overflow
+        }
+    }
+    None // Incomplete
+}
+
+/// Write a byte array with length prefix (varUint encoding).
+fn write_var_byte_array(buf: &mut Vec<u8>, data: &[u8]) {
+    write_var_uint(buf, data.len() as u64);
+    buf.extend_from_slice(data);
+}
+
+/// Read a byte array with length prefix.
+/// Returns (data, bytes_consumed) or None if buffer is too short.
+fn read_var_byte_array(data: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let (len, len_bytes) = read_var_uint(data)?;
+    let len = len as usize;
+    let total = len_bytes + len;
+    if data.len() < total {
+        return None;
+    }
+    Some((data[len_bytes..total].to_vec(), total))
+}
 
 /// Message type bytes for the Y-sync protocol.
 mod msg_type {
@@ -79,55 +140,72 @@ pub enum SyncMessage {
 }
 
 impl SyncMessage {
-    /// Encode the message to bytes.
+    /// Encode the message to bytes using y-protocols compatible format.
+    /// Format: varUint(msgType) + varUint(syncType) + varByteArray(payload)
     pub fn encode(&self) -> Vec<u8> {
         match self {
             SyncMessage::SyncStep1(sv) => {
-                let mut buf = Vec::with_capacity(2 + sv.len());
-                buf.push(msg_type::SYNC);
-                buf.push(sync_type::STEP1);
-                buf.extend_from_slice(sv);
+                let mut buf = Vec::with_capacity(2 + sv.len() + 5);
+                write_var_uint(&mut buf, msg_type::SYNC as u64);
+                write_var_uint(&mut buf, sync_type::STEP1 as u64);
+                write_var_byte_array(&mut buf, sv);
                 buf
             }
             SyncMessage::SyncStep2(update) => {
-                let mut buf = Vec::with_capacity(2 + update.len());
-                buf.push(msg_type::SYNC);
-                buf.push(sync_type::STEP2);
-                buf.extend_from_slice(update);
+                let mut buf = Vec::with_capacity(2 + update.len() + 5);
+                write_var_uint(&mut buf, msg_type::SYNC as u64);
+                write_var_uint(&mut buf, sync_type::STEP2 as u64);
+                write_var_byte_array(&mut buf, update);
                 buf
             }
             SyncMessage::Update(update) => {
-                let mut buf = Vec::with_capacity(2 + update.len());
-                buf.push(msg_type::SYNC);
-                buf.push(sync_type::UPDATE);
-                buf.extend_from_slice(update);
+                let mut buf = Vec::with_capacity(2 + update.len() + 5);
+                write_var_uint(&mut buf, msg_type::SYNC as u64);
+                write_var_uint(&mut buf, sync_type::UPDATE as u64);
+                write_var_byte_array(&mut buf, update);
                 buf
             }
         }
     }
 
-    /// Decode a message from bytes.
+    /// Decode a message from bytes using y-protocols compatible format.
+    /// Returns None for empty, incomplete, or non-sync messages.
     pub fn decode(data: &[u8]) -> StorageResult<Option<Self>> {
-        if data.len() < 2 {
+        if data.is_empty() {
             return Ok(None);
         }
 
-        let msg_type = data[0];
-        if msg_type != msg_type::SYNC {
+        // Read message type
+        let Some((msg_type_val, msg_type_bytes)) = read_var_uint(data) else {
+            return Ok(None); // Incomplete message
+        };
+
+        if msg_type_val != msg_type::SYNC as u64 {
             // Non-sync message (awareness, auth), skip it
             return Ok(None);
         }
 
-        let sync_type = data[1];
-        let payload = &data[2..];
+        let remaining = &data[msg_type_bytes..];
 
-        match sync_type {
-            sync_type::STEP1 => Ok(Some(SyncMessage::SyncStep1(payload.to_vec()))),
-            sync_type::STEP2 => Ok(Some(SyncMessage::SyncStep2(payload.to_vec()))),
-            sync_type::UPDATE => Ok(Some(SyncMessage::Update(payload.to_vec()))),
+        // Read sync type
+        let Some((sync_type_val, sync_type_bytes)) = read_var_uint(remaining) else {
+            return Ok(None); // Incomplete message
+        };
+
+        let remaining = &remaining[sync_type_bytes..];
+
+        // Read payload as var byte array
+        let Some((payload, _)) = read_var_byte_array(remaining) else {
+            return Ok(None); // Incomplete message
+        };
+
+        match sync_type_val as u8 {
+            sync_type::STEP1 => Ok(Some(SyncMessage::SyncStep1(payload))),
+            sync_type::STEP2 => Ok(Some(SyncMessage::SyncStep2(payload))),
+            sync_type::UPDATE => Ok(Some(SyncMessage::Update(payload))),
             _ => Err(DiaryxError::Crdt(format!(
                 "Unknown sync type: {}",
-                sync_type
+                sync_type_val
             ))),
         }
     }
@@ -433,10 +511,21 @@ mod tests {
         let protocol = create_sync_protocol();
         let step1 = protocol.create_sync_step1();
 
-        // Should start with sync message type and step1 subtype
+        // Print actual bytes for debugging
+        println!("SyncStep1 length: {}", step1.len());
+        println!("SyncStep1 bytes: {:?}", step1);
+
+        // Should start with sync message type and step1 subtype (varUint encoded)
         assert!(step1.len() >= 2);
-        assert_eq!(step1[0], msg_type::SYNC);
-        assert_eq!(step1[1], sync_type::STEP1);
+        assert_eq!(step1[0], msg_type::SYNC); // 0
+        assert_eq!(step1[1], sync_type::STEP1); // 0
+
+        // Expected format: [0, 0, 1, 0] for empty doc (matches y-protocols)
+        // - 0 = messageSync
+        // - 0 = syncStep1
+        // - 1 = length of state vector
+        // - 0 = state vector content
+        assert_eq!(step1, vec![0, 0, 1, 0], "Should match y-protocols format");
     }
 
     #[test]

@@ -44,7 +44,21 @@ pub trait CrdtStorage: Send + Sync {
     /// Append an incremental update to the update log.
     ///
     /// Returns the ID of the newly created update record.
-    fn append_update(&self, name: &str, update: &[u8], origin: UpdateOrigin) -> StorageResult<i64>;
+    fn append_update(&self, name: &str, update: &[u8], origin: UpdateOrigin) -> StorageResult<i64> {
+        self.append_update_with_device(name, update, origin, None, None)
+    }
+
+    /// Append an incremental update with device attribution.
+    ///
+    /// Returns the ID of the newly created update record.
+    fn append_update_with_device(
+        &self,
+        name: &str,
+        update: &[u8],
+        origin: UpdateOrigin,
+        device_id: Option<&str>,
+        device_name: Option<&str>,
+    ) -> StorageResult<i64>;
 
     /// Append multiple updates atomically.
     ///

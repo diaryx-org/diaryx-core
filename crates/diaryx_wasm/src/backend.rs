@@ -350,8 +350,10 @@ impl DiaryxBackend {
         let cmd: Command = serde_json::from_str(command_json)
             .map_err(|e| JsValue::from_str(&format!("Invalid command JSON: {}", e)))?;
 
-        // Create a Diaryx instance with CRDT support
-        let diaryx = Diaryx::with_crdt((*self.fs).clone(), Arc::clone(&self.crdt_storage));
+        // Create a Diaryx instance with CRDT support, loading existing state from storage.
+        // This is critical for P2P sync - we must load updates stored by previous commands.
+        let diaryx = Diaryx::with_crdt_load((*self.fs).clone(), Arc::clone(&self.crdt_storage))
+            .map_err(|e| JsValue::from_str(&format!("Failed to load CRDT state: {}", e)))?;
 
         // Execute the command
         let result = diaryx
@@ -374,8 +376,10 @@ impl DiaryxBackend {
         // Parse command from JS object
         let cmd: Command = serde_wasm_bindgen::from_value(command)?;
 
-        // Create a Diaryx instance with CRDT support
-        let diaryx = Diaryx::with_crdt((*self.fs).clone(), Arc::clone(&self.crdt_storage));
+        // Create a Diaryx instance with CRDT support, loading existing state from storage.
+        // This is critical for P2P sync - we must load updates stored by previous commands.
+        let diaryx = Diaryx::with_crdt_load((*self.fs).clone(), Arc::clone(&self.crdt_storage))
+            .map_err(|e| JsValue::from_str(&format!("Failed to load CRDT state: {}", e)))?;
 
         // Execute the command
         let result = diaryx

@@ -92,28 +92,18 @@
   let diffs: FileDiff[] = $state([]);
   let loadingDiff = $state(false);
 
-  // Get document name for history API
-  // Note: History is stored per-document in the CRDT.
-  // Workspace metadata changes: "workspace" 
-  // Body content changes: "doc:{path}" (only when collaboration is enabled)
-  function getDocName(): string {
-    if (!entry?.path) return "workspace";
-    // For now, query workspace history which tracks metadata changes
-    // Body content history is only available when collaboration is enabled
-    return "workspace";
-  }
-
-  // Load history for current document
+  // Load history for current file (combines workspace metadata + body content changes)
   async function loadHistory() {
     if (!rustApi || !entry) return;
-    
+
     historyLoading = true;
     historyError = null;
     selectedEntry = null;
     diffs = [];
-    
+
     try {
-      history = await rustApi.getHistory(getDocName(), 100);
+      // Use file-specific history that combines workspace and body doc changes
+      history = await rustApi.getFileHistory(entry.path, 100);
     } catch (e) {
       historyError = e instanceof Error ? e.message : "Failed to load history";
       console.error("[RightSidebar] Error loading history:", e);
@@ -125,7 +115,7 @@
   // Select a history entry and load its diff
   async function selectHistoryEntry(historyEntry: CrdtHistoryEntry) {
     if (!rustApi) return;
-    
+
     if (selectedEntry?.update_id === historyEntry.update_id) {
       // Deselect
       selectedEntry = null;
@@ -141,7 +131,8 @@
       const idx = history.findIndex((h) => h.update_id === historyEntry.update_id);
       if (idx < history.length - 1) {
         const previousEntry = history[idx + 1];
-        diffs = await rustApi.getVersionDiff(previousEntry.update_id, historyEntry.update_id, getDocName());
+        // Diff operates on workspace document for metadata changes
+        diffs = await rustApi.getVersionDiff(previousEntry.update_id, historyEntry.update_id, "workspace");
       }
     } catch (e) {
       console.error("[RightSidebar] Error loading diff:", e);
@@ -152,13 +143,14 @@
 
   // Restore to a specific version
   async function restoreVersion(historyEntry: CrdtHistoryEntry) {
-    if (!rustApi) return;
-    
+    if (!rustApi || !entry) return;
+
     const confirmRestore = confirm(`Restore to version from ${formatTimestamp(historyEntry.timestamp)}?`);
     if (!confirmRestore) return;
 
     try {
-      await rustApi.restoreVersion(historyEntry.update_id, getDocName());
+      // Restore operates on workspace document for metadata
+      await rustApi.restoreVersion(historyEntry.update_id, "workspace");
       onHistoryRestore?.();
       await loadHistory();
     } catch (e) {
@@ -185,12 +177,20 @@
     return `${days}d ago`;
   }
 
-  function getOriginLabel(origin: string): string {
-    switch (origin) {
-      case "Local": return "You";
-      case "Remote": return "Remote";
-      case "Sync": return "Sync";
-      default: return origin;
+  function getOriginLabel(entry: CrdtHistoryEntry): string {
+    // Show device name if available
+    if (entry.device_name) {
+      if (entry.origin === "local") {
+        return `You (${entry.device_name})`;
+      }
+      return entry.device_name;
+    }
+    // Fallback to origin-based label
+    switch (entry.origin) {
+      case "local": return "You";
+      case "remote": return "Remote";
+      case "sync": return "Sync";
+      default: return entry.origin;
     }
   }
 
@@ -823,7 +823,7 @@
                           {formatRelativeTime(historyEntry.timestamp)}
                         </span>
                         <span class="text-[10px] px-1.5 py-0.5 rounded {getOriginClass(historyEntry.origin)}">
-                          {getOriginLabel(historyEntry.origin)}
+                          {getOriginLabel(historyEntry)}
                         </span>
                       </div>
                       <div class="text-[10px] text-muted-foreground mt-0.5">

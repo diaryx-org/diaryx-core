@@ -43,6 +43,8 @@ struct StoredUpdate {
     data: Vec<u8>,
     timestamp: i64,
     origin: UpdateOrigin,
+    device_id: Option<String>,
+    device_name: Option<String>,
 }
 
 impl MemoryStorage {
@@ -83,13 +85,22 @@ impl CrdtStorage for MemoryStorage {
         Ok(docs.keys().cloned().collect())
     }
 
-    fn append_update(&self, name: &str, update: &[u8], origin: UpdateOrigin) -> StorageResult<i64> {
+    fn append_update_with_device(
+        &self,
+        name: &str,
+        update: &[u8],
+        origin: UpdateOrigin,
+        device_id: Option<&str>,
+        device_name: Option<&str>,
+    ) -> StorageResult<i64> {
         let id = self.next_update_id();
         let stored = StoredUpdate {
             id,
             data: update.to_vec(),
             timestamp: chrono::Utc::now().timestamp_millis(),
             origin,
+            device_id: device_id.map(String::from),
+            device_name: device_name.map(String::from),
         };
 
         let mut updates = self.updates.write().unwrap();
@@ -118,6 +129,8 @@ impl CrdtStorage for MemoryStorage {
                 data: u.data.clone(),
                 timestamp: u.timestamp,
                 origin: u.origin,
+                device_id: u.device_id.clone(),
+                device_name: u.device_name.clone(),
             })
             .collect())
     }

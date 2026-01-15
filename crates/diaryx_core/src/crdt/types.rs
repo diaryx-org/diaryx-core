@@ -138,6 +138,12 @@ pub struct CrdtUpdate {
 
     /// Origin of this update (local edit, remote sync, etc.)
     pub origin: UpdateOrigin,
+
+    /// Device ID that created this update (for multi-device attribution)
+    pub device_id: Option<String>,
+
+    /// Human-readable device name (e.g., "MacBook Pro", "iPhone")
+    pub device_name: Option<String>,
 }
 
 /// Origin of a CRDT update, used to distinguish local vs remote changes.

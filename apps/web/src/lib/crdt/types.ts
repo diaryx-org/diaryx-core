@@ -19,6 +19,7 @@ export type CrdtCommand =
   | { type: 'GetFullState'; params: { doc_name: string } }
   // History operations
   | { type: 'GetHistory'; params: { doc_name: string; limit: number | null } }
+  | { type: 'GetFileHistory'; params: { file_path: string; limit: number | null } }
   | { type: 'RestoreVersion'; params: { doc_name: string; update_id: bigint } }
   | { type: 'GetVersionDiff'; params: { doc_name: string; from_id: bigint; to_id: bigint } }
   | { type: 'GetStateAt'; params: { doc_name: string; update_id: bigint } }

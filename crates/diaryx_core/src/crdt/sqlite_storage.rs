@@ -80,7 +80,9 @@ impl SqliteStorage {
                 doc_name TEXT NOT NULL,
                 data BLOB NOT NULL,
                 origin TEXT NOT NULL,
-                timestamp INTEGER NOT NULL
+                timestamp INTEGER NOT NULL,
+                device_id TEXT,
+                device_name TEXT
             );
 
             -- Index for efficient sync queries
@@ -268,14 +270,21 @@ impl CrdtStorage for SqliteStorage {
         Ok(names)
     }
 
-    fn append_update(&self, name: &str, update: &[u8], origin: UpdateOrigin) -> StorageResult<i64> {
+    fn append_update_with_device(
+        &self,
+        name: &str,
+        update: &[u8],
+        origin: UpdateOrigin,
+        device_id: Option<&str>,
+        device_name: Option<&str>,
+    ) -> StorageResult<i64> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let origin_str = origin.to_string();
 
         conn.execute(
-            "INSERT INTO updates (doc_name, data, origin, timestamp) VALUES (?, ?, ?, ?)",
-            params![name, update, origin_str, now],
+            "INSERT INTO updates (doc_name, data, origin, timestamp, device_id, device_name) VALUES (?, ?, ?, ?, ?, ?)",
+            params![name, update, origin_str, now, device_id, device_name],
         )?;
 
         Ok(conn.last_insert_rowid())
@@ -284,7 +293,7 @@ impl CrdtStorage for SqliteStorage {
     fn get_updates_since(&self, name: &str, since_id: i64) -> StorageResult<Vec<CrdtUpdate>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, data, origin, timestamp FROM updates
+            "SELECT id, data, origin, timestamp, device_id, device_name FROM updates
              WHERE doc_name = ? AND id > ?
              ORDER BY id ASC",
         )?;
@@ -298,6 +307,8 @@ impl CrdtStorage for SqliteStorage {
                     data: row.get(1)?,
                     timestamp: row.get(3)?,
                     origin: origin_str.parse().unwrap_or(UpdateOrigin::Local),
+                    device_id: row.get(4)?,
+                    device_name: row.get(5)?,
                 })
             })?
             .filter_map(|r| r.ok())

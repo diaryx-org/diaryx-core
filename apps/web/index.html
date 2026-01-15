@@ -41,6 +41,25 @@
     <div id="app">
       <div class="app-loading">Loading Diaryx...</div>
     </div>
+    <!-- Polyfill for Safari which doesn't support requestIdleCallback (used by y-webrtc) -->
+    <script>
+      if (!window.requestIdleCallback) {
+        window.requestIdleCallback = function(cb) {
+          return setTimeout(function() {
+            var start = Date.now();
+            cb({
+              didTimeout: false,
+              timeRemaining: function() {
+                return Math.max(0, 50 - (Date.now() - start));
+              }
+            });
+          }, 1);
+        };
+        window.cancelIdleCallback = function(id) {
+          clearTimeout(id);
+        };
+      }
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

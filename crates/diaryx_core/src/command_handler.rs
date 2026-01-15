@@ -1071,18 +1071,42 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
 
             #[cfg(feature = "crdt")]
-            Command::GetHistory { doc_name: _, limit } => {
+            Command::GetHistory { doc_name, limit } => {
                 let crdt = self.crdt().ok_or_else(|| {
                     DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
                 })?;
-                let history = crdt.get_history()?;
+                let history_manager = crate::crdt::HistoryManager::new(crdt.storage().clone());
+                let history = history_manager.get_history(&doc_name, limit)?;
                 let entries: Vec<crate::command::CrdtHistoryEntry> = history
                     .into_iter()
-                    .take(limit.unwrap_or(usize::MAX))
                     .map(|u| crate::command::CrdtHistoryEntry {
                         update_id: u.update_id,
                         timestamp: u.timestamp,
-                        origin: u.origin.to_string(),
+                        origin: u.origin,
+                        files_changed: u.files_changed,
+                        device_id: u.device_id,
+                        device_name: u.device_name,
+                    })
+                    .collect();
+                Ok(Response::CrdtHistory(entries))
+            }
+
+            #[cfg(feature = "crdt")]
+            Command::GetFileHistory { file_path, limit } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                let history_manager = crate::crdt::HistoryManager::new(crdt.storage().clone());
+                let history = history_manager.get_file_history(&file_path, limit)?;
+                let entries: Vec<crate::command::CrdtHistoryEntry> = history
+                    .into_iter()
+                    .map(|u| crate::command::CrdtHistoryEntry {
+                        update_id: u.update_id,
+                        timestamp: u.timestamp,
+                        origin: u.origin,
+                        files_changed: u.files_changed,
+                        device_id: u.device_id,
+                        device_name: u.device_name,
                     })
                     .collect();
                 Ok(Response::CrdtHistory(entries))

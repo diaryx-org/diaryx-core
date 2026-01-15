@@ -10,6 +10,7 @@
 
 import type { RustCrdtApi } from './rustCrdtApi';
 import type { YDocProxy } from './yDocProxy';
+import { getDeviceId, getDeviceName } from '../device/deviceId';
 
 export interface HocuspocusBridgeOptions {
   /** WebSocket URL for Hocuspocus server */
@@ -33,6 +34,94 @@ export interface HocuspocusBridgeOptions {
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'syncing' | 'synced';
 
 type EventCallback = (...args: any[]) => void;
+
+// ===========================================================================
+// Hocuspocus message encoding helpers
+// ===========================================================================
+
+/**
+ * Write a variable-length unsigned integer to a buffer.
+ */
+function writeVarUint(buf: number[], num: number): void {
+  while (num > 0x7f) {
+    buf.push((num & 0x7f) | 0x80);
+    num >>>= 7;
+  }
+  buf.push(num & 0x7f);
+}
+
+/**
+ * Encode a string as varUint length + UTF-8 bytes.
+ */
+function encodeString(str: string): Uint8Array {
+  const encoder = new TextEncoder();
+  const strBytes = encoder.encode(str);
+  const buf: number[] = [];
+  writeVarUint(buf, strBytes.length);
+  return new Uint8Array([...buf, ...strBytes]);
+}
+
+/**
+ * Prefix a message with the document name (Hocuspocus protocol requirement).
+ */
+function prefixWithDocName(docName: string, message: Uint8Array): Uint8Array {
+  const docNameBytes = encodeString(docName);
+  const result = new Uint8Array(docNameBytes.length + message.length);
+  result.set(docNameBytes, 0);
+  result.set(message, docNameBytes.length);
+  return result;
+}
+
+/**
+ * Read a varUint from data, returns [value, bytesConsumed] or null if incomplete.
+ */
+function readVarUint(data: Uint8Array, offset: number): [number, number] | null {
+  let num = 0;
+  let shift = 0;
+  for (let i = offset; i < data.length; i++) {
+    const byte = data[i];
+    num |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return [num, i - offset + 1];
+    }
+    shift += 7;
+    if (shift > 28) return null; // Overflow
+  }
+  return null; // Incomplete
+}
+
+/**
+ * Strip the document name prefix from an incoming message.
+ * Returns the message payload without the doc name prefix.
+ */
+function stripDocNamePrefix(data: Uint8Array): Uint8Array | null {
+  // Read doc name length
+  const lenResult = readVarUint(data, 0);
+  if (!lenResult) return null;
+  const [docNameLen, lenBytes] = lenResult;
+
+  // Skip doc name and return rest
+  const prefixLen = lenBytes + docNameLen;
+  if (data.length < prefixLen) return null;
+
+  return data.slice(prefixLen);
+}
+
+/**
+ * Extract a var-length byte array from data at given offset.
+ * Returns the extracted bytes (without length prefix) or null if invalid.
+ */
+function extractVarByteArray(data: Uint8Array, offset: number): Uint8Array | null {
+  const lenResult = readVarUint(data, offset);
+  if (!lenResult) return null;
+  const [len, lenBytes] = lenResult;
+
+  const start = offset + lenBytes;
+  const end = start + len;
+  if (data.length < end) return null;
+
+  return data.slice(start, end);
+}
 
 /**
  * Bridge for Hocuspocus WebSocket communication via Rust CRDT.
@@ -144,18 +233,24 @@ export class HocuspocusBridge {
     this.setStatus('connecting');
 
     try {
-      // Build WebSocket URL with room name and optional token
-      const wsUrl = new URL(this.url);
-      wsUrl.searchParams.set('room', this.docName);
+      // Connect to base URL - room name is sent in message prefix per Hocuspocus protocol
+      // Token can be sent as query param if needed
+      let wsUrl = this.url;
       if (this.token) {
-        wsUrl.searchParams.set('token', this.token);
+        const url = new URL(this.url);
+        url.searchParams.set('token', this.token);
+        wsUrl = url.toString();
       }
 
-      this.ws = new WebSocket(wsUrl.toString());
+      console.log('[HocuspocusBridge] Connecting to:', wsUrl);
+      this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => this.handleOpen();
-      this.ws.onmessage = (event) => this.handleMessage(event);
+      this.ws.onmessage = (event) => {
+        console.log('[HocuspocusBridge] Raw message received, size:', event.data?.byteLength ?? event.data?.length);
+        this.handleMessage(event);
+      };
       this.ws.onclose = (event) => this.handleClose(event);
       this.ws.onerror = (error) => this.handleError(error);
     } catch (error) {
@@ -203,7 +298,9 @@ export class HocuspocusBridge {
 
     try {
       // Wrap update in Y-sync message format via Rust
-      const message = await this.rustApi.createUpdateMessage(update, this.docName);
+      const rawMessage = await this.rustApi.createUpdateMessage(update, this.docName);
+      // Prefix with doc name (Hocuspocus protocol requirement)
+      const message = prefixWithDocName(this.docName, rawMessage);
       this.ws.send(message);
     } catch (error) {
       console.error('[HocuspocusBridge] Broadcast error:', error);
@@ -228,7 +325,9 @@ export class HocuspocusBridge {
 
     for (const update of updates) {
       try {
-        const message = await this.rustApi.createUpdateMessage(update, this.docName);
+        const rawMessage = await this.rustApi.createUpdateMessage(update, this.docName);
+        // Prefix with doc name (Hocuspocus protocol requirement)
+        const message = prefixWithDocName(this.docName, rawMessage);
         this.ws.send(message);
       } catch (error) {
         console.error('[HocuspocusBridge] Failed to flush update:', error);
@@ -265,16 +364,25 @@ export class HocuspocusBridge {
   }
 
   private async handleOpen(): Promise<void> {
-    console.log('[HocuspocusBridge] Connected to', this.url);
+    console.log('[HocuspocusBridge] Connected to', this.url, 'docName:', this.docName);
     this.reconnectAttempts = 0;
     this.setStatus('syncing');
 
     try {
-      // Send SyncStep1 to initiate sync
+      // Hocuspocus protocol: Send Auth message first (type 2)
+      // Format: [2, 0, 0] = Auth message with no token
+      const authMessage = prefixWithDocName(this.docName, new Uint8Array([2, 0, 0]));
+      console.log('[HocuspocusBridge] Sending Auth message, bytes:', authMessage.length);
+      this.ws?.send(authMessage);
+
+      // Then send SyncStep1 to initiate sync
       const syncStep1 = await this.rustApi.createSyncStep1(this.docName);
-      this.ws?.send(syncStep1);
+      // Prefix with doc name (Hocuspocus protocol requirement)
+      const message = prefixWithDocName(this.docName, syncStep1);
+      console.log('[HocuspocusBridge] Sending SyncStep1, bytes:', message.length, 'data:', Array.from(message.slice(0, 30)));
+      this.ws?.send(message);
     } catch (error) {
-      console.error('[HocuspocusBridge] Failed to send SyncStep1:', error);
+      console.error('[HocuspocusBridge] Failed to send initial messages:', error);
     }
   }
 
@@ -282,34 +390,57 @@ export class HocuspocusBridge {
     if (this.destroyed) return;
 
     try {
-      const message = new Uint8Array(event.data as ArrayBuffer);
+      const rawMessage = new Uint8Array(event.data as ArrayBuffer);
+      console.log('[HocuspocusBridge] Received raw message, bytes:', rawMessage.length, 'data:', Array.from(rawMessage.slice(0, 30)));
+
+      // Strip doc name prefix (Hocuspocus protocol)
+      const message = stripDocNamePrefix(rawMessage);
+      if (!message || message.length === 0) {
+        console.log('[HocuspocusBridge] Could not parse message or empty payload');
+        return;
+      }
+
+      const msgType = message[0];
+      const subType = message.length > 1 ? message[1] : -1;
+      console.log('[HocuspocusBridge] Parsed message, type:', msgType, 'subtype:', subType, 'bytes:', message.length);
 
       // Route message through Rust sync protocol
       const response = await this.rustApi.handleSyncMessage(message, this.docName);
 
-      // Send response if needed
+      // Send response if needed (with doc name prefix)
       if (response && response.length > 0) {
-        this.ws?.send(response);
+        const prefixedResponse = prefixWithDocName(this.docName, response);
+        console.log('[HocuspocusBridge] Sending response, bytes:', prefixedResponse.length);
+        this.ws?.send(prefixedResponse);
       }
 
       // Check if this was a SyncStep2 (we're now synced)
       // Message type is in first byte: 0=Sync, then subtype: 0=Step1, 1=Step2, 2=Update
       if (message[0] === 0 && message[1] === 1) {
         // SyncStep2 received - we're synced
+        console.log('[HocuspocusBridge] SyncStep2 received, marking as synced');
         this.setStatus('synced');
+
+        // SyncStep2 contains update data - extract and notify
+        // Note: YDocProxy sync disabled for now due to type conflicts with TipTap
+        if (message.length > 2) {
+          const updateData = extractVarByteArray(message, 2);
+          if (updateData && updateData.length > 0) {
+            console.log('[HocuspocusBridge] SyncStep2 update received, bytes:', updateData.length);
+            this.onUpdate?.(updateData);
+          }
+        }
       }
 
-      // If it's an update message, sync to YDocProxy and notify
+      // If it's an update message, notify listeners
+      // Note: YDocProxy sync disabled for now due to type conflicts with TipTap
       if (message[0] === 0 && message[1] === 2) {
-        // Extract update from message (skip 2 byte header)
-        const update = message.slice(2);
-
-        // Apply to YDocProxy if present
-        if (this.yDocProxy) {
-          await this.yDocProxy.applyRemoteUpdate(update);
+        // Extract update from message - payload is varUint length prefixed
+        const updateData = extractVarByteArray(message, 2);
+        if (updateData) {
+          console.log('[HocuspocusBridge] Update message received, bytes:', updateData.length);
+          this.onUpdate?.(updateData);
         }
-
-        this.onUpdate?.(update);
       }
     } catch (error) {
       console.error('[HocuspocusBridge] Message handling error:', error);

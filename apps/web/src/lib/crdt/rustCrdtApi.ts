@@ -117,6 +117,20 @@ export class RustCrdtApi {
   }
 
   /**
+   * Get the version history for a specific file, combining body and workspace changes.
+   */
+  async getFileHistory(filePath: string, limit?: number): Promise<CrdtHistoryEntry[]> {
+    console.log('[RustCrdtApi] getFileHistory:', filePath, 'limit:', limit);
+    const response = await executeCrdt(this.backend, {
+      type: 'GetFileHistory',
+      params: { file_path: filePath, limit: limit ?? null },
+    });
+    const history = expectResponse(response, 'CrdtHistory').data;
+    console.log('[RustCrdtApi] getFileHistory result:', history.length, 'entries');
+    return history;
+  }
+
+  /**
    * Restore a document to a previous version.
    */
   async restoreVersion(updateId: bigint, docName: string = 'workspace'): Promise<void> {

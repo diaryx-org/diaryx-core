@@ -19,4 +19,12 @@ origin: string,
 /**
  * Files that were changed in this update (if determinable)
  */
-files_changed: Array<string>, };
+files_changed: Array<string>, 
+/**
+ * Device ID that created this update (for multi-device attribution)
+ */
+device_id: string | null, 
+/**
+ * Human-readable device name (e.g., "MacBook Pro", "iPhone")
+ */
+device_name: string | null, };

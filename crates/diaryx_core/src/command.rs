@@ -481,6 +481,15 @@ pub enum Command {
         limit: Option<usize>,
     },
 
+    /// Get the history for a specific file, combining body and workspace changes.
+    #[cfg(feature = "crdt")]
+    GetFileHistory {
+        /// File path in workspace.
+        file_path: String,
+        /// Optional limit on number of entries.
+        limit: Option<usize>,
+    },
+
     /// Restore a document to a previous version.
     #[cfg(feature = "crdt")]
     RestoreVersion {
@@ -863,6 +872,12 @@ pub struct CrdtHistoryEntry {
     pub timestamp: i64,
     /// Origin of the update.
     pub origin: String,
+    /// Files that were changed in this update.
+    pub files_changed: Vec<String>,
+    /// Device ID that created this update (for multi-device attribution).
+    pub device_id: Option<String>,
+    /// Human-readable device name.
+    pub device_name: Option<String>,
 }
 
 // ============================================================================
