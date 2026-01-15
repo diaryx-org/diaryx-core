@@ -174,9 +174,15 @@ impl ValidationWarning {
     /// Check if this warning can be automatically fixed.
     pub fn can_auto_fix(&self) -> bool {
         match self {
-            Self::OrphanFile { suggested_index, .. } => suggested_index.is_some(),
-            Self::OrphanBinaryFile { suggested_index, .. } => suggested_index.is_some(),
-            Self::MissingPartOf { suggested_index, .. } => suggested_index.is_some(),
+            Self::OrphanFile {
+                suggested_index, ..
+            } => suggested_index.is_some(),
+            Self::OrphanBinaryFile {
+                suggested_index, ..
+            } => suggested_index.is_some(),
+            Self::MissingPartOf {
+                suggested_index, ..
+            } => suggested_index.is_some(),
             Self::UnlinkedEntry {
                 suggested_index,
                 is_dir,
@@ -187,11 +193,7 @@ impl ValidationWarning {
                     return false;
                 }
                 // Directories need an index file inside to be linkable
-                if *is_dir {
-                    index_file.is_some()
-                } else {
-                    true
-                }
+                if *is_dir { index_file.is_some() } else { true }
             }
             Self::UnlistedFile { .. } => true,
             Self::NonPortablePath { .. } => true,
@@ -541,12 +543,9 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
                 // Recurse into subdirectories
                 if self.ws.fs_ref().is_dir(&entry).await {
-                    let sub_entries = Box::pin(self.list_files_with_depth(
-                        &entry,
-                        current_depth + 1,
-                        max_depth,
-                    ))
-                    .await;
+                    let sub_entries =
+                        Box::pin(self.list_files_with_depth(&entry, current_depth + 1, max_depth))
+                            .await;
                     all_entries.extend(sub_entries);
                 }
             }

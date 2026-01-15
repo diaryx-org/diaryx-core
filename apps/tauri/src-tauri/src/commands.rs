@@ -544,14 +544,18 @@ pub async fn initialize_app<R: Runtime>(app: AppHandle<R>) -> Result<AppPaths, S
                                 (true, None)
                             }
                             (Err(e), _) | (_, Err(e)) => {
-                                let error_msg = format!("Failed to acquire CRDT state lock: {:?}", e);
+                                let error_msg =
+                                    format!("Failed to acquire CRDT state lock: {:?}", e);
                                 log::error!("[initialize_app] {}", error_msg);
                                 (false, Some(error_msg))
                             }
                         }
                     }
                     Err(e) => {
-                        let error_msg = format!("Failed to initialize CRDT storage at {:?}: {:?}", db_path, e);
+                        let error_msg = format!(
+                            "Failed to initialize CRDT storage at {:?}: {:?}",
+                            db_path, e
+                        );
                         log::warn!("[initialize_app] {}", error_msg);
                         (false, Some(error_msg))
                     }

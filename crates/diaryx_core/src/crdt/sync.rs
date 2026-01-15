@@ -541,7 +541,10 @@ mod tests {
 
         // Add data to protocol1
         let metadata = crate::crdt::FileMetadata::new(Some("Test File".to_string()));
-        protocol1.workspace_mut().set_file("test.md", metadata).unwrap();
+        protocol1
+            .workspace_mut()
+            .set_file("test.md", metadata)
+            .unwrap();
 
         // Initiate sync: protocol1 -> protocol2
         let step1 = protocol1.create_sync_step1();
@@ -578,7 +581,10 @@ mod tests {
 
         // Make a change
         let metadata = crate::crdt::FileMetadata::new(Some("New File".to_string()));
-        protocol.workspace_mut().set_file("new.md", metadata).unwrap();
+        protocol
+            .workspace_mut()
+            .set_file("new.md", metadata)
+            .unwrap();
 
         // Get the state as an update
         let state = protocol.get_full_state();

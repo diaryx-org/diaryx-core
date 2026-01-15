@@ -98,8 +98,9 @@ impl WorkspaceCrdt {
                 let update = Update::decode_v1(&state).map_err(|e| {
                     DiaryxError::Unsupported(format!("Failed to decode CRDT state: {}", e))
                 })?;
-                txn.apply_update(update)
-                    .map_err(|e| DiaryxError::Unsupported(format!("Failed to apply snapshot: {}", e)))?;
+                txn.apply_update(update).map_err(|e| {
+                    DiaryxError::Unsupported(format!("Failed to apply snapshot: {}", e))
+                })?;
             }
 
             // Apply all incremental updates from storage
@@ -490,8 +491,10 @@ mod tests {
     fn test_list_active_files() {
         let crdt = create_test_crdt();
 
-        crdt.set_file("active.md", FileMetadata::new(Some("Active".to_string()))).unwrap();
-        crdt.set_file("deleted.md", FileMetadata::new(Some("Deleted".to_string()))).unwrap();
+        crdt.set_file("active.md", FileMetadata::new(Some("Active".to_string())))
+            .unwrap();
+        crdt.set_file("deleted.md", FileMetadata::new(Some("Deleted".to_string())))
+            .unwrap();
         crdt.delete_file("deleted.md").unwrap();
 
         let all = crdt.list_files();
@@ -506,7 +509,8 @@ mod tests {
     fn test_remove_file() {
         let crdt = create_test_crdt();
 
-        crdt.set_file("test.md", FileMetadata::new(Some("Test".to_string()))).unwrap();
+        crdt.set_file("test.md", FileMetadata::new(Some("Test".to_string())))
+            .unwrap();
         assert_eq!(crdt.file_count(), 1);
 
         crdt.remove_file("test.md").unwrap();
@@ -519,8 +523,12 @@ mod tests {
         let crdt1 = create_test_crdt();
         let crdt2 = create_test_crdt();
 
-        crdt1.set_file("file1.md", FileMetadata::new(Some("File 1".to_string()))).unwrap();
-        crdt1.set_file("file2.md", FileMetadata::new(Some("File 2".to_string()))).unwrap();
+        crdt1
+            .set_file("file1.md", FileMetadata::new(Some("File 1".to_string())))
+            .unwrap();
+        crdt1
+            .set_file("file2.md", FileMetadata::new(Some("File 2".to_string())))
+            .unwrap();
 
         let update = crdt1.encode_state_as_update();
         crdt2.apply_update(&update, UpdateOrigin::Remote).unwrap();
@@ -535,12 +543,16 @@ mod tests {
         let crdt1 = create_test_crdt();
         let crdt2 = create_test_crdt();
 
-        crdt1.set_file("file1.md", FileMetadata::new(Some("File 1".to_string()))).unwrap();
+        crdt1
+            .set_file("file1.md", FileMetadata::new(Some("File 1".to_string())))
+            .unwrap();
 
         let update = crdt1.encode_state_as_update();
         crdt2.apply_update(&update, UpdateOrigin::Sync).unwrap();
 
-        crdt1.set_file("file2.md", FileMetadata::new(Some("File 2".to_string()))).unwrap();
+        crdt1
+            .set_file("file2.md", FileMetadata::new(Some("File 2".to_string())))
+            .unwrap();
 
         let sv = crdt2.encode_state_vector();
         let diff = crdt1.encode_diff(&sv).unwrap();
@@ -556,8 +568,12 @@ mod tests {
 
         {
             let crdt1 = WorkspaceCrdt::new(Arc::clone(&storage));
-            crdt1.set_file("file1.md", FileMetadata::new(Some("File 1".to_string()))).unwrap();
-            crdt1.set_file("file2.md", FileMetadata::new(Some("File 2".to_string()))).unwrap();
+            crdt1
+                .set_file("file1.md", FileMetadata::new(Some("File 1".to_string())))
+                .unwrap();
+            crdt1
+                .set_file("file2.md", FileMetadata::new(Some("File 2".to_string())))
+                .unwrap();
             crdt1.save().unwrap();
         }
 
@@ -577,14 +593,18 @@ mod tests {
         let crdt1 = WorkspaceCrdt::new(storage1);
         let crdt2 = WorkspaceCrdt::new(storage2);
 
-        crdt1.set_file(
-            "file1.md",
-            FileMetadata::new(Some("From CRDT1".to_string())),
-        ).unwrap();
-        crdt2.set_file(
-            "file2.md",
-            FileMetadata::new(Some("From CRDT2".to_string())),
-        ).unwrap();
+        crdt1
+            .set_file(
+                "file1.md",
+                FileMetadata::new(Some("From CRDT1".to_string())),
+            )
+            .unwrap();
+        crdt2
+            .set_file(
+                "file2.md",
+                FileMetadata::new(Some("From CRDT2".to_string())),
+            )
+            .unwrap();
 
         let update1 = crdt1.encode_state_as_update();
         let update2 = crdt2.encode_state_as_update();
@@ -629,7 +649,8 @@ mod tests {
             changes_clone.borrow_mut().extend(file_changes);
         });
 
-        crdt.set_file("test.md", FileMetadata::new(Some("Test".to_string()))).unwrap();
+        crdt.set_file("test.md", FileMetadata::new(Some("Test".to_string())))
+            .unwrap();
 
         let captured = changes.borrow();
         assert_eq!(captured.len(), 1);

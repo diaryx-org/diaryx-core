@@ -1213,24 +1213,29 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
 
         if is_index {
             // For index files, we duplicate the entire directory
-            let source_dir = source_path.parent().ok_or_else(|| DiaryxError::InvalidPath {
-                path: source_path.to_path_buf(),
-                message: "Index file has no parent directory".to_string(),
-            })?;
-
-            let parent_of_dir = source_dir.parent().ok_or_else(|| DiaryxError::InvalidPath {
-                path: source_path.to_path_buf(),
-                message: "Directory has no parent".to_string(),
-            })?;
-
-            // Get source directory name and generate unique copy name
-            let source_dir_name = source_dir
-                .file_name()
-                .and_then(|n| n.to_str())
+            let source_dir = source_path
+                .parent()
                 .ok_or_else(|| DiaryxError::InvalidPath {
                     path: source_path.to_path_buf(),
-                    message: "Invalid directory name".to_string(),
+                    message: "Index file has no parent directory".to_string(),
                 })?;
+
+            let parent_of_dir = source_dir
+                .parent()
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: source_path.to_path_buf(),
+                    message: "Directory has no parent".to_string(),
+                })?;
+
+            // Get source directory name and generate unique copy name
+            let source_dir_name =
+                source_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| DiaryxError::InvalidPath {
+                        path: source_path.to_path_buf(),
+                        message: "Invalid directory name".to_string(),
+                    })?;
 
             let new_dir_name = self
                 .generate_unique_copy_name(parent_of_dir, source_dir_name, false)
@@ -1257,26 +1262,31 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                     };
 
                     // Copy file content
-                    let content = self.fs.read_to_string(&file).await.map_err(|e| {
-                        DiaryxError::FileRead {
-                            path: file.clone(),
+                    let content =
+                        self.fs
+                            .read_to_string(&file)
+                            .await
+                            .map_err(|e| DiaryxError::FileRead {
+                                path: file.clone(),
+                                source: e,
+                            })?;
+                    self.fs.write_file(&new_path, &content).await.map_err(|e| {
+                        DiaryxError::FileWrite {
+                            path: new_path.clone(),
                             source: e,
                         }
                     })?;
-                    self.fs
-                        .write_file(&new_path, &content)
-                        .await
-                        .map_err(|e| DiaryxError::FileWrite {
-                            path: new_path.clone(),
-                            source: e,
-                        })?;
 
                     // Update part_of for child files to point to new index
                     if new_path != new_index_path {
                         let new_part_of =
                             relative_path_from_file_to_target(&new_path, &new_index_path);
                         let _ = self
-                            .set_frontmatter_property(&new_path, "part_of", Value::String(new_part_of))
+                            .set_frontmatter_property(
+                                &new_path,
+                                "part_of",
+                                Value::String(new_part_of),
+                            )
                             .await;
                     }
                 }
@@ -1287,7 +1297,11 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                 let new_part_of =
                     relative_path_from_file_to_target(&new_index_path, &grandparent_index);
                 let _ = self
-                    .set_frontmatter_property(&new_index_path, "part_of", Value::String(new_part_of))
+                    .set_frontmatter_property(
+                        &new_index_path,
+                        "part_of",
+                        Value::String(new_part_of),
+                    )
                     .await;
 
                 // Add to grandparent's contents
@@ -1300,10 +1314,12 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             Ok(new_index_path)
         } else {
             // For leaf files, simple copy in same directory
-            let parent = source_path.parent().ok_or_else(|| DiaryxError::InvalidPath {
-                path: source_path.to_path_buf(),
-                message: "File has no parent directory".to_string(),
-            })?;
+            let parent = source_path
+                .parent()
+                .ok_or_else(|| DiaryxError::InvalidPath {
+                    path: source_path.to_path_buf(),
+                    message: "File has no parent directory".to_string(),
+                })?;
 
             let source_filename = source_path
                 .file_name()
@@ -1320,14 +1336,14 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             let new_path = parent.join(&new_filename);
 
             // Copy file content
-            let content = self
-                .fs
-                .read_to_string(source_path)
-                .await
-                .map_err(|e| DiaryxError::FileRead {
-                    path: source_path.to_path_buf(),
-                    source: e,
-                })?;
+            let content =
+                self.fs
+                    .read_to_string(source_path)
+                    .await
+                    .map_err(|e| DiaryxError::FileRead {
+                        path: source_path.to_path_buf(),
+                        source: e,
+                    })?;
             self.fs
                 .write_file(&new_path, &content)
                 .await

@@ -253,10 +253,8 @@ impl HistoryManager {
         let body_history = self.get_history_with_files_changed(file_path, None)?;
 
         // Merge both histories by timestamp (newest first)
-        let mut combined: Vec<HistoryEntry> = filtered_workspace
-            .into_iter()
-            .chain(body_history)
-            .collect();
+        let mut combined: Vec<HistoryEntry> =
+            filtered_workspace.into_iter().chain(body_history).collect();
 
         // Sort by timestamp descending (newest first)
         combined.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -396,9 +394,7 @@ impl HistoryManager {
         if snapshots.len() > SNAPSHOT_CACHE_MAX_SIZE {
             // Keep snapshots evenly distributed across the range
             let step = snapshots.len() / SNAPSHOT_CACHE_MAX_SIZE;
-            let keep_indices: Vec<usize> = (0..SNAPSHOT_CACHE_MAX_SIZE)
-                .map(|i| i * step)
-                .collect();
+            let keep_indices: Vec<usize> = (0..SNAPSHOT_CACHE_MAX_SIZE).map(|i| i * step).collect();
             let kept: Vec<CachedSnapshot> = snapshots
                 .iter()
                 .enumerate()
