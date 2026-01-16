@@ -2063,10 +2063,7 @@ pub async fn get_sync_status<R: Runtime>(
     let manifest_path = workspace.join(".diaryx").join(manifest_filename);
     let fs = SyncToAsyncFs::new(RealFileSystem);
 
-    let manifest = match SyncManifest::load_from_file(&fs, &manifest_path).await {
-        Ok(m) => Some(m),
-        Err(_) => None,
-    };
+    let manifest = (SyncManifest::load_from_file(&fs, &manifest_path).await).ok();
 
     Ok(SyncStatusInfo {
         provider,

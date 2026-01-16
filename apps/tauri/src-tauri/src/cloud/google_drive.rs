@@ -51,8 +51,7 @@ impl GoogleDriveTarget {
         filename
             .replace('"', "'") // Replace double quotes with single quotes
             .replace('\\', "_") // Replace backslashes with underscores
-            .replace('\r', "") // Remove carriage returns
-            .replace('\n', "") // Remove newlines
+            .replace(['\r', '\n'], "") // Remove newlines
     }
 
     fn create_zip_archive_with_progress<F>(
@@ -339,13 +338,11 @@ impl GoogleDriveTarget {
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        if let Some(files) = result["files"].as_array() {
-            if let Some(folder) = files.first() {
-                if let Some(id) = folder["id"].as_str() {
+        if let Some(files) = result["files"].as_array()
+            && let Some(folder) = files.first()
+                && let Some(id) = folder["id"].as_str() {
                     return Ok(id.to_string());
                 }
-            }
-        }
 
         // Create folder
         let mut metadata = serde_json::json!({
@@ -400,13 +397,12 @@ impl GoogleDriveTarget {
         // Create each folder in the path
         let mut current_parent_id = sync_folder_id.to_string();
         for component in parent_path.components() {
-            if let std::path::Component::Normal(name) = component {
-                if let Some(name_str) = name.to_str() {
+            if let std::path::Component::Normal(name) = component
+                && let Some(name_str) = name.to_str() {
                     current_parent_id = self
                         .get_or_create_folder(name_str, Some(&current_parent_id))
                         .await?;
                 }
-            }
         }
 
         Ok(current_parent_id)
@@ -455,13 +451,11 @@ impl GoogleDriveTarget {
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-        if let Some(files) = result["files"].as_array() {
-            if let Some(file) = files.first() {
-                if let Some(id) = file["id"].as_str() {
+        if let Some(files) = result["files"].as_array()
+            && let Some(file) = files.first()
+                && let Some(id) = file["id"].as_str() {
                     return Ok(Some(id.to_string()));
                 }
-            }
-        }
 
         Ok(None)
     }
@@ -592,7 +586,7 @@ impl CloudSyncProvider for GoogleDriveTarget {
 
             // Get file metadata first
             let meta_response = client
-                .get(&format!(
+                .get(format!(
                     "https://www.googleapis.com/drive/v3/files/{}",
                     file_id
                 ))
@@ -615,7 +609,7 @@ impl CloudSyncProvider for GoogleDriveTarget {
 
             // Download content
             let response = client
-                .get(&format!(
+                .get(format!(
                     "https://www.googleapis.com/drive/v3/files/{}",
                     file_id
                 ))
@@ -686,7 +680,7 @@ impl CloudSyncProvider for GoogleDriveTarget {
                     .part("file", file_part);
 
                 let response = client
-                    .patch(&format!(
+                    .patch(format!(
                         "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=multipart",
                         id
                     ))
@@ -787,7 +781,7 @@ impl CloudSyncProvider for GoogleDriveTarget {
             let client = reqwest::Client::new();
 
             let response = client
-                .delete(&format!(
+                .delete(format!(
                     "https://www.googleapis.com/drive/v3/files/{}",
                     file_id
                 ))

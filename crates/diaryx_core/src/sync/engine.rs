@@ -264,7 +264,7 @@ impl<P: CloudSyncProvider> SyncEngine<P> {
         }
 
         // Check for remote deletions
-        for (path, _) in &self.manifest.files {
+        for path in self.manifest.files.keys() {
             if !remote_paths.contains(path) {
                 changes.push(RemoteChange::Deleted { path: path.clone() });
             }
