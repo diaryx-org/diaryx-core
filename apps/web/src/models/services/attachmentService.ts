@@ -6,6 +6,7 @@
  */
 
 import type { Api } from '$lib/backend/api';
+import heic2any from 'heic2any';
 
 // ============================================================================
 // State
@@ -28,6 +29,8 @@ const mimeTypes: Record<string, string> = {
   svg: 'image/svg+xml',
   bmp: 'image/bmp',
   ico: 'image/x-icon',
+  heic: 'image/heic',
+  heif: 'image/heif',
   // Documents
   pdf: 'application/pdf',
   doc: 'application/msword',
@@ -56,6 +59,33 @@ const mimeTypes: Record<string, string> = {
 export function getMimeType(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || '';
   return mimeTypes[ext] || 'application/octet-stream';
+}
+
+/**
+ * Check if a file is a HEIC/HEIF image (Apple's format).
+ */
+export function isHeicFile(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  return ext === 'heic' || ext === 'heif';
+}
+
+/**
+ * Convert HEIC/HEIF blob to JPEG for browser display.
+ * Returns original blob if conversion fails.
+ */
+export async function convertHeicToJpeg(blob: Blob): Promise<Blob> {
+  try {
+    const result = await heic2any({
+      blob,
+      toType: 'image/jpeg',
+      quality: 0.92,
+    });
+    // heic2any can return an array of blobs for multi-image HEIC files
+    return Array.isArray(result) ? result[0] : result;
+  } catch (e) {
+    console.warn('[AttachmentService] HEIC conversion failed:', e);
+    return blob;
+  }
 }
 
 // ============================================================================
@@ -114,7 +144,13 @@ export async function transformAttachmentPaths(
 
       // Create blob and URL
       const mimeType = getMimeType(imagePath);
-      const blob = new Blob([new Uint8Array(data)], { type: mimeType });
+      let blob = new Blob([new Uint8Array(data)], { type: mimeType });
+
+      // Convert HEIC to JPEG for browser display
+      if (isHeicFile(imagePath)) {
+        blob = await convertHeicToJpeg(blob);
+      }
+
       const blobUrl = URL.createObjectURL(blob);
 
       // Track for cleanup
@@ -143,7 +179,7 @@ export async function transformAttachmentPaths(
 /**
  * Reverse-transform blob URLs back to attachment paths (for saving).
  * Wraps paths with spaces in angle brackets for CommonMark compatibility.
- * 
+ *
  * @param content - Markdown content with blob URLs
  * @returns Content with blob URLs replaced by original attachment paths
  */

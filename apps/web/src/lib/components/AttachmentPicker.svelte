@@ -9,6 +9,7 @@
     FolderOpen,
   } from "@lucide/svelte";
   import type { Api } from "$lib/backend/api";
+  import { isHeicFile, convertHeicToJpeg } from "$lib/../models/services/attachmentService";
 
   interface Props {
     open: boolean;
@@ -155,7 +156,13 @@
     try {
       const data = await api.getAttachmentData(sourceEntryPath, attachmentPath);
       const mimeType = getMimeType(attachmentPath);
-      const blob = new Blob([new Uint8Array(data)], { type: mimeType });
+      let blob = new Blob([new Uint8Array(data)], { type: mimeType });
+
+      // Convert HEIC to JPEG for browser display
+      if (isHeicFile(attachmentPath)) {
+        blob = await convertHeicToJpeg(blob);
+      }
+
       return URL.createObjectURL(blob);
     } catch {
       return undefined;
@@ -164,7 +171,7 @@
 
   function isImageFile(path: string): boolean {
     const ext = path.split(".").pop()?.toLowerCase() || "";
-    return ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(
+    return ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "heic", "heif"].includes(
       ext
     );
   }
@@ -180,6 +187,8 @@
       svg: "image/svg+xml",
       bmp: "image/bmp",
       ico: "image/x-icon",
+      heic: "image/heic",
+      heif: "image/heif",
       pdf: "application/pdf",
       doc: "application/msword",
       docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -211,14 +220,32 @@
     }
   }
 
-  function handleSelect(
+  // Convert bytes to base64 in chunks to avoid stack overflow
+  function bytesToBase64(bytes: Uint8Array): string {
+    const chunkSize = 8192;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+
+  async function handleSelect(
     attachment: AttachmentGroup["attachments"][0],
     sourceEntryPath: string
   ) {
+    let blobUrl = attachment.thumbnail;
+
+    // If thumbnail not loaded yet, load it now
+    if (!blobUrl && attachment.isImage && api) {
+      blobUrl = await loadThumbnail(sourceEntryPath, attachment.path);
+    }
+
     onSelect({
       path: attachment.path,
       isImage: attachment.isImage,
-      blobUrl: attachment.thumbnail,
+      blobUrl,
       sourceEntryPath,
     });
     onClose();
@@ -234,7 +261,7 @@
       // Convert file to base64
       const arrayBuffer = await file.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
-      const base64 = btoa(String.fromCharCode(...bytes));
+      const base64 = bytesToBase64(bytes);
 
       // Upload the attachment
       const attachmentPath = await api.uploadAttachment(

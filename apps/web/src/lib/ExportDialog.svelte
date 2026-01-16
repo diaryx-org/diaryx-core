@@ -302,7 +302,7 @@
                 {:else}
                   <span class="w-3"></span>
                   {#if node.isBinary}
-                    {#if /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)}
+                    {#if /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|heic|heif)$/i.test(node.name)}
                       <Image class="size-4 text-blue-500" />
                     {:else}
                       <Paperclip class="size-4 text-amber-500" />
@@ -311,7 +311,7 @@
                     <FileText class="size-4 text-muted-foreground" />
                   {/if}
                 {/if}
-                <span class="truncate" class:text-blue-600={node.isBinary && /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)} class:text-amber-600={node.isBinary && !/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(node.name)}>{node.name}</span>
+                <span class="truncate" class:text-blue-600={node.isBinary && /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|heic|heif)$/i.test(node.name)} class:text-amber-600={node.isBinary && !/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico|heic|heif)$/i.test(node.name)}>{node.name}</span>
               </button>
               {#if node.children.length > 0 && expandedNodes.has(node.path)}
                 {#each node.children as child}

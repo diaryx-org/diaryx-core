@@ -1496,7 +1496,6 @@
     exportPath = currentEntry?.path ?? tree?.path ?? "";
     if (exportPath) showExportDialog = true;
   }}
-  onAddAttachment={() => currentEntry && handleAddAttachment(currentEntry.path)}
 />
 
 <!-- Settings Dialog -->
@@ -1622,8 +1621,6 @@
     onPropertyAdd={handlePropertyAdd}
     {titleError}
     onTitleErrorClear={() => (titleError = null)}
-    onAddAttachment={() =>
-      currentEntry && handleAddAttachment(currentEntry.path)}
     onDeleteAttachment={handleDeleteAttachment}
     {attachmentError}
     onAttachmentErrorClear={() => (attachmentError = null)}

@@ -11,7 +11,6 @@
     FilePlus,
     FileText,
     Download,
-    Paperclip,
   } from "@lucide/svelte";
 
   interface Props {
@@ -23,7 +22,6 @@
     onDailyEntry: () => void;
     onSettings: () => void;
     onExport: () => void;
-    onAddAttachment?: () => void;
   }
 
   let {
@@ -35,7 +33,6 @@
     onDailyEntry,
     onSettings,
     onExport,
-    onAddAttachment,
   }: Props = $props();
 
   let searchValue = $state("");
@@ -133,13 +130,6 @@
         <span>Export...</span>
         <Command.Shortcut>Export workspace</Command.Shortcut>
       </Command.Item>
-      {#if onAddAttachment}
-        <Command.Item onSelect={() => handleCommand(onAddAttachment)}>
-          <Paperclip class="mr-2 size-4" />
-          <span>Add Attachment</span>
-          <Command.Shortcut>Add file to entry</Command.Shortcut>
-        </Command.Item>
-      {/if}
     </Command.Group>
 
     <!-- Quick Navigation (files matching query) -->

@@ -55,7 +55,6 @@
     onPropertyAdd?: (key: string, value: unknown) => void;
     titleError?: string | null;
     onTitleErrorClear?: () => void;
-    onAddAttachment?: () => void;
     onDeleteAttachment?: (attachmentPath: string) => void;
     attachmentError?: string | null;
     onAttachmentErrorClear?: () => void;
@@ -76,7 +75,6 @@
     onPropertyAdd,
     titleError = null,
     onTitleErrorClear,
-    onAddAttachment,
     onDeleteAttachment,
     attachmentError = null,
     onAttachmentErrorClear,
@@ -752,16 +750,6 @@
         {:else}
           <p class="text-xs text-muted-foreground mb-2">No attachments</p>
         {/if}
-
-        <Button
-          variant="outline"
-          size="sm"
-          class="w-full h-8 text-xs"
-          onclick={() => onAddAttachment?.()}
-        >
-          <Plus class="size-3 mr-1" />
-          Add Attachment
-        </Button>
       </div>
       {:else}
         <div
