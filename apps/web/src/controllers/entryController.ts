@@ -24,6 +24,7 @@ import {
 import {
   getCollaborativeDocument,
   releaseDocument,
+  getCollaborationServer,
 } from '../lib/crdt/collaborationBridge';
 
 /**
@@ -135,8 +136,10 @@ export async function openEntry(
             ')'
           );
 
+          // Only use initialContent if no server is configured (offline mode).
+          const serverConfigured = !!getCollaborationServer();
           const { yDocProxy, bridge } = await getCollaborativeDocument(newRelativePath, {
-            initialContent: entry.content,
+            initialContent: serverConfigured ? undefined : entry.content,
           });
           collaborationStore.setCollaborationSession(
             yDocProxy.getYDoc(),

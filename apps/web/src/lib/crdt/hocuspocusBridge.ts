@@ -9,8 +9,6 @@
  */
 
 import type { RustCrdtApi } from './rustCrdtApi';
-import type { YDocProxy } from './yDocProxy';
-import { getDeviceId, getDeviceName } from '../device/deviceId';
 
 export interface HocuspocusBridgeOptions {
   /** WebSocket URL for Hocuspocus server */
@@ -19,8 +17,6 @@ export interface HocuspocusBridgeOptions {
   docName: string;
   /** Rust CRDT API instance */
   rustApi: RustCrdtApi;
-  /** Optional YDocProxy to sync with */
-  yDocProxy?: YDocProxy;
   /** Auth token (optional) */
   token?: string;
   /** Callback when connection status changes */
@@ -29,6 +25,8 @@ export interface HocuspocusBridgeOptions {
   onSynced?: () => void;
   /** Callback when an update is received from server */
   onUpdate?: (update: Uint8Array) => void;
+  /** Callback when remote content changes (for re-rendering editor) */
+  onRemoteContentChange?: (content: string) => void;
 }
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'syncing' | 'synced';
@@ -108,6 +106,40 @@ function stripDocNamePrefix(data: Uint8Array): Uint8Array | null {
 }
 
 /**
+ * Get a human-readable name for a Y-sync message type.
+ */
+function getMessageTypeName(msgType: number, subType: number): string {
+  if (msgType === 0) {
+    // Sync messages
+    switch (subType) {
+      case 0:
+        return 'SyncStep1';
+      case 1:
+        return 'SyncStep2';
+      case 2:
+        return 'Update';
+      default:
+        return `Sync(unknown:${subType})`;
+    }
+  } else if (msgType === 1) {
+    return 'Awareness';
+  } else if (msgType === 2) {
+    return 'Auth';
+  }
+  return `Unknown(${msgType}:${subType})`;
+}
+
+/**
+ * Format bytes as hex string for debugging.
+ */
+function hexDump(data: Uint8Array, maxBytes: number = 20): string {
+  const slice = data.slice(0, maxBytes);
+  return Array.from(slice)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join(' ');
+}
+
+/**
  * Extract a var-length byte array from data at given offset.
  * Returns the extracted bytes (without length prefix) or null if invalid.
  */
@@ -133,11 +165,11 @@ export class HocuspocusBridge {
   private url: string;
   private docName: string;
   private rustApi: RustCrdtApi;
-  private yDocProxy?: YDocProxy;
   private token?: string;
   private onStatusChange?: (connected: boolean) => void;
   private onSyncedCallback?: () => void;
   private onUpdate?: (update: Uint8Array) => void;
+  private onRemoteContentChange?: (content: string) => void;
 
   private status: ConnectionStatus = 'disconnected';
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -159,11 +191,11 @@ export class HocuspocusBridge {
     this.url = options.url;
     this.docName = options.docName;
     this.rustApi = options.rustApi;
-    this.yDocProxy = options.yDocProxy;
     this.token = options.token;
     this.onStatusChange = options.onStatusChange;
     this.onSyncedCallback = options.onSynced;
     this.onUpdate = options.onUpdate;
+    this.onRemoteContentChange = options.onRemoteContentChange;
   }
 
   // ============================================================================
@@ -297,11 +329,36 @@ export class HocuspocusBridge {
     }
 
     try {
-      // Wrap update in Y-sync message format via Rust
-      const rawMessage = await this.rustApi.createUpdateMessage(update, this.docName);
-      // Prefix with doc name (Hocuspocus protocol requirement)
-      const message = prefixWithDocName(this.docName, rawMessage);
+      // Log the raw Y.js update for debugging
+      console.log('[HocuspocusBridge] Raw Y.js update:', update.length, 'bytes, hex:', hexDump(update, 50));
+
+      // Build the message manually to match HocuspocusProvider format exactly
+      // Format: varString(docName) + varUint(0=Sync) + varUint(2=Update) + varUint8Array(update)
+      const encoder: number[] = [];
+
+      // 1. Write doc name as varString
+      const docNameBytes = new TextEncoder().encode(this.docName);
+      writeVarUint(encoder, docNameBytes.length);
+      for (const byte of docNameBytes) {
+        encoder.push(byte);
+      }
+
+      // 2. Write message type: Sync = 0
+      writeVarUint(encoder, 0);
+
+      // 3. Write sync subtype: Update = 2
+      writeVarUint(encoder, 2);
+
+      // 4. Write update as varUint8Array (length + bytes)
+      writeVarUint(encoder, update.length);
+      for (const byte of update) {
+        encoder.push(byte);
+      }
+
+      const message = new Uint8Array(encoder);
+      console.log('[HocuspocusBridge] Sending update to server:', message.length, 'bytes, hex:', hexDump(message, 60));
       this.ws.send(message);
+      console.log('[HocuspocusBridge] Update sent successfully');
     } catch (error) {
       console.error('[HocuspocusBridge] Broadcast error:', error);
       // Queue the update if send failed
@@ -364,7 +421,9 @@ export class HocuspocusBridge {
   }
 
   private async handleOpen(): Promise<void> {
-    console.log('[HocuspocusBridge] Connected to', this.url, 'docName:', this.docName);
+    console.log('[HocuspocusBridge] Connected to', this.url);
+    console.log('[HocuspocusBridge] Document name:', this.docName);
+    console.log('[HocuspocusBridge] Document name hex:', Array.from(new TextEncoder().encode(this.docName)).map(b => b.toString(16).padStart(2, '0')).join(' '));
     this.reconnectAttempts = 0;
     this.setStatus('syncing');
 
@@ -391,7 +450,12 @@ export class HocuspocusBridge {
 
     try {
       const rawMessage = new Uint8Array(event.data as ArrayBuffer);
-      console.log('[HocuspocusBridge] Received raw message, bytes:', rawMessage.length, 'data:', Array.from(rawMessage.slice(0, 30)));
+      console.log(
+        '[HocuspocusBridge] Received raw message:',
+        rawMessage.length,
+        'bytes, hex:',
+        hexDump(rawMessage)
+      );
 
       // Strip doc name prefix (Hocuspocus protocol)
       const message = stripDocNamePrefix(rawMessage);
@@ -402,16 +466,34 @@ export class HocuspocusBridge {
 
       const msgType = message[0];
       const subType = message.length > 1 ? message[1] : -1;
-      console.log('[HocuspocusBridge] Parsed message, type:', msgType, 'subtype:', subType, 'bytes:', message.length);
+      const typeName = getMessageTypeName(msgType, subType);
+      console.log(
+        `[HocuspocusBridge] Parsed ${typeName}:`,
+        message.length,
+        'bytes, hex:',
+        hexDump(message)
+      );
 
       // Route message through Rust sync protocol
+      console.log('[HocuspocusBridge] Calling Rust handleSyncMessage...');
       const response = await this.rustApi.handleSyncMessage(message, this.docName);
 
       // Send response if needed (with doc name prefix)
       if (response && response.length > 0) {
+        const respType = response[0];
+        const respSubType = response.length > 1 ? response[1] : -1;
+        const respTypeName = getMessageTypeName(respType, respSubType);
+        console.log(
+          `[HocuspocusBridge] Rust returned ${respTypeName}:`,
+          response.length,
+          'bytes, hex:',
+          hexDump(response)
+        );
         const prefixedResponse = prefixWithDocName(this.docName, response);
-        console.log('[HocuspocusBridge] Sending response, bytes:', prefixedResponse.length);
+        console.log('[HocuspocusBridge] Sending response to server:', prefixedResponse.length, 'bytes');
         this.ws?.send(prefixedResponse);
+      } else {
+        console.log('[HocuspocusBridge] Rust returned no response (expected for SyncStep2/Update)');
       }
 
       // Check if this was a SyncStep2 (we're now synced)
@@ -422,28 +504,46 @@ export class HocuspocusBridge {
         this.setStatus('synced');
 
         // SyncStep2 contains update data - extract and notify
-        // Note: YDocProxy sync disabled for now due to type conflicts with TipTap
         if (message.length > 2) {
           const updateData = extractVarByteArray(message, 2);
           if (updateData && updateData.length > 0) {
             console.log('[HocuspocusBridge] SyncStep2 update received, bytes:', updateData.length);
             this.onUpdate?.(updateData);
+            // Notify about remote content change for editor re-render
+            await this.notifyRemoteContentChange();
           }
         }
       }
 
       // If it's an update message, notify listeners
-      // Note: YDocProxy sync disabled for now due to type conflicts with TipTap
       if (message[0] === 0 && message[1] === 2) {
         // Extract update from message - payload is varUint length prefixed
         const updateData = extractVarByteArray(message, 2);
         if (updateData) {
           console.log('[HocuspocusBridge] Update message received, bytes:', updateData.length);
           this.onUpdate?.(updateData);
+          // Notify about remote content change for editor re-render
+          await this.notifyRemoteContentChange();
         }
       }
     } catch (error) {
       console.error('[HocuspocusBridge] Message handling error:', error);
+    }
+  }
+
+  /**
+   * Notify callback when remote content changes.
+   * Fetches the current content from Rust CRDT and calls the callback.
+   */
+  private async notifyRemoteContentChange(): Promise<void> {
+    if (!this.onRemoteContentChange) return;
+
+    try {
+      const content = await this.rustApi.getBodyContent(this.docName);
+      console.log('[HocuspocusBridge] Remote content changed, length:', content.length);
+      this.onRemoteContentChange(content);
+    } catch (error) {
+      console.error('[HocuspocusBridge] Failed to get body content for remote change notification:', error);
     }
   }
 

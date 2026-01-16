@@ -33,6 +33,7 @@
   } from "@lucide/svelte";
   import type { Component } from "svelte";
   import VersionDiff from "./history/VersionDiff.svelte";
+  import ShareTab from "./share/ShareTab.svelte";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { getMobileState } from "$lib/hooks/useMobile.svelte";
 
@@ -61,6 +62,8 @@
     // History props
     rustApi?: RustCrdtApi | null;
     onHistoryRestore?: () => void;
+    // Share props
+    onBeforeHost?: () => Promise<void>;
   }
 
   let {
@@ -78,10 +81,11 @@
     onAttachmentErrorClear,
     rustApi = null,
     onHistoryRestore,
+    onBeforeHost,
   }: Props = $props();
 
-  // Tab state: "properties" | "history"
-  type TabType = "properties" | "history";
+  // Tab state: "properties" | "history" | "share"
+  type TabType = "properties" | "history" | "share";
   let activeTab: TabType = $state("properties");
 
   // History state
@@ -447,17 +451,24 @@
     <div class="flex items-center gap-1 bg-muted rounded-md p-0.5">
       <button
         type="button"
-        class="px-2.5 py-1 text-xs font-medium rounded transition-colors {activeTab === 'properties' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+        class="px-2 py-1 text-xs font-medium rounded transition-colors {activeTab === 'properties' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => activeTab = "properties"}
       >
-        Properties
+        Props
       </button>
       <button
         type="button"
-        class="px-2.5 py-1 text-xs font-medium rounded transition-colors {activeTab === 'history' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+        class="px-2 py-1 text-xs font-medium rounded transition-colors {activeTab === 'history' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
         onclick={() => activeTab = "history"}
       >
         History
+      </button>
+      <button
+        type="button"
+        class="px-2 py-1 text-xs font-medium rounded transition-colors {activeTab === 'share' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+        onclick={() => activeTab = "share"}
+      >
+        Share
       </button>
     </div>
   </div>
@@ -761,7 +772,7 @@
           </p>
         </div>
       {/if}
-    {:else}
+    {:else if activeTab === "history"}
       <!-- History Tab -->
       {#if entry}
         <div class="p-3">
@@ -872,6 +883,9 @@
           </p>
         </div>
       {/if}
+    {:else if activeTab === "share"}
+      <!-- Share Tab -->
+      <ShareTab {onBeforeHost} />
     {/if}
   </div>
 

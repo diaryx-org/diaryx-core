@@ -1,5 +1,4 @@
 import type { RustCrdtApi } from '$lib/crdt/rustCrdtApi';
-import { HocuspocusBridge, createHocuspocusBridge } from '$lib/crdt/hocuspocusBridge';
 import {
   initWorkspace,
   setWorkspaceId,
@@ -55,35 +54,19 @@ export async function initializeWorkspaceCrdt(
   serverUrl: string | null,
   collaborationEnabled: boolean,
   rustApi: RustCrdtApi,
-  callbacks: WorkspaceCrdtCallbacks,
+  _callbacks: WorkspaceCrdtCallbacks,
 ): Promise<boolean> {
   try {
     // Set workspace ID for per-file document room naming
     setWorkspaceId(workspaceId);
     setCollaborationWorkspaceId(workspaceId);
 
-    // Create sync bridge if collaboration is enabled
-    let syncBridge: HocuspocusBridge | undefined;
-    if (collaborationEnabled && serverUrl) {
-      const docName = workspaceId ? `${workspaceId}:workspace` : 'workspace';
-      syncBridge = createHocuspocusBridge({
-        url: serverUrl,
-        docName,
-        rustApi,
-        onStatusChange: callbacks.onConnectionChange,
-        onSynced: () => {
-          console.log('[WorkspaceCrdtService] Workspace synced with server');
-        },
-      });
-    }
-
-    // Initialize workspace CRDT
+    // Initialize workspace CRDT (bridge is created internally if collaboration is enabled)
     setInitializing(true);
     try {
       await initWorkspace({
         rustApi,
-        syncBridge,
-        serverUrl: serverUrl ?? undefined,
+        serverUrl: collaborationEnabled && serverUrl ? serverUrl : undefined,
         workspaceId: workspaceId ?? undefined,
         onReady: () => {
           console.log('[WorkspaceCrdtService] Workspace CRDT ready');

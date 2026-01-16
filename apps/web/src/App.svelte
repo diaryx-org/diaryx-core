@@ -8,6 +8,7 @@
   import {
     initCollaboration,
     setCollaborationServer,
+    getCollaborationServer,
     getCollaborativeDocument,
     releaseDocument,
     releaseAllDocuments,
@@ -21,6 +22,11 @@
     destroyWorkspace,
     setWorkspaceServer,
     setWorkspaceId,
+    setBackendApi,
+    onSessionSync,
+    getTreeFromCrdt,
+    populateCrdtFromFiles,
+    updateFileBodyInYDoc,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -38,12 +44,13 @@
   // Note: Button, icons, and LoadingSpinner are now only used in extracted view components
   
   // Import stores
-  import { 
-    entryStore, 
-    uiStore, 
-    collaborationStore, 
+  import {
+    entryStore,
+    uiStore,
+    collaborationStore,
     workspaceStore,
-    getThemeStore
+    getThemeStore,
+    shareSessionStore
   } from "./models/stores";
 
   // Initialize theme store immediately
@@ -115,13 +122,15 @@
   // Rust CRDT API instance
   let rustApi: RustCrdtApi | null = $state(null);
   
-  // Collaboration state - proxied from collaborationStore  
-  let currentYDoc = $derived(collaborationStore.currentYDoc);
-  let currentProvider = $derived(collaborationStore.currentProvider);
+  // Collaboration state - proxied from collaborationStore
   let currentCollaborationPath = $derived(collaborationStore.currentCollaborationPath);
   let collaborationEnabled = $derived(collaborationStore.collaborationEnabled);
   let collaborationConnected = $derived(collaborationStore.collaborationConnected);
   let collaborationServerUrl = $derived(collaborationStore.collaborationServerUrl);
+
+  // Current YDocProxy for syncing local edits
+  import type { YDocProxy } from './lib/crdt/yDocProxy';
+  let currentYDocProxy: YDocProxy | null = $state(null);
 
   // ========================================================================
   // Non-store state (component-specific, not shared)
@@ -210,6 +219,10 @@
       const backendInstance = await getBackend();
       workspaceStore.setBackend(backendInstance);
 
+      // Set the backend API for CRDT bridge (used for writing synced files to disk)
+      const apiInstance = createApi(backendInstance);
+      setBackendApi(apiInstance);
+
       // Initialize Rust CRDT API
       rustApi = new RustCrdtApi(backendInstance);
 
@@ -226,6 +239,21 @@
       }
 
       await refreshTree();
+
+      // Register callback to refresh tree when session data is received
+      onSessionSync(async () => {
+        console.log('[App] Session sync received, building tree from CRDT');
+        // Build tree from CRDT metadata instead of filesystem
+        // This is needed because guests don't have the files on disk
+        const crdtTree = await getTreeFromCrdt();
+        if (crdtTree) {
+          console.log('[App] Setting tree from CRDT:', crdtTree);
+          workspaceStore.setTree(crdtTree);
+        } else {
+          console.log('[App] No CRDT tree available, falling back to filesystem refresh');
+          await refreshTree();
+        }
+      });
 
       // Expand root and open it by default
       if (tree && !currentEntry) {
@@ -492,6 +520,7 @@
         if (currentCollaborationPath && currentCollaborationPath !== newRelativePath) {
           const pathToDestroy = currentCollaborationPath;
           collaborationStore.clearCollaborationSession();
+          currentYDocProxy = null;
           await tick();
           // Delay destruction to avoid `ystate.doc` errors from TipTap
           setTimeout(() => {
@@ -519,9 +548,28 @@
             );
 
             // Use new CRDT module
+            // Only use initialContent if no server is configured (offline mode).
+            // When syncing with a server, the server's state is authoritative to avoid duplication.
+            const serverConfigured = !!getCollaborationServer();
             const { yDocProxy, bridge } = await getCollaborativeDocument(newRelativePath, {
-              initialContent: currentEntry.content, // Seed Y.Doc with content on first create
+              initialContent: serverConfigured ? undefined : currentEntry.content,
+              onRemoteContentChange: async (content: string) => {
+                // Remote content changed - update the editor
+                console.log('[App] Remote content changed, length:', content.length);
+                if (currentEntry && api) {
+                  // Transform attachment paths to blob URLs
+                  const transformed = await transformAttachmentPaths(
+                    content,
+                    currentEntry.path,
+                    api,
+                  );
+                  // Update display content - this will trigger editor re-render via editorKey
+                  entryStore.setDisplayContent(transformed);
+                }
+              },
             });
+            // Store YDocProxy for syncing local edits
+            currentYDocProxy = yDocProxy;
             // Get the underlying Y.Doc for TipTap, bridge implements HocuspocusProvider interface
             collaborationStore.setCollaborationSession(
               yDocProxy.getYDoc(),
@@ -531,11 +579,13 @@
           } catch (e) {
             console.warn("[App] Failed to setup collaboration:", e);
             collaborationStore.clearCollaborationSession();
+            currentYDocProxy = null;
           }
         }
       } else {
         entryStore.setDisplayContent("");
         collaborationStore.clearCollaborationSession();
+        currentYDocProxy = null;
       }
 
       entryStore.markClean();
@@ -565,6 +615,12 @@
       // Frontmatter changes are saved separately via setFrontmatterProperty().
       await api.saveEntry(currentEntry.path, markdown);
       entryStore.markClean();
+
+      // Sync body content to workspace Y.Doc for live share sessions
+      // This allows other session participants to see the updated content
+      if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
+        updateFileBodyInYDoc(currentEntry.path, markdown);
+      }
     } catch (e) {
       uiStore.setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -591,10 +647,17 @@
     }, AUTO_SAVE_DELAY_MS);
   }
 
-  // Handle content changes - triggers debounced auto-save
-  function handleContentChange(_markdown: string) {
+  // Handle content changes - triggers debounced auto-save and CRDT sync
+  function handleContentChange(markdown: string) {
     entryStore.markDirty();
     scheduleAutoSave();
+
+    // Sync to CRDT for real-time collaboration (if enabled)
+    if (collaborationEnabled && currentYDocProxy) {
+      // Reverse-transform blob URLs back to attachment paths before syncing
+      const markdownForSync = reverseBlobUrlsToAttachmentPaths(markdown);
+      currentYDocProxy.setContent(markdownForSync);
+    }
   }
   
   // Handle editor blur - save immediately if dirty
@@ -653,6 +716,7 @@
       disconnectAll(); // Disconnect all per-file documents
       if (currentCollaborationPath) {
         collaborationStore.clearCollaborationSession();
+        currentYDocProxy = null;
       }
       // Refresh current entry without collaboration
       if (currentEntry) {
@@ -677,6 +741,7 @@
     disconnectWorkspace();
     disconnectAll(); // Disconnect all per-file documents
     collaborationStore.clearCollaborationSession();
+    currentYDocProxy = null;
 
     // Re-initialize
     if (!workspaceCrdtDisabled) {
@@ -908,6 +973,72 @@
   async function loadNodeChildren(nodePath: string) {
     if (!api) return;
     await loadNodeChildrenController(api, nodePath, showUnlinkedFiles, showHiddenFiles);
+  }
+
+  /**
+   * Populate the CRDT with files from the filesystem.
+   * Called before hosting a share session to ensure all files are available.
+   */
+  async function populateCrdtBeforeHost() {
+    if (!api || !tree) {
+      console.warn('[App] Cannot populate CRDT: api or tree not available');
+      return;
+    }
+
+    console.log('[App] Populating CRDT from filesystem before hosting...');
+
+    // Collect all files from the tree recursively
+    const files: Array<{ path: string; metadata: { title: string | null; part_of: string | null; contents: string[] | null; extra?: Record<string, unknown> } }> = [];
+
+    async function collectFiles(node: typeof tree, parentPath: string | null) {
+      if (!node || !api) return;
+
+      // Get entry data including content
+      try {
+        const entry = await api.getEntry(node.path);
+        const frontmatter = entry.frontmatter || {};
+        files.push({
+          path: node.path,
+          metadata: {
+            title: (frontmatter.title as string) || entry.title || node.name,
+            part_of: parentPath,
+            contents: node.children.length > 0 ? node.children.map(c => c.path) : null,
+            // Store file content in extra field for syncing
+            extra: {
+              _body: entry.content,
+              ...Object.fromEntries(
+                Object.entries(frontmatter).filter(([k]) =>
+                  !['title', 'part_of', 'contents', 'attachments', 'audience', 'description'].includes(k)
+                )
+              ),
+            },
+          },
+        });
+      } catch (e) {
+        console.warn('[App] Could not get entry for', node.path, e);
+        // Still add the file with basic metadata
+        files.push({
+          path: node.path,
+          metadata: {
+            title: node.name,
+            part_of: parentPath,
+            contents: node.children.length > 0 ? node.children.map(c => c.path) : null,
+          },
+        });
+      }
+
+      // Recurse into children
+      for (const child of node.children) {
+        await collectFiles(child, node.path);
+      }
+    }
+
+    await collectFiles(tree, null);
+    console.log('[App] Collected', files.length, 'files with content from filesystem');
+
+    // Populate CRDT
+    await populateCrdtFromFiles(files);
+    console.log('[App] CRDT populated successfully');
   }
 
   // Handle add attachment from context menu
@@ -1521,10 +1652,7 @@
         {Editor}
         bind:editorRef
         content={displayContent}
-        editorKey={`${currentCollaborationPath ?? currentEntry.path}:${collaborationEnabled ? "collab" : "local"}`}
-        {collaborationEnabled}
-        {currentYDoc}
-        {currentProvider}
+        editorKey={currentEntry.path}
         {readableLineLength}
         onchange={handleContentChange}
         onblur={handleEditorBlur}
@@ -1565,6 +1693,7 @@
         await openEntry(currentEntry.path);
       }
     }}
+    onBeforeHost={populateCrdtBeforeHost}
   />
 </div>
 

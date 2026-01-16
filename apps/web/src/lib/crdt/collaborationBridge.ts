@@ -13,7 +13,7 @@
 
 import type { RustCrdtApi } from './rustCrdtApi';
 import { YDocProxy, createYDocProxy } from './yDocProxy';
-import { HocuspocusBridge, createHocuspocusBridge } from './hocuspocusBridge';
+import { SimpleSyncBridge, createSimpleSyncBridge } from './simpleSyncBridge';
 import {
   isP2PEnabled,
   createP2PProvider,
@@ -28,10 +28,11 @@ import type { WebrtcProvider } from 'y-webrtc';
 export interface CollaborationSession {
   docName: string;
   yDocProxy: YDocProxy;
-  bridge: HocuspocusBridge | null;
+  bridge: SimpleSyncBridge | null;
   p2pProvider: WebrtcProvider | null;
   saveTimeout: ReturnType<typeof setTimeout> | null;
   onMarkdownSave?: (markdown: string) => void;
+  onRemoteContentChange?: (content: string) => void;
 }
 
 export interface CollaborationConfig {
@@ -51,6 +52,9 @@ let config: CollaborationConfig = {
   workspaceId: null,
 };
 
+// Active session code for share sessions - when set, per-document sync uses session scope
+let activeSessionCode: string | null = null;
+
 const SAVE_DEBOUNCE_MS = 5000;
 let connectionStatusCallback: ((connected: boolean) => void) | null = null;
 let p2pStatusUnsubscribe: (() => void) | null = null;
@@ -67,7 +71,7 @@ export function initCollaboration(api: RustCrdtApi): void {
 }
 
 /**
- * Configure the collaboration server (for Hocuspocus-based sync).
+ * Configure the collaboration server (for simple sync).
  */
 export function setCollaborationServer(url: string | null): void {
   const previousUrl = config.serverUrl;
@@ -81,7 +85,7 @@ export function setCollaborationServer(url: string | null): void {
         session.bridge.disconnect();
       }
       if (url) {
-        session.bridge = createBridge(session.docName, session.yDocProxy);
+        session.bridge = createBridge(session.docName, session.yDocProxy, session.onRemoteContentChange);
         session.bridge?.connect();
       } else {
         session.bridge = null;
@@ -143,6 +147,41 @@ export function setAuthToken(token: string | undefined): void {
 }
 
 /**
+ * Set the active session code for share sessions.
+ * When set, per-document sync will be scoped to this session.
+ * Pass null to disable session-scoped sync.
+ */
+export function setActiveSessionCode(code: string | null): void {
+  const previousCode = activeSessionCode;
+  activeSessionCode = code;
+
+  console.log('[CollaborationBridge] Active session code changed:', previousCode, '->', code);
+
+  // Reconnect all sessions with new session code
+  if (previousCode !== code && config.serverUrl) {
+    console.log('[CollaborationBridge] Reconnecting sessions with new session code...');
+    for (const [path, session] of sessions.entries()) {
+      // Destroy existing bridge
+      if (session.bridge) {
+        session.bridge.destroy();
+      }
+
+      // Create new bridge with updated session code
+      session.bridge = createBridge(session.docName, session.yDocProxy, session.onRemoteContentChange);
+      session.bridge?.connect();
+      console.log('[CollaborationBridge] Reconnected session:', path, 'with session code:', code);
+    }
+  }
+}
+
+/**
+ * Get the current active session code.
+ */
+export function getActiveSessionCode(): string | null {
+  return activeSessionCode;
+}
+
+/**
  * Set callback for connection status changes.
  */
 export function setConnectionStatusCallback(
@@ -158,6 +197,8 @@ export function setConnectionStatusCallback(
 export interface GetDocumentOptions {
   onMarkdownSave?: (markdown: string) => void;
   initialContent?: string;
+  /** Callback when remote content changes (for re-rendering editor) */
+  onRemoteContentChange?: (content: string) => void;
 }
 
 /**
@@ -170,7 +211,7 @@ export async function getCollaborativeDocument(
   options?: GetDocumentOptions
 ): Promise<{
   yDocProxy: YDocProxy;
-  bridge: HocuspocusBridge | null;
+  bridge: SimpleSyncBridge | null;
   p2pProvider: WebrtcProvider | null;
 }> {
   if (!rustApi) {
@@ -192,7 +233,7 @@ export async function getCollaborativeDocument(
     ? `${config.workspaceId}:doc:${documentPath}`
     : `doc:${documentPath}`;
 
-  // Create YDocProxy
+  // Create YDocProxy first
   const yDocProxy = await createYDocProxy({
     docName,
     rustApi,
@@ -209,10 +250,11 @@ export async function getCollaborativeDocument(
         }, SAVE_DEBOUNCE_MS);
       }
     },
+    // Note: onLocalUpdate not needed - SimpleSyncBridge handles Y.Doc updates directly
   });
 
-  // Create Hocuspocus bridge if server configured
-  const bridge = createBridge(docName, yDocProxy);
+  // Create simple sync bridge (syncs the Y.Doc directly)
+  const bridge = createBridge(docName, yDocProxy, options?.onRemoteContentChange);
 
   // Create P2P provider if P2P sync is enabled
   const p2pProvider = isP2PEnabled()
@@ -231,6 +273,7 @@ export async function getCollaborativeDocument(
     p2pProvider,
     saveTimeout: null,
     onMarkdownSave: options?.onMarkdownSave,
+    onRemoteContentChange: options?.onRemoteContentChange,
   };
   sessions.set(documentPath, session);
 
@@ -349,24 +392,51 @@ export function isConnected(): boolean {
 // Helpers
 // ============================================================================
 
-function createBridge(docName: string, yDocProxy: YDocProxy): HocuspocusBridge | null {
-  if (!config.serverUrl || !rustApi) {
+function createBridge(
+  docName: string,
+  yDocProxy: YDocProxy,
+  onRemoteContentChange?: (content: string) => void
+): SimpleSyncBridge | null {
+  if (!config.serverUrl) {
     return null;
   }
 
-  return createHocuspocusBridge({
-    url: config.serverUrl,
+  // Use session-scoped sync if active session code is set
+  const sessionCode = activeSessionCode ?? undefined;
+  if (sessionCode) {
+    console.log(`[CollaborationBridge] Creating session-scoped bridge for ${docName} with session: ${sessionCode}`);
+  }
+
+  const bridge = createSimpleSyncBridge({
+    serverUrl: config.serverUrl,
     docName,
-    rustApi,
-    yDocProxy,
-    token: config.authToken,
+    doc: yDocProxy.getYDoc(),
+    sessionCode, // Pass session code for session-scoped sync
     onStatusChange: (connected) => {
       connectionStatusCallback?.(connected);
     },
     onSynced: () => {
-      console.log(`[CollaborationBridge] Synced: ${docName}`);
+      console.log(`[CollaborationBridge] Synced: ${docName}${sessionCode ? ` (session: ${sessionCode})` : ''}`);
+      // Notify about remote content change after sync
+      if (onRemoteContentChange) {
+        const content = yDocProxy.getContent();
+        console.log(`[CollaborationBridge] Remote content after sync, length: ${content.length}`);
+        onRemoteContentChange(content);
+      }
     },
   });
+
+  // Also set up a listener for remote updates to notify content changes
+  const doc = yDocProxy.getYDoc();
+  doc.on('update', (_update: Uint8Array, origin: unknown) => {
+    if (origin === 'server' && onRemoteContentChange) {
+      const content = yDocProxy.getContent();
+      console.log(`[CollaborationBridge] Remote update received, content length: ${content.length}`);
+      onRemoteContentChange(content);
+    }
+  });
+
+  return bridge;
 }
 
 // ============================================================================

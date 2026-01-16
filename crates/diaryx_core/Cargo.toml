@@ -15,6 +15,7 @@ base64 = "0.22"
 chrono.workspace = true
 chrono-english = "0.1"
 indexmap.workspace = true
+log = "0.4"
 pathdiff = "0.2"
 serde.workspace = true
 serde_json.workspace = true

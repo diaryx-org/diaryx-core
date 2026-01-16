@@ -3,6 +3,10 @@
  * 
  * This worker uses the new native storage backends (OPFS/IndexedDB) directly,
  * eliminating the need for InMemoryFileSystem and JS↔WASM sync.
+ * 
+ * All operations use the unified `execute()` command API, except:
+ * - `getConfig` / `saveConfig`: WASM-specific config stored in root frontmatter
+ * - `readBinary` / `writeBinary`: Efficient Uint8Array handling (no base64 overhead)
  */
 
 import * as Comlink from 'comlink';
@@ -20,18 +24,49 @@ function clearRootPathCache() {
   rootPath = null;
 }
 
-// Event port for streaming events back to main thread - currently unused in new implementation
-// as events are forwarded differently or just log warnings for now?
-// Actually, I should probably remove the variable.
+/**
+ * Get the backend instance (throws if not initialized).
+ */
+function getBackend(): any {
+  if (!backend) {
+    throw new Error('DiaryxBackend not initialized. Call init() first.');
+  }
+  return backend;
+}
+
+/**
+ * Execute a command and parse the response.
+ * Helper to avoid repetitive JSON.stringify/parse in each method.
+ */
+async function executeCommand<T = any>(type: string, params?: Record<string, any>): Promise<T> {
+  const command = params ? { type, params } : { type };
+  const json = await getBackend().execute(JSON.stringify(command));
+  return JSON.parse(json);
+}
+
+/**
+ * Execute a command and extract the data from the response.
+ * Throws if the response type doesn't match the expected type.
+ */
+async function executeAndExtract<T>(
+  type: string, 
+  params: Record<string, any> | undefined, 
+  expectedResponseType: string
+): Promise<T> {
+  const response = await executeCommand(type, params);
+  if (response.type === expectedResponseType) {
+    return response.data as T;
+  }
+  if (response.type === 'Ok') {
+    return undefined as T; // For void responses
+  }
+  throw new Error(`Expected ${expectedResponseType}, got ${response.type}: ${JSON.stringify(response)}`);
+}
 
 /**
  * Initialize the backend and set up event forwarding.
  */
 async function init(_port: MessagePort, storageType: StorageType, directoryHandle?: FileSystemDirectoryHandle): Promise<void> {
-  // _port unused for now, as events are not yet fully implemented in this worker wrapper
-  // or are handled via side channels? 
-  // The original code had: _eventPort = port;
-  
   // Import WASM module
   const wasm = await import('../wasm/diaryx_wasm.js');
   await wasm.default();
@@ -61,17 +96,9 @@ async function initWithDirectoryHandle(_port: MessagePort, directoryHandle: File
 }
 
 /**
- * Get the backend instance (throws if not initialized).
- */
-function getBackend(): any {
-  if (!backend) {
-    throw new Error('DiaryxBackend not initialized. Call init() first.');
-  }
-  return backend;
-}
-
-/**
  * Worker API exposed via Comlink.
+ * 
+ * All methods use the unified command API through `execute()` except where noted.
  */
 const workerApi = {
   init,
@@ -90,7 +117,7 @@ const workerApi = {
   },
 
   // =========================================================================
-  // Config
+  // Config (kept as native calls - WASM-specific frontmatter storage)
   // =========================================================================
   
   async getConfig(): Promise<any> {
@@ -114,13 +141,16 @@ const workerApi = {
   },
 
   // =========================================================================
-  // Root Index Discovery
+  // Root Index Discovery (uses commands)
   // =========================================================================
 
   async findRootIndex(dirPath?: string): Promise<string | null> {
-    const path = dirPath ?? '.';
-    const result = await getBackend().findRootIndex(path);
-    return result ?? null;
+    const directory = dirPath ?? '.';
+    const response = await executeCommand('FindRootIndex', { directory });
+    if (response.type === 'String') {
+      return response.data;
+    }
+    return null;
   },
 
   async getDefaultWorkspacePath(): Promise<string> {
@@ -128,21 +158,27 @@ const workerApi = {
     if (rootPath) return rootPath;
     
     // Try to discover root index in current directory first
-    let root = await getBackend().findRootIndex('.');
+    let root = await this.findRootIndex('.');
     
     // Fallback: try "workspace" directory (OPFS default)
     if (!root) {
-      root = await getBackend().findRootIndex('workspace');
+      root = await this.findRootIndex('workspace');
     }
     
     // Fallback: scan all top-level directories for a root index
     if (!root) {
       try {
-        const entries = await getBackend().listDirectories('.');
-        if (entries && Array.isArray(entries)) {
-          for (const entry of entries) {
-            if (typeof entry === 'string' && entry !== '.' && entry !== '..') {
-              const found = await getBackend().findRootIndex(entry);
+        // Use GetFilesystemTree to list directories
+        const response = await executeCommand('GetFilesystemTree', { 
+          path: '.', 
+          show_hidden: false,
+          depth: 1 
+        });
+        if (response.type === 'Tree' && response.data?.children) {
+          for (const child of response.data.children) {
+            if (child.children && child.children.length >= 0) {
+              // It's a directory
+              const found = await this.findRootIndex(child.path);
               if (found) {
                 root = found;
                 break;
@@ -173,112 +209,133 @@ const workerApi = {
   },
 
   // =========================================================================
-  // Workspace
+  // Workspace (uses commands)
   // =========================================================================
   
   async getWorkspaceTree(workspacePath?: string, depth?: number): Promise<any> {
     const path = workspacePath ?? await this.getDefaultWorkspacePath();
-    return getBackend().getTree(path, depth ?? null);
+    return executeAndExtract('GetWorkspaceTree', { path, depth: depth ?? null }, 'Tree');
   },
   
   async createWorkspace(path?: string, name?: string): Promise<string> {
     const workspacePath = path ?? '.';
     const workspaceName = name ?? 'My Workspace';
-    await getBackend().createWorkspace(workspacePath, workspaceName);
+    await executeCommand('CreateWorkspace', { path: workspacePath, name: workspaceName });
     rootPath = workspacePath; // Cache the new workspace path
     return workspacePath;
   },
   
   async getFilesystemTree(workspacePath?: string, showHidden?: boolean): Promise<any> {
     const path = workspacePath ?? await this.getDefaultWorkspacePath();
-    return getBackend().getFilesystemTree(path, showHidden ?? false);
+    return executeAndExtract('GetFilesystemTree', { 
+      path, 
+      show_hidden: showHidden ?? false,
+      depth: null
+    }, 'Tree');
   },
 
   // =========================================================================
-  // Entries
+  // Entries (uses commands)
   // =========================================================================
   
   async getEntry(path: string): Promise<any> {
-    return getBackend().getEntry(path);
+    return executeAndExtract('GetEntry', { path }, 'Entry');
   },
   
   async saveEntry(path: string, content: string): Promise<void> {
-    return getBackend().saveEntry(path, content);
+    await executeCommand('SaveEntry', { path, content });
   },
   
   async createEntry(path: string, options?: { title?: string }): Promise<string> {
-    return getBackend().createEntry(path, options?.title ?? null);
+    return executeAndExtract('CreateEntry', { 
+      path, 
+      options: { 
+        title: options?.title ?? null,
+        part_of: null,
+        template: null
+      } 
+    }, 'String');
   },
   
   async deleteEntry(path: string): Promise<void> {
-    return getBackend().deleteEntry(path);
+    await executeCommand('DeleteEntry', { path });
   },
   
   async moveEntry(fromPath: string, toPath: string): Promise<string> {
-    return getBackend().moveEntry(fromPath, toPath);
+    await executeCommand('MoveEntry', { from: fromPath, to: toPath });
+    return toPath;
   },
   
   async renameEntry(path: string, newFilename: string): Promise<string> {
-    const result = await getBackend().renameEntry(path, newFilename);
+    const result = await executeAndExtract<string>('RenameEntry', { path, new_filename: newFilename }, 'String');
     // Clear cached root path in case we renamed the root index
     clearRootPathCache();
     return result;
   },
 
   async duplicateEntry(path: string): Promise<string> {
-    return getBackend().duplicateEntry(path);
+    return executeAndExtract('DuplicateEntry', { path }, 'String');
   },
 
   // =========================================================================
-  // Frontmatter
+  // Frontmatter (uses commands)
   // =========================================================================
   
   async getFrontmatter(path: string): Promise<any> {
-    return getBackend().getFrontmatter(path);
+    return executeAndExtract('GetFrontmatter', { path }, 'Frontmatter');
   },
   
   async setFrontmatterProperty(path: string, key: string, value: any): Promise<void> {
-    return getBackend().setFrontmatterProperty(path, key, value);
+    await executeCommand('SetFrontmatterProperty', { path, key, value });
   },
 
   // =========================================================================
-  // Search
+  // Search (uses commands)
   // =========================================================================
   
   async searchWorkspace(pattern: string, options?: any): Promise<any> {
     const workspacePath = options?.workspacePath ?? await this.getDefaultWorkspacePath();
-    return getBackend().search(workspacePath, pattern);
+    return executeAndExtract('SearchWorkspace', { 
+      pattern,
+      options: {
+        workspace_path: workspacePath,
+        search_frontmatter: options?.searchFrontmatter ?? false,
+        property: options?.property ?? null,
+        case_sensitive: options?.caseSensitive ?? false
+      }
+    }, 'SearchResults');
   },
 
   // =========================================================================
-  // Validation
+  // Validation (uses commands)
   // =========================================================================
   
   async validateWorkspace(workspacePath?: string): Promise<any> {
     const path = workspacePath ?? await this.getDefaultWorkspacePath();
-    return getBackend().validateWorkspace(path);
+    return executeAndExtract('ValidateWorkspace', { path }, 'ValidationResult');
   },
 
   // =========================================================================
-  // File Operations
+  // File Operations (uses commands except binary)
   // =========================================================================
   
   async fileExists(path: string): Promise<boolean> {
-    return getBackend().fileExists(path);
+    return executeAndExtract('FileExists', { path }, 'Bool');
   },
   
   async readFile(path: string): Promise<string> {
-    return getBackend().readFile(path);
+    return executeAndExtract('ReadFile', { path }, 'String');
   },
   
   async writeFile(path: string, content: string): Promise<void> {
-    return getBackend().writeFile(path, content);
+    await executeCommand('WriteFile', { path, content });
   },
   
   async deleteFile(path: string): Promise<void> {
-    return getBackend().deleteFile(path);
+    await executeCommand('DeleteFile', { path });
   },
   
+  // Binary operations kept as native calls for efficiency (no base64 overhead)
   async readBinary(path: string): Promise<Uint8Array> {
     return getBackend().readBinary(path);
   },
@@ -287,7 +344,7 @@ const workerApi = {
     return getBackend().writeBinary(path, data);
   },
   
-  // Generic method call for any other operations
+  // Generic method call for any other operations (fallback to native)
   async call(method: string, args: unknown[]): Promise<unknown> {
     const b = getBackend();
     const fn = (b as any)[method];

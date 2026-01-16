@@ -17,11 +17,6 @@
   import BubbleMenu from "@tiptap/extension-bubble-menu";
   // ProseMirror Plugin for link click handling
   import { Plugin as ProseMirrorPlugin } from "@tiptap/pm/state";
-  // Y.js collaboration
-  import Collaboration from "@tiptap/extension-collaboration";
-  import CollaborationCursor from "@tiptap/extension-collaboration-caret";
-  import type * as Y from "yjs";
-  import type { HocuspocusProvider } from "@hocuspocus/provider";
 
   // FloatingMenu for block formatting (headings, lists, etc.)
   import FloatingMenuComponent from "./components/FloatingMenuComponent.svelte";
@@ -41,11 +36,6 @@
     onFileDrop?: (
       file: File,
     ) => Promise<{ blobUrl: string; attachmentPath: string } | null>;
-    // Y.js collaboration options
-    ydoc?: Y.Doc;
-    provider?: HocuspocusProvider;
-    userName?: string;
-    userColor?: string;
     // Debug mode for menus (logs shouldShow decisions to console)
     debugMenus?: boolean;
     // Callback when a link is clicked (for handling relative links to other notes)
@@ -68,10 +58,6 @@
     onblur,
     readonly = false,
     onFileDrop,
-    ydoc,
-    provider,
-    userName = "Anonymous",
-    userColor = "#958DF1",
     debugMenus = false,
     onLinkClick,
     entryPath = "",
@@ -94,69 +80,12 @@
   // This prevents resetting editor content when the user is typing and the prop hasn't changed
   let lastSyncedContent: string | undefined = undefined;
 
-  // Collaboration gating:
-  // We show local markdown content first, then enable Collaboration after provider has synced once.
-  let collabReady = $state(false);
-  let providerSyncedUnsub: (() => void) | null = null;
-
   // Track what kind of editor we built last, so we only rebuild when it truly changes.
   // This avoids constantly recreating the editor (which can lead to blank content/races).
   let lastReadonly: boolean | null = null;
   let lastPlaceholder: string | null = null;
-  let lastCollabReady: boolean | null = null;
-
-  function cleanupProviderSyncedHook() {
-    if (providerSyncedUnsub) {
-      providerSyncedUnsub();
-      providerSyncedUnsub = null;
-    }
-  }
-
-  function hookProviderSyncedOnce() {
-    cleanupProviderSyncedHook();
-    if (!provider || collabReady) return;
-
-    const anyProvider = provider as any;
-
-    // HocuspocusProvider: check if already synced
-    if (anyProvider.synced === true) {
-      collabReady = true;
-      return;
-    }
-
-    // HocuspocusProvider uses 'synced' event (not 'sync')
-    if (typeof anyProvider.on === "function" && typeof anyProvider.off === "function") {
-      const handler = () => {
-        collabReady = true;
-        anyProvider.off("synced", handler);
-        providerSyncedUnsub = null;
-      };
-      anyProvider.on("synced", handler);
-      providerSyncedUnsub = () => {
-        try {
-          anyProvider.off("synced", handler);
-        } catch {
-          // ignore
-        }
-      };
-      return;
-    }
-
-    // Fallback: poll provider.synced boolean
-    if (typeof anyProvider.synced === "boolean") {
-      const interval = window.setInterval(() => {
-        if (anyProvider?.synced) {
-          window.clearInterval(interval);
-          collabReady = true;
-          providerSyncedUnsub = null;
-        }
-      }, 50);
-      providerSyncedUnsub = () => window.clearInterval(interval);
-    }
-  }
 
   function destroyEditor() {
-    cleanupProviderSyncedHook();
     editor?.destroy();
     editor = null;
   }
@@ -180,8 +109,6 @@
       StarterKit.configure({
         codeBlock: false, // We'll use the separate extension
         link: false, // Disable Link in StarterKit; we register Link explicitly below
-        // Disable undoRedo when using Y.js - Collaboration extension handles undo/redo
-        ...(ydoc ? { undoRedo: false } : {}),
       }),
       Markdown.configure({
         //transformPastedText: true,
@@ -371,71 +298,11 @@
       }
     }
 
-    // Only enable Collaboration after provider has reported initial sync.
-    // Until then, show the local markdown `content` in a regular editor.
-    if (ydoc && provider && collabReady) {
-      // CRITICAL: If the Y.Doc fragment is empty after sync, we need to populate it
-      // with the local markdown content. Without this, switching to Collaboration mode
-      // would show empty content because TipTap ignores the `content` prop when
-      // Collaboration is enabled.
-      const fragment = ydoc.getXmlFragment("default");
-
-      // Only seed content if:
-      // 1. Fragment is truly empty (no content from server or cache)
-      // 2. We have local content to seed
-      // If server already has content, we should NOT seed - just use server content
-      if (fragment.length === 0 && content) {
-        console.log("[Editor] Y.Doc is empty after sync, initializing with local content");
-        // We'll initialize the Y.Doc by creating a temporary editor and syncing it
-        // This is done BEFORE we create our main editor
-        const tempEditor = new Editor({
-          extensions: [
-            StarterKit.configure({
-              codeBlock: false,
-              link: false,
-            }),
-            Markdown,
-            Collaboration.configure({
-              document: ydoc,
-            }),
-          ],
-          content: content,
-          contentType: "markdown",
-        });
-        // Content is now in the Y.Doc, destroy temp editor
-        tempEditor.destroy();
-      } else if (fragment.length > 0) {
-        console.log("[Editor] Y.Doc has content from sync, using that instead of local content");
-      }
-
-      extensions.push(
-        Collaboration.configure({
-          document: ydoc,
-        }),
-      );
-
-      extensions.push(
-        CollaborationCursor.configure({
-          provider,
-          user: {
-            name: userName,
-            color: userColor,
-          },
-        }),
-      );
-    }
-
-    // Determine what content to use:
-    // - If Collaboration is NOT enabled: use local markdown content
-    // - If Collaboration IS enabled: don't pass content prop (Y.Doc is source of truth)
-    const useCollaboration = ydoc && provider && collabReady;
-
     editor = new Editor({
       element,
       extensions,
-      // Only pass content when NOT using collaboration
-      // When using collaboration, Y.Doc is the source of truth
-      ...(useCollaboration ? {} : { content: content, contentType: "markdown" }),
+      content: content,
+      contentType: "markdown",
       editable: !readonly,
       onCreate: () => {
         // Track the initial content so we don't reset it on the first effect run
@@ -561,10 +428,6 @@
   }
 
   onMount(() => {
-    // Begin in non-collab mode; enable collab after provider syncs.
-    collabReady = false;
-    hookProviderSyncedOnce();
-
     // Don't create editor here - let the $effect handle it once menu elements are ready
     // This ensures BubbleMenu and FloatingMenu extensions have elements to bind to
   });
@@ -601,7 +464,6 @@
         editorInitialized = true;
         lastReadonly = readonly;
         lastPlaceholder = placeholder;
-        lastCollabReady = collabReady;
       }
       return;
     }
@@ -618,7 +480,6 @@
       editorInitialized = true;
       lastReadonly = readonly;
       lastPlaceholder = placeholder;
-      lastCollabReady = collabReady;
     }
   });
 
@@ -633,32 +494,21 @@
     destroyEditor();
   });
 
-  // Scope rebuild:
-  // - Rebuild when collabReady flips (after sync completes), or when readonly/placeholder changes.
-  // - Do NOT rebuild just because ydoc prop arrived - that happens before sync and would lose content.
+  // Rebuild editor when readonly or placeholder changes
   $effect(() => {
     if (!element) return;
     // Skip if we haven't done initial creation yet
     if (!editorInitialized) return;
 
-    // Keep the sync hook current when switching providers/docs.
-    hookProviderSyncedOnce();
-
-    // Only rebuild when collabReady actually changes (after sync),
-    // or when readonly/placeholder changes.
-    // The key insight: we DON'T want to rebuild just because ydoc arrived -
-    // we want to keep showing local content until sync completes.
     const needsRebuild =
       readonly !== lastReadonly ||
-      placeholder !== lastPlaceholder ||
-      collabReady !== lastCollabReady;
+      placeholder !== lastPlaceholder;
 
     if (!needsRebuild) return;
 
     // Update tracking for what we're about to build
     lastReadonly = readonly;
     lastPlaceholder = placeholder;
-    lastCollabReady = collabReady;
 
     createEditor();
   });

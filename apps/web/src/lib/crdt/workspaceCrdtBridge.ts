@@ -11,7 +11,7 @@
 
 import * as Y from 'yjs';
 import type { RustCrdtApi } from './rustCrdtApi';
-import { HocuspocusBridge, createHocuspocusBridge } from './hocuspocusBridge';
+import { SimpleSyncBridge, createSimpleSyncBridge } from './simpleSyncBridge';
 import type { FileMetadata, BinaryRef } from '../backend/generated';
 import {
   isP2PEnabled,
@@ -19,10 +19,17 @@ import {
   destroyP2PProvider,
 } from './p2pSyncBridge';
 import type { WebrtcProvider } from 'y-webrtc';
+import type { Api } from '../backend/api';
+import { shareSessionStore } from '@/models/stores/shareSessionStore.svelte';
 
 // State
 let rustApi: RustCrdtApi | null = null;
-let syncBridge: HocuspocusBridge | null = null;
+let syncBridge: SimpleSyncBridge | null = null;
+let backendApi: Api | null = null;
+
+// Workspace server sync - re-enabled after fixing incremental update issue.
+// The previous issue was caused by re-encoding full state instead of applying incremental updates.
+const WORKSPACE_SERVER_SYNC_ENABLED = true;
 let p2pProvider: WebrtcProvider | null = null;
 let workspaceYDoc: Y.Doc | null = null;
 let serverUrl: string | null = null;
@@ -70,13 +77,20 @@ async function acquireFileLock(path: string): Promise<() => void> {
 type FileChangeCallback = (path: string, metadata: FileMetadata | null) => void;
 const fileChangeCallbacks = new Set<FileChangeCallback>();
 
+// Session sync callbacks - called when session data is received and synced
+type SessionSyncCallback = () => void;
+const sessionSyncCallbacks = new Set<SessionSyncCallback>();
+
 // ===========================================================================
 // Configuration
 // ===========================================================================
 
 /**
- * Set the Hocuspocus server URL for workspace sync.
- * Creates and connects a HocuspocusBridge if the URL is set.
+ * Set the server URL for workspace sync.
+ * Creates and connects a SimpleSyncBridge if the URL is set.
+ *
+ * NOTE: Workspace server sync is currently disabled (WORKSPACE_SERVER_SYNC_ENABLED = false).
+ * Per-document sync works fine, but workspace sync causes content duplication issues.
  */
 export async function setWorkspaceServer(url: string | null): Promise<void> {
   const previousUrl = serverUrl;
@@ -89,42 +103,325 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
 
   // Disconnect existing bridge if any
   if (syncBridge) {
-    console.log('[WorkspaceCrdtBridge] Disconnecting existing Hocuspocus bridge');
+    console.log('[WorkspaceCrdtBridge] Disconnecting existing sync bridge');
     syncBridge.destroy();
     syncBridge = null;
   }
 
+  // Workspace server sync is disabled for now
+  if (!WORKSPACE_SERVER_SYNC_ENABLED) {
+    console.log('[WorkspaceCrdtBridge] Workspace server sync disabled, skipping bridge creation');
+    return;
+  }
+
   // Create new bridge if URL is set
   if (url) {
-    console.log('[WorkspaceCrdtBridge] Creating Hocuspocus bridge for workspace:', url);
+    // Ensure workspaceYDoc exists
+    await ensureWorkspaceYDoc();
 
-    syncBridge = createHocuspocusBridge({
-      url,
-      docName: 'workspace',
-      rustApi,
+    if (!workspaceYDoc) {
+      console.error('[WorkspaceCrdtBridge] Failed to create workspace Y.Doc');
+      return;
+    }
+
+    const workspaceDocName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
+    console.log('[WorkspaceCrdtBridge] Creating sync bridge for workspace:', url, 'docName:', workspaceDocName);
+
+    syncBridge = createSimpleSyncBridge({
+      serverUrl: url,
+      docName: workspaceDocName,
+      doc: workspaceYDoc,
       onStatusChange: (connected) => {
-        console.log('[WorkspaceCrdtBridge] Hocuspocus connection status:', connected);
+        console.log('[WorkspaceCrdtBridge] Connection status:', connected);
       },
-      onSynced: () => {
-        console.log('[WorkspaceCrdtBridge] Hocuspocus sync complete');
-      },
-      onUpdate: async (update) => {
-        // Remote update received from server - notify file change callbacks
-        console.log('[WorkspaceCrdtBridge] Remote update received from Hocuspocus:', update.length, 'bytes');
-        // Refresh file list to pick up any changes
-        try {
-          const files = await rustApi!.listFiles(false);
-          for (const [path, metadata] of files) {
-            notifyFileChange(path, metadata);
-          }
-        } catch (error) {
-          console.error('[WorkspaceCrdtBridge] Failed to refresh files after remote update:', error);
-        }
+      onSynced: async () => {
+        console.log('[WorkspaceCrdtBridge] Initial sync complete');
+        // Full state sync is appropriate here - this is the initial sync
+        await syncFullStateToRust();
       },
     });
 
-    await syncBridge.connect();
+    // Set up listener for remote updates - apply incremental updates only
+    workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
+      if (origin === 'server') {
+        console.log('[WorkspaceCrdtBridge] Remote update received:', update.length, 'bytes');
+        // Apply the incremental update directly to Rust CRDT (not full state)
+        await applyIncrementalUpdateToRust(update);
+      }
+    });
+
+    syncBridge.connect();
   }
+}
+
+/**
+ * Ensure workspaceYDoc exists and is loaded with Rust CRDT state.
+ */
+async function ensureWorkspaceYDoc(): Promise<void> {
+  if (workspaceYDoc) return;
+  if (!rustApi) return;
+
+  workspaceYDoc = new Y.Doc();
+
+  // Load initial state from Rust CRDT
+  try {
+    const fullState = await rustApi.getFullState('workspace');
+    console.log('[WorkspaceCrdtBridge] Loading initial state from Rust, bytes:', fullState.length);
+    if (fullState.length > 0) {
+      Y.applyUpdate(workspaceYDoc, fullState, 'rust');
+      const filesMap = workspaceYDoc.getMap('files');
+      console.log('[WorkspaceCrdtBridge] Loaded Y.Doc has', filesMap.size, 'files');
+    }
+    lastStateVector = await rustApi.getSyncState('workspace');
+    console.log('[WorkspaceCrdtBridge] Initial state vector stored, bytes:', lastStateVector.length);
+  } catch (error) {
+    console.warn('[WorkspaceCrdtBridge] Failed to load workspace state:', error);
+  }
+}
+
+/**
+ * Apply an incremental update to Rust CRDT and notify file changes.
+ * Reads the updated files from the Y.Doc and syncs them to Rust.
+ * Also writes file content to disk if _body is present (for guests receiving synced files).
+ */
+async function applyIncrementalUpdateToRust(_update: Uint8Array): Promise<void> {
+  if (!rustApi || !workspaceYDoc) return;
+
+  try {
+    // Read files from the Y.Doc (which has already had the update applied)
+    // and sync to Rust CRDT
+    const filesMap = workspaceYDoc.getMap('files');
+    console.log('[WorkspaceCrdtBridge] Applying incremental update, files in Y.Doc:', filesMap.size);
+
+    for (const [path, value] of filesMap.entries()) {
+      const metadataObj = value as Record<string, unknown>;
+      const extraObj = metadataObj.extra as Record<string, unknown> | undefined;
+
+      // Extract _body from extra (if present) before creating metadata
+      const body = extraObj?._body as string | undefined;
+
+      // Create clean extra without _body (we don't store body in metadata)
+      const cleanExtra: Record<string, unknown> = {};
+      if (extraObj) {
+        for (const [key, val] of Object.entries(extraObj)) {
+          if (key !== '_body') {
+            cleanExtra[key] = val;
+          }
+        }
+      }
+
+      const metadata: FileMetadata = {
+        title: (metadataObj.title as string | null) ?? null,
+        part_of: (metadataObj.part_of as string | null) ?? null,
+        contents: Array.isArray(metadataObj.contents) ? metadataObj.contents as string[] : null,
+        attachments: Array.isArray(metadataObj.attachments) ? metadataObj.attachments as BinaryRef[] : [],
+        deleted: (metadataObj.deleted as boolean) ?? false,
+        audience: Array.isArray(metadataObj.audience) ? metadataObj.audience as string[] : null,
+        description: (metadataObj.description as string | null) ?? null,
+        extra: cleanExtra as FileMetadata['extra'],
+        modified_at: metadataObj.modified_at ? BigInt(metadataObj.modified_at as number) : BigInt(Date.now()),
+      };
+
+      await rustApi.setFile(path, metadata);
+
+      // If we have body content and API is available, write file to disk
+      // This is needed for guests who receive synced files but don't have them on disk
+      if (body !== undefined && backendApi) {
+        // For guests, use isolated storage path to avoid overwriting their workspace
+        const storagePath = getGuestStoragePath(path);
+        try {
+          const exists = await backendApi.fileExists(storagePath);
+          if (!exists) {
+            // File doesn't exist - create it with the synced content
+            console.log('[WorkspaceCrdtBridge] Creating file on disk (incremental):', storagePath);
+            await writeFileWithFrontmatter(storagePath, metadata, body);
+          } else {
+            // File exists - update just the body content
+            console.log('[WorkspaceCrdtBridge] Updating file content on disk (incremental):', storagePath);
+            await backendApi.saveEntry(storagePath, body);
+          }
+        } catch (e) {
+          console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
+        }
+      }
+
+      notifyFileChange(path, metadata);
+    }
+
+    // Also notify session sync for incremental updates
+    notifySessionSync();
+  } catch (error) {
+    console.error('[WorkspaceCrdtBridge] Failed to apply incremental update to Rust:', error);
+  }
+}
+
+/**
+ * Sync full Y.Doc state to Rust CRDT (only for initial sync).
+ * Use applyIncrementalUpdateToRust() for subsequent updates.
+ * Also writes file content to disk if _body is present (for guests receiving synced files).
+ */
+async function syncFullStateToRust(): Promise<void> {
+  if (!workspaceYDoc || !rustApi) return;
+
+  try {
+    // Read files directly from the Y.Doc's files map and sync to Rust
+    // This is more reliable than applying Y.js updates which may not be
+    // interpreted correctly by the Rust CRDT backend
+    const filesMap = workspaceYDoc.getMap('files');
+    console.log('[WorkspaceCrdtBridge] Syncing Y.Doc files to Rust, count:', filesMap.size);
+
+    for (const [path, value] of filesMap.entries()) {
+      const metadataObj = value as Record<string, unknown>;
+      const extraObj = metadataObj.extra as Record<string, unknown> | undefined;
+
+      // Extract _body from extra (if present) before creating metadata
+      const body = extraObj?._body as string | undefined;
+
+      // Create clean extra without _body (we don't store body in metadata)
+      const cleanExtra: Record<string, unknown> = {};
+      if (extraObj) {
+        for (const [key, val] of Object.entries(extraObj)) {
+          if (key !== '_body') {
+            cleanExtra[key] = val;
+          }
+        }
+      }
+
+      const metadata: FileMetadata = {
+        title: (metadataObj.title as string | null) ?? null,
+        part_of: (metadataObj.part_of as string | null) ?? null,
+        contents: Array.isArray(metadataObj.contents) ? metadataObj.contents as string[] : null,
+        attachments: Array.isArray(metadataObj.attachments) ? metadataObj.attachments as BinaryRef[] : [],
+        deleted: (metadataObj.deleted as boolean) ?? false,
+        audience: Array.isArray(metadataObj.audience) ? metadataObj.audience as string[] : null,
+        description: (metadataObj.description as string | null) ?? null,
+        extra: cleanExtra as FileMetadata['extra'],
+        modified_at: metadataObj.modified_at ? BigInt(metadataObj.modified_at as number) : BigInt(Date.now()),
+      };
+
+      console.log('[WorkspaceCrdtBridge] Syncing file to Rust:', path);
+      await rustApi.setFile(path, metadata);
+
+      // If we have body content and API is available, write file to disk
+      // This is needed for guests who receive synced files but don't have them on disk
+      if (body !== undefined && backendApi) {
+        // For guests, use isolated storage path to avoid overwriting their workspace
+        const storagePath = getGuestStoragePath(path);
+        try {
+          const exists = await backendApi.fileExists(storagePath);
+          if (!exists) {
+            // File doesn't exist - create it with the synced content
+            console.log('[WorkspaceCrdtBridge] Creating file on disk:', storagePath);
+            await writeFileWithFrontmatter(storagePath, metadata, body);
+          } else {
+            // File exists - update just the body content
+            console.log('[WorkspaceCrdtBridge] Updating file content on disk:', storagePath);
+            await backendApi.saveEntry(storagePath, body);
+          }
+        } catch (e) {
+          console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
+        }
+      }
+
+      notifyFileChange(path, metadata);
+    }
+
+    console.log('[WorkspaceCrdtBridge] Finished syncing', filesMap.size, 'files to Rust');
+
+    // Notify listeners that session data has been synced
+    notifySessionSync();
+  } catch (error) {
+    console.error('[WorkspaceCrdtBridge] Failed to sync full state to Rust:', error);
+  }
+}
+
+/**
+ * Write a file to disk with frontmatter and body content.
+ * Used when syncing files to guests who don't have the file on disk.
+ */
+async function writeFileWithFrontmatter(path: string, metadata: FileMetadata, body: string): Promise<void> {
+  if (!backendApi) return;
+
+  // Build frontmatter YAML
+  const frontmatterLines: string[] = [];
+
+  if (metadata.title) {
+    frontmatterLines.push(`title: ${yamlString(metadata.title)}`);
+  }
+  if (metadata.part_of) {
+    frontmatterLines.push(`part_of: ${yamlString(metadata.part_of)}`);
+  }
+  if (metadata.contents && metadata.contents.length > 0) {
+    frontmatterLines.push(`contents:`);
+    for (const item of metadata.contents) {
+      frontmatterLines.push(`  - ${yamlString(item)}`);
+    }
+  }
+  if (metadata.audience && metadata.audience.length > 0) {
+    frontmatterLines.push(`audience:`);
+    for (const item of metadata.audience) {
+      frontmatterLines.push(`  - ${yamlString(item)}`);
+    }
+  }
+  if (metadata.description) {
+    frontmatterLines.push(`description: ${yamlString(metadata.description)}`);
+  }
+
+  // Add extra properties (excluding internal ones)
+  if (metadata.extra) {
+    for (const [key, value] of Object.entries(metadata.extra)) {
+      if (!key.startsWith('_')) {
+        frontmatterLines.push(`${key}: ${yamlValue(value)}`);
+      }
+    }
+  }
+
+  // Combine frontmatter and body
+  const content = frontmatterLines.length > 0
+    ? `---\n${frontmatterLines.join('\n')}\n---\n\n${body}`
+    : body;
+
+  await backendApi.writeFile(path, content);
+}
+
+/**
+ * Format a string for YAML (quote if necessary).
+ */
+function yamlString(value: string): string {
+  // Check if the string needs quoting
+  if (/[:#\[\]{}|>&*!?'"%@`]/.test(value) ||
+      value.includes('\n') ||
+      value.startsWith(' ') ||
+      value.endsWith(' ') ||
+      value === '' ||
+      /^[\d.]+$/.test(value) ||  // Looks like a number
+      /^(true|false|null|yes|no|on|off)$/i.test(value)) {  // YAML keywords
+    // Use double quotes and escape internal quotes
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return value;
+}
+
+/**
+ * Format a value for YAML.
+ */
+function yamlValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+  if (typeof value === 'string') {
+    return yamlString(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(v => yamlValue(v)).join(', ')}]`;
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
 
 /**
@@ -149,6 +446,160 @@ export function setWorkspaceId(id: string | null): void {
 }
 
 /**
+ * Set the backend API for file operations.
+ * This is used to write synced file content to disk for guests.
+ */
+export function setBackendApi(api: Api): void {
+  backendApi = api;
+}
+
+/**
+ * Get the storage path for a file in guest mode.
+ * Guests have isolated storage at guest/{joinCode}/... to avoid overwriting their workspace.
+ * Returns the original path for hosts.
+ */
+function getGuestStoragePath(originalPath: string): string {
+  const isGuest = shareSessionStore.isGuest;
+  const joinCode = shareSessionStore.joinCode;
+  console.log('[WorkspaceCrdtBridge] getGuestStoragePath:', { originalPath, isGuest, joinCode, mode: shareSessionStore.mode });
+
+  if (!isGuest || !joinCode) {
+    return originalPath;
+  }
+  // Guest storage is isolated under guest/{joinCode}/
+  const guestPath = `guest/${joinCode}/${originalPath}`;
+  console.log('[WorkspaceCrdtBridge] Using guest path:', guestPath);
+  return guestPath;
+}
+
+/**
+ * Convert a guest storage path back to the canonical path.
+ * This strips the guest/{joinCode}/ prefix if present.
+ * Used when syncing to Y.Doc to ensure consistent keys across host and guest.
+ */
+function getCanonicalPath(storagePath: string): string {
+  const isGuest = shareSessionStore.isGuest;
+  const joinCode = shareSessionStore.joinCode;
+
+  if (!isGuest || !joinCode) {
+    return storagePath;
+  }
+
+  // Strip guest/{joinCode}/ prefix if present
+  const guestPrefix = `guest/${joinCode}/`;
+  if (storagePath.startsWith(guestPrefix)) {
+    const canonicalPath = storagePath.slice(guestPrefix.length);
+    console.log('[WorkspaceCrdtBridge] Converted guest path to canonical:', storagePath, '->', canonicalPath);
+    return canonicalPath;
+  }
+
+  return storagePath;
+}
+
+// Session code for share sessions
+let _sessionCode: string | null = null;
+
+/**
+ * Start syncing with a share session.
+ * This will connect to the server with the session code.
+ * @param isHost - If true, sends initial state to server (for session hosts)
+ */
+export async function startSessionSync(sessionServerUrl: string, sessionCode: string, isHost: boolean = false): Promise<void> {
+  console.log('[WorkspaceCrdtBridge] Starting session sync:', sessionCode, 'isHost:', isHost);
+
+  _sessionCode = sessionCode;
+
+  // Disconnect existing bridge if any
+  if (syncBridge) {
+    syncBridge.destroy();
+    syncBridge = null;
+  }
+
+  // Ensure workspaceYDoc exists
+  await ensureWorkspaceYDoc();
+
+  if (!workspaceYDoc) {
+    console.error('[WorkspaceCrdtBridge] Failed to create workspace Y.Doc for session');
+    return;
+  }
+
+  // If we're the host, populate the Y.Doc with all files from Rust CRDT
+  // This is necessary because the Rust CRDT may store files in a format
+  // that isn't automatically reflected in getFullState() Y.js encoding
+  if (isHost && rustApi) {
+    const files = await rustApi.listFiles(false);
+    console.log('[WorkspaceCrdtBridge] Host populating Y.Doc with', files.length, 'files from Rust');
+
+    const filesMap = workspaceYDoc.getMap('files');
+    for (const [path, metadata] of files) {
+      // Convert FileMetadata to a plain object for Y.js storage
+      const metadataObj: Record<string, unknown> = {
+        title: metadata.title,
+        part_of: metadata.part_of,
+        contents: metadata.contents,
+        attachments: metadata.attachments,
+        deleted: metadata.deleted,
+        audience: metadata.audience,
+        description: metadata.description,
+        extra: metadata.extra,
+        modified_at: metadata.modified_at ? Number(metadata.modified_at) : null,
+      };
+      filesMap.set(path, metadataObj);
+    }
+    console.log('[WorkspaceCrdtBridge] Y.Doc now has', filesMap.size, 'files');
+  }
+
+  const workspaceDocName = 'workspace';
+  console.log('[WorkspaceCrdtBridge] Creating session sync bridge:', sessionServerUrl, 'doc:', workspaceDocName, 'session:', sessionCode);
+
+  syncBridge = createSimpleSyncBridge({
+    serverUrl: sessionServerUrl,
+    docName: workspaceDocName,
+    doc: workspaceYDoc,
+    sessionCode: sessionCode,
+    sendInitialState: isHost, // Host sends their state to server
+    onStatusChange: (connected) => {
+      console.log('[WorkspaceCrdtBridge] Session sync status:', connected);
+    },
+    onSynced: async () => {
+      console.log('[WorkspaceCrdtBridge] Session sync complete');
+      await syncFullStateToRust();
+    },
+  });
+
+  // Set up listener for remote updates
+  workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
+    if (origin === 'server') {
+      console.log('[WorkspaceCrdtBridge] Session remote update received:', update.length, 'bytes');
+      await applyIncrementalUpdateToRust(update);
+    }
+  });
+
+  syncBridge.connect();
+}
+
+/**
+ * Stop syncing with a share session.
+ */
+export function stopSessionSync(): void {
+  console.log('[WorkspaceCrdtBridge] Stopping session sync');
+
+  _sessionCode = null;
+
+  if (syncBridge) {
+    syncBridge.destroy();
+    syncBridge = null;
+  }
+}
+
+/**
+ * Get the current session code.
+ */
+export function getSessionCode(): string | null {
+  return _sessionCode;
+}
+
+/**
  * Get the current workspace ID.
  */
 export function getWorkspaceId(): string | null {
@@ -169,8 +620,8 @@ export function isInitializing(): boolean {
 export interface WorkspaceInitOptions {
   /** Rust CRDT API instance */
   rustApi: RustCrdtApi;
-  /** Hocuspocus bridge (optional, for sync) */
-  syncBridge?: HocuspocusBridge;
+  /** Sync bridge (optional, for sync) */
+  syncBridge?: SimpleSyncBridge;
   /** Server URL (optional) */
   serverUrl?: string;
   /** Workspace ID for room naming */
@@ -205,39 +656,48 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
       fileChangeCallbacks.add(options.onFileChange);
     }
 
-    // Connect sync bridge if provided
-    if (syncBridge) {
-      await syncBridge.connect();
-    } else if (serverUrl && rustApi) {
-      // Create Hocuspocus bridge if serverUrl was set (either from options or prior setWorkspaceServer call)
-      const workspaceDocName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
-      console.log('[WorkspaceCrdtBridge] Creating Hocuspocus bridge during init:', serverUrl, 'docName:', workspaceDocName);
-      syncBridge = createHocuspocusBridge({
-        url: serverUrl,
-        docName: workspaceDocName,
-        rustApi,
-        onStatusChange: (connected) => {
-          console.log('[WorkspaceCrdtBridge] Hocuspocus connection status:', connected);
-        },
-        onSynced: () => {
-          console.log('[WorkspaceCrdtBridge] Hocuspocus sync complete');
-        },
-        onUpdate: async (update) => {
-          console.log('[WorkspaceCrdtBridge] Remote update received from Hocuspocus:', update.length, 'bytes');
-          try {
-            const files = await rustApi!.listFiles(false);
-            for (const [path, metadata] of files) {
-              notifyFileChange(path, metadata);
+    // Connect sync bridge if provided (and workspace server sync is enabled)
+    if (WORKSPACE_SERVER_SYNC_ENABLED) {
+      if (syncBridge) {
+        syncBridge.connect();
+      } else if (serverUrl && rustApi) {
+        // Ensure workspaceYDoc exists and create sync bridge
+        await ensureWorkspaceYDoc();
+
+        if (workspaceYDoc) {
+          const workspaceDocName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
+          console.log('[WorkspaceCrdtBridge] Creating sync bridge during init:', serverUrl, 'docName:', workspaceDocName);
+          syncBridge = createSimpleSyncBridge({
+            serverUrl,
+            docName: workspaceDocName,
+            doc: workspaceYDoc,
+            onStatusChange: (connected) => {
+              console.log('[WorkspaceCrdtBridge] Connection status:', connected);
+            },
+            onSynced: async () => {
+              console.log('[WorkspaceCrdtBridge] Initial sync complete');
+              // Full state sync is appropriate here - this is the initial sync
+              await syncFullStateToRust();
+            },
+          });
+
+          // Set up listener for remote updates - apply incremental updates only
+          workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
+            if (origin === 'server') {
+              console.log('[WorkspaceCrdtBridge] Remote update received:', update.length, 'bytes');
+              // Apply the incremental update directly to Rust CRDT (not full state)
+              await applyIncrementalUpdateToRust(update);
             }
-          } catch (error) {
-            console.error('[WorkspaceCrdtBridge] Failed to refresh files after remote update:', error);
-          }
-        },
-      });
-      await syncBridge.connect();
+          });
+
+          syncBridge.connect();
+        }
+      }
+    } else {
+      console.log('[WorkspaceCrdtBridge] Workspace server sync disabled during init');
     }
 
-    // Initialize P2P if enabled
+    // Initialize P2P if enabled (reuses workspaceYDoc if already created)
     await initP2PWorkspaceSync();
 
     initialized = true;
@@ -256,24 +716,14 @@ async function initP2PWorkspaceSync(): Promise<void> {
     return;
   }
 
-  // Create workspace Y.Doc for P2P sync
-  workspaceYDoc = new Y.Doc();
+  // Reuse workspaceYDoc if already created (by ensureWorkspaceYDoc), otherwise create new
+  if (!workspaceYDoc) {
+    await ensureWorkspaceYDoc();
+  }
 
-  // Load initial state from Rust CRDT
-  try {
-    const fullState = await rustApi.getFullState('workspace');
-    console.log('[WorkspaceCrdtBridge] Loading initial state from Rust, bytes:', fullState.length);
-    if (fullState.length > 0) {
-      Y.applyUpdate(workspaceYDoc, fullState, 'rust');
-      // Log what's in the Y.Doc after loading
-      const filesMap = workspaceYDoc.getMap('files');
-      console.log('[WorkspaceCrdtBridge] Loaded Y.Doc has', filesMap.size, 'files');
-    }
-    // Store initial state vector for incremental sync
-    lastStateVector = await rustApi.getSyncState('workspace');
-    console.log('[WorkspaceCrdtBridge] Initial state vector stored, bytes:', lastStateVector.length);
-  } catch (error) {
-    console.warn('[WorkspaceCrdtBridge] Failed to load workspace state for P2P:', error);
+  if (!workspaceYDoc) {
+    console.error('[WorkspaceCrdtBridge] Failed to create workspace Y.Doc for P2P');
+    return;
   }
 
   // Create P2P provider
@@ -438,6 +888,117 @@ export async function getAllFilesIncludingDeleted(): Promise<Map<string, FileMet
 }
 
 /**
+ * TreeNode interface (matching the backend interface)
+ */
+interface TreeNode {
+  name: string;
+  description: string | null;
+  path: string;
+  children: TreeNode[];
+}
+
+/**
+ * Populate the CRDT with file metadata.
+ * Used before creating a share session to ensure all files are in the CRDT.
+ */
+export async function populateCrdtFromFiles(files: Array<{ path: string; metadata: Partial<FileMetadata> }>): Promise<void> {
+  if (!rustApi) {
+    console.error('[WorkspaceCrdtBridge] Cannot populate CRDT: not initialized');
+    return;
+  }
+
+  console.log('[WorkspaceCrdtBridge] Populating CRDT with', files.length, 'files');
+
+  for (const { path, metadata } of files) {
+    const fullMetadata: FileMetadata = {
+      title: metadata.title ?? null,
+      part_of: metadata.part_of ?? null,
+      contents: metadata.contents ?? null,
+      attachments: metadata.attachments ?? [],
+      deleted: metadata.deleted ?? false,
+      audience: metadata.audience ?? null,
+      description: metadata.description ?? null,
+      extra: metadata.extra ?? {},
+      modified_at: metadata.modified_at ?? BigInt(Date.now()),
+    };
+
+    await rustApi.setFile(path, fullMetadata);
+    console.log('[WorkspaceCrdtBridge] Added file to CRDT:', path);
+  }
+
+  console.log('[WorkspaceCrdtBridge] CRDT population complete');
+}
+
+/**
+ * Build a tree from CRDT file metadata.
+ * This is used for guests who don't have files on disk but have synced metadata.
+ */
+export async function getTreeFromCrdt(): Promise<TreeNode | null> {
+  if (!rustApi) return null;
+
+  const files = await rustApi.listFiles(false);
+  if (files.length === 0) return null;
+
+  const fileMap = new Map(files);
+  console.log('[WorkspaceCrdtBridge] Building tree from CRDT, files:', files.map(([p]) => p));
+
+  // Find root files (files with no part_of, or part_of pointing to non-existent file)
+  const rootFiles: string[] = [];
+  for (const [path, metadata] of fileMap) {
+    if (!metadata.part_of || !fileMap.has(metadata.part_of)) {
+      rootFiles.push(path);
+    }
+  }
+
+  console.log('[WorkspaceCrdtBridge] Root files:', rootFiles);
+
+  // If no clear root, use the first file as root
+  if (rootFiles.length === 0 && files.length > 0) {
+    rootFiles.push(files[0][0]);
+  }
+
+  // Build tree recursively
+  // For guests, paths are prefixed with guest/{joinCode}/ to point to isolated storage
+  function buildNode(originalPath: string): TreeNode {
+    const metadata = fileMap.get(originalPath);
+    const name = originalPath.split('/').pop()?.replace(/\.md$/, '') || originalPath;
+
+    // For guests, use prefixed path so file opens work correctly
+    const storagePath = getGuestStoragePath(originalPath);
+
+    const children: TreeNode[] = [];
+    if (metadata?.contents) {
+      for (const childPath of metadata.contents) {
+        if (fileMap.has(childPath)) {
+          children.push(buildNode(childPath));
+        }
+      }
+    }
+
+    return {
+      name: metadata?.title || name,
+      description: metadata?.description || null,
+      path: storagePath,  // Use storage path (prefixed for guests)
+      children,
+    };
+  }
+
+  // If single root, return it; otherwise create a virtual root
+  if (rootFiles.length === 1) {
+    return buildNode(rootFiles[0]);
+  } else {
+    // Multiple roots - create a virtual workspace root
+    const virtualRootPath = getGuestStoragePath('workspace');
+    return {
+      name: 'Shared Workspace',
+      description: 'Files shared in this session',
+      path: virtualRootPath,
+      children: rootFiles.map(buildNode),
+    };
+  }
+}
+
+/**
  * Set file metadata in the CRDT.
  */
 export async function setFileMetadata(path: string, metadata: FileMetadata): Promise<void> {
@@ -446,11 +1007,87 @@ export async function setFileMetadata(path: string, metadata: FileMetadata): Pro
     throw new Error('Workspace not initialized');
   }
   await rustApi.setFile(path, metadata);
-  console.log('[WorkspaceCrdtBridge] Rust setFile complete, now syncing to P2P...');
-  // Sync to P2P Y.Doc so peers receive the update
+  console.log('[WorkspaceCrdtBridge] Rust setFile complete, now syncing...');
+  // Sync to Y.Doc so session/P2P peers receive the update
+  syncFileToYDoc(path, metadata);
+  // Also sync to P2P Y.Doc if enabled
   await syncRustChangesToP2P();
   console.log('[WorkspaceCrdtBridge] setFileMetadata complete:', path);
   notifyFileChange(path, metadata);
+}
+
+/**
+ * Sync a single file to the session Y.Doc.
+ * This will trigger the SimpleSyncBridge to send the update to the server.
+ */
+function syncFileToYDoc(path: string, metadata: FileMetadata): void {
+  if (!workspaceYDoc || !syncBridge) {
+    return; // No session active
+  }
+
+  console.log('[WorkspaceCrdtBridge] Syncing file to Y.Doc:', path);
+  const filesMap = workspaceYDoc.getMap('files');
+  const metadataObj: Record<string, unknown> = {
+    title: metadata.title,
+    part_of: metadata.part_of,
+    contents: metadata.contents,
+    attachments: metadata.attachments,
+    deleted: metadata.deleted,
+    audience: metadata.audience,
+    description: metadata.description,
+    extra: metadata.extra,
+    modified_at: metadata.modified_at ? Number(metadata.modified_at) : null,
+  };
+  filesMap.set(path, metadataObj);
+  console.log('[WorkspaceCrdtBridge] File synced to Y.Doc, total files:', filesMap.size);
+}
+
+/**
+ * Update file body content in the session Y.Doc.
+ * This allows live sync of file content changes during share sessions.
+ * Called when the editor saves content.
+ */
+export function updateFileBodyInYDoc(path: string, body: string): void {
+  if (!workspaceYDoc || !_sessionCode) {
+    return; // No session active
+  }
+
+  // Convert guest storage path to canonical path for Y.Doc sync
+  // This ensures host and guest use the same keys in the files map
+  const canonicalPath = getCanonicalPath(path);
+  console.log('[WorkspaceCrdtBridge] Updating file body in Y.Doc:', canonicalPath, 'length:', body.length);
+  const filesMap = workspaceYDoc.getMap('files');
+  const existing = filesMap.get(canonicalPath) as Record<string, unknown> | undefined;
+
+  if (existing) {
+    // Preserve existing metadata and update body in extra
+    const existingExtra = (existing.extra as Record<string, unknown>) || {};
+    const updated = {
+      ...existing,
+      extra: {
+        ...existingExtra,
+        _body: body,
+      },
+      modified_at: Date.now(),
+    };
+    filesMap.set(canonicalPath, updated);
+    console.log('[WorkspaceCrdtBridge] File body updated in Y.Doc');
+  } else {
+    // File doesn't exist in Y.Doc yet - create minimal entry with body
+    console.log('[WorkspaceCrdtBridge] Creating new file entry in Y.Doc with body:', canonicalPath);
+    const metadataObj: Record<string, unknown> = {
+      title: null,
+      part_of: null,
+      contents: null,
+      attachments: [],
+      deleted: false,
+      audience: null,
+      description: null,
+      extra: { _body: body },
+      modified_at: Date.now(),
+    };
+    filesMap.set(canonicalPath, metadataObj);
+  }
 }
 
 /**
@@ -486,7 +1123,9 @@ export async function updateFileMetadata(
     console.log('[WorkspaceCrdtBridge] Updating file metadata:', path, updated);
     await rustApi.setFile(path, updated);
     console.log('[WorkspaceCrdtBridge] File metadata updated successfully:', path);
-    // Sync to P2P Y.Doc so peers receive the update
+    // Sync to Y.Doc so session/P2P peers receive the update
+    syncFileToYDoc(path, updated);
+    // Also sync to P2P Y.Doc if enabled
     await syncRustChangesToP2P();
     notifyFileChange(path, updated);
   } finally {
@@ -804,6 +1443,30 @@ export function onFileChange(callback: FileChangeCallback): () => void {
   return () => fileChangeCallbacks.delete(callback);
 }
 
+/**
+ * Subscribe to session sync events.
+ * Called when session data is received and synced to Rust.
+ * Use this to trigger UI refreshes after receiving data from a share session.
+ */
+export function onSessionSync(callback: SessionSyncCallback): () => void {
+  sessionSyncCallbacks.add(callback);
+  return () => sessionSyncCallbacks.delete(callback);
+}
+
+/**
+ * Notify all session sync callbacks.
+ */
+function notifySessionSync(): void {
+  console.log('[WorkspaceCrdtBridge] Notifying session sync callbacks, count:', sessionSyncCallbacks.size);
+  for (const callback of sessionSyncCallbacks) {
+    try {
+      callback();
+    } catch (error) {
+      console.error('[WorkspaceCrdtBridge] Session sync callback error:', error);
+    }
+  }
+}
+
 // Private helpers
 
 /**
@@ -922,10 +1585,9 @@ export async function debugP2PSync(): Promise<void> {
  * Call this from browser console: window.debugHocuspocusSync()
  */
 export function debugHocuspocusSync(): void {
-  console.log('=== Hocuspocus Sync Debug ===');
+  console.log('=== Sync Bridge Debug ===');
   console.log('serverUrl:', serverUrl);
   console.log('syncBridge:', syncBridge ? 'exists' : 'null');
-  console.log('syncBridge.status:', syncBridge?.getStatus());
   console.log('syncBridge.synced:', syncBridge?.isSynced());
   console.log('initialized:', initialized);
   console.log('rustApi:', rustApi ? 'exists' : 'null');

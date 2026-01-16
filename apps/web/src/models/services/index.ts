@@ -34,3 +34,15 @@ export {
   showLoading,
   handleError,
 } from './toastService';
+
+export {
+  createShareSession,
+  joinShareSession,
+  endShareSession,
+  getGuestStoragePath,
+  isGuestMode,
+  getCurrentJoinCode,
+  getSessionSyncUrl,
+  cleanupGuestStorage,
+  cleanupAllGuestStorage,
+} from './shareService';

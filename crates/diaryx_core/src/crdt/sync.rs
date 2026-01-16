@@ -145,6 +145,10 @@ impl SyncMessage {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             SyncMessage::SyncStep1(sv) => {
+                log::debug!(
+                    "[Y-sync] Encoding SyncStep1, state_vector {} bytes",
+                    sv.len()
+                );
                 let mut buf = Vec::with_capacity(2 + sv.len() + 5);
                 write_var_uint(&mut buf, msg_type::SYNC as u64);
                 write_var_uint(&mut buf, sync_type::STEP1 as u64);
@@ -152,6 +156,7 @@ impl SyncMessage {
                 buf
             }
             SyncMessage::SyncStep2(update) => {
+                log::debug!("[Y-sync] Encoding SyncStep2, update {} bytes", update.len());
                 let mut buf = Vec::with_capacity(2 + update.len() + 5);
                 write_var_uint(&mut buf, msg_type::SYNC as u64);
                 write_var_uint(&mut buf, sync_type::STEP2 as u64);
@@ -159,6 +164,7 @@ impl SyncMessage {
                 buf
             }
             SyncMessage::Update(update) => {
+                log::debug!("[Y-sync] Encoding Update, {} bytes", update.len());
                 let mut buf = Vec::with_capacity(2 + update.len() + 5);
                 write_var_uint(&mut buf, msg_type::SYNC as u64);
                 write_var_uint(&mut buf, sync_type::UPDATE as u64);
@@ -171,43 +177,133 @@ impl SyncMessage {
     /// Decode a message from bytes using y-protocols compatible format.
     /// Returns None for empty, incomplete, or non-sync messages.
     pub fn decode(data: &[u8]) -> StorageResult<Option<Self>> {
+        let (msg, _) = Self::decode_with_consumed(data)?;
+        Ok(msg)
+    }
+
+    /// Decode a message and return bytes consumed.
+    /// Returns (Option<message>, bytes_consumed).
+    fn decode_with_consumed(data: &[u8]) -> StorageResult<(Option<Self>, usize)> {
+        log::debug!(
+            "[Y-sync] Decoding message, {} bytes, first 20: {:?}",
+            data.len(),
+            &data[..data.len().min(20)]
+        );
+
         if data.is_empty() {
-            return Ok(None);
+            log::debug!("[Y-sync] Empty message, returning None");
+            return Ok((None, 0));
         }
 
         // Read message type
         let Some((msg_type_val, msg_type_bytes)) = read_var_uint(data) else {
-            return Ok(None); // Incomplete message
+            log::debug!("[Y-sync] Incomplete message type");
+            return Ok((None, 0)); // Incomplete message
         };
 
         if msg_type_val != msg_type::SYNC as u64 {
             // Non-sync message (awareness, auth), skip it
-            return Ok(None);
+            log::debug!(
+                "[Y-sync] Non-sync message type: {} (expected 0)",
+                msg_type_val
+            );
+            return Ok((None, 0));
         }
 
         let remaining = &data[msg_type_bytes..];
+        let (msg, sub_consumed) = Self::decode_sub_message(remaining)?;
+        Ok((msg, msg_type_bytes + sub_consumed))
+    }
+
+    /// Decode a sync sub-message (sync_type + payload) without the message type prefix.
+    /// Returns (Option<message>, bytes_consumed).
+    fn decode_sub_message(data: &[u8]) -> StorageResult<(Option<Self>, usize)> {
+        if data.is_empty() {
+            return Ok((None, 0));
+        }
 
         // Read sync type
-        let Some((sync_type_val, sync_type_bytes)) = read_var_uint(remaining) else {
-            return Ok(None); // Incomplete message
+        let Some((sync_type_val, sync_type_bytes)) = read_var_uint(data) else {
+            log::debug!("[Y-sync] Incomplete sync type");
+            return Ok((None, 0)); // Incomplete message
         };
 
-        let remaining = &remaining[sync_type_bytes..];
+        let remaining = &data[sync_type_bytes..];
 
         // Read payload as var byte array
-        let Some((payload, _)) = read_var_byte_array(remaining) else {
-            return Ok(None); // Incomplete message
+        let Some((payload, payload_bytes)) = read_var_byte_array(remaining) else {
+            log::debug!("[Y-sync] Incomplete payload");
+            return Ok((None, 0)); // Incomplete message
         };
 
-        match sync_type_val as u8 {
-            sync_type::STEP1 => Ok(Some(SyncMessage::SyncStep1(payload))),
-            sync_type::STEP2 => Ok(Some(SyncMessage::SyncStep2(payload))),
-            sync_type::UPDATE => Ok(Some(SyncMessage::Update(payload))),
-            _ => Err(DiaryxError::Crdt(format!(
-                "Unknown sync type: {}",
-                sync_type_val
-            ))),
+        let total_consumed = sync_type_bytes + payload_bytes;
+
+        let msg_name = match sync_type_val as u8 {
+            sync_type::STEP1 => "SyncStep1",
+            sync_type::STEP2 => "SyncStep2",
+            sync_type::UPDATE => "Update",
+            _ => "Unknown",
+        };
+        log::debug!(
+            "[Y-sync] Decoded {} with payload {} bytes, consumed {} bytes",
+            msg_name,
+            payload.len(),
+            total_consumed
+        );
+
+        let msg = match sync_type_val as u8 {
+            sync_type::STEP1 => Some(SyncMessage::SyncStep1(payload)),
+            sync_type::STEP2 => Some(SyncMessage::SyncStep2(payload)),
+            sync_type::UPDATE => Some(SyncMessage::Update(payload)),
+            _ => {
+                return Err(DiaryxError::Crdt(format!(
+                    "Unknown sync type: {}",
+                    sync_type_val
+                )))
+            }
+        };
+
+        Ok((msg, total_consumed))
+    }
+
+    /// Decode ALL sub-messages from a combined Sync message.
+    /// Hocuspocus can send multiple sub-messages (e.g., SyncStep2 + SyncStep1) in one message.
+    pub fn decode_all(data: &[u8]) -> StorageResult<Vec<Self>> {
+        let mut messages = Vec::new();
+
+        if data.is_empty() {
+            return Ok(messages);
         }
+
+        // Read message type
+        let Some((msg_type_val, msg_type_bytes)) = read_var_uint(data) else {
+            return Ok(messages);
+        };
+
+        if msg_type_val != msg_type::SYNC as u64 {
+            log::debug!(
+                "[Y-sync] Non-sync message type: {} (expected 0)",
+                msg_type_val
+            );
+            return Ok(messages);
+        }
+
+        let mut offset = msg_type_bytes;
+
+        // Process all sub-messages
+        while offset < data.len() {
+            let (msg, consumed) = Self::decode_sub_message(&data[offset..])?;
+            if consumed == 0 {
+                break; // No more valid messages
+            }
+            if let Some(m) = msg {
+                messages.push(m);
+            }
+            offset += consumed;
+        }
+
+        log::debug!("[Y-sync] Decoded {} sub-messages from combined message", messages.len());
+        Ok(messages)
     }
 }
 
@@ -262,6 +358,7 @@ impl SyncProtocol {
     /// Handle an incoming message from a remote peer.
     ///
     /// Returns an optional response message that should be sent back.
+    /// Handles combined messages (e.g., SyncStep2 + SyncStep1 from Hocuspocus).
     ///
     /// # Message Types
     ///
@@ -269,41 +366,55 @@ impl SyncProtocol {
     /// - **SyncStep2**: Applies the update, returns None
     /// - **Update**: Applies the update, returns None
     pub fn handle_message(&mut self, msg: &[u8]) -> StorageResult<Option<Vec<u8>>> {
-        let Some(sync_msg) = SyncMessage::decode(msg)? else {
-            // Non-sync message, ignore
+        // Decode all sub-messages (Hocuspocus may send combined SyncStep2 + SyncStep1)
+        let messages = SyncMessage::decode_all(msg)?;
+        if messages.is_empty() {
             return Ok(None);
-        };
+        }
 
-        match sync_msg {
-            SyncMessage::SyncStep1(remote_sv) => {
-                // Remote is requesting updates they don't have
-                let response = self.create_sync_step2(&remote_sv)?;
+        let mut response: Option<Vec<u8>> = None;
 
-                // Also send our state vector back so they can send us what we're missing
-                let our_sv = self.workspace.encode_state_vector();
-                let our_step1 = SyncMessage::SyncStep1(our_sv).encode();
+        for sync_msg in messages {
+            match sync_msg {
+                SyncMessage::SyncStep1(remote_sv) => {
+                    // Remote is requesting updates they don't have
+                    let step2_response = self.create_sync_step2(&remote_sv)?;
 
-                // Combine responses
-                let mut combined = response;
-                combined.extend_from_slice(&our_step1);
+                    // Also send our state vector back so they can send us what we're missing
+                    let our_sv = self.workspace.encode_state_vector();
+                    let our_step1 = SyncMessage::SyncStep1(our_sv).encode();
 
-                Ok(Some(combined))
-            }
-            SyncMessage::SyncStep2(update) => {
-                // Remote is sending updates we don't have
-                if !update.is_empty() {
-                    self.workspace.apply_update(&update, UpdateOrigin::Sync)?;
+                    // Combine responses
+                    let mut combined = step2_response;
+                    combined.extend_from_slice(&our_step1);
+
+                    // Append to existing response if any
+                    if let Some(ref mut existing) = response {
+                        existing.extend_from_slice(&combined);
+                    } else {
+                        response = Some(combined);
+                    }
                 }
-                Ok(None)
-            }
-            SyncMessage::Update(update) => {
-                // Remote is sending a live update
-                if !update.is_empty() {
-                    self.workspace.apply_update(&update, UpdateOrigin::Remote)?;
+                SyncMessage::SyncStep2(update) => {
+                    // Remote is sending updates we don't have
+                    if !update.is_empty() {
+                        log::debug!("[Y-sync] Applying SyncStep2 update, {} bytes", update.len());
+                        self.workspace.apply_update(&update, UpdateOrigin::Sync)?;
+                    }
+                    // SyncStep2 doesn't generate a response by itself,
+                    // but if combined with SyncStep1, we'll respond to that
                 }
-                Ok(None)
+                SyncMessage::Update(update) => {
+                    // Remote is sending a live update
+                    if !update.is_empty() {
+                        log::debug!("[Y-sync] Applying Update, {} bytes", update.len());
+                        self.workspace.apply_update(&update, UpdateOrigin::Remote)?;
+                    }
+                }
             }
         }
+
+        Ok(response)
     }
 
     /// Get the current state as a full update.
@@ -387,40 +498,54 @@ impl BodySyncProtocol {
     }
 
     /// Handle an incoming message.
+    /// Handles combined messages (e.g., SyncStep2 + SyncStep1 from Hocuspocus).
     pub fn handle_message(&mut self, msg: &[u8]) -> StorageResult<Option<Vec<u8>>> {
-        let Some(sync_msg) = SyncMessage::decode(msg)? else {
+        // Decode all sub-messages (Hocuspocus may send combined SyncStep2 + SyncStep1)
+        let messages = SyncMessage::decode_all(msg)?;
+        if messages.is_empty() {
             return Ok(None);
-        };
+        }
 
-        match sync_msg {
-            SyncMessage::SyncStep1(remote_sv) => {
-                let response = self.create_sync_step2(&remote_sv)?;
+        let mut response: Option<Vec<u8>> = None;
 
-                // Also send our state vector
-                let txn = self.doc.transact();
-                let our_sv = txn.state_vector().encode_v1();
-                drop(txn);
+        for sync_msg in messages {
+            match sync_msg {
+                SyncMessage::SyncStep1(remote_sv) => {
+                    let step2_response = self.create_sync_step2(&remote_sv)?;
 
-                let our_step1 = SyncMessage::SyncStep1(our_sv).encode();
+                    // Also send our state vector
+                    let txn = self.doc.transact();
+                    let our_sv = txn.state_vector().encode_v1();
+                    drop(txn);
 
-                let mut combined = response;
-                combined.extend_from_slice(&our_step1);
+                    let our_step1 = SyncMessage::SyncStep1(our_sv).encode();
 
-                Ok(Some(combined))
-            }
-            SyncMessage::SyncStep2(update) => {
-                if !update.is_empty() {
-                    self.apply_update(&update)?;
+                    let mut combined = step2_response;
+                    combined.extend_from_slice(&our_step1);
+
+                    // Append to existing response if any
+                    if let Some(ref mut existing) = response {
+                        existing.extend_from_slice(&combined);
+                    } else {
+                        response = Some(combined);
+                    }
                 }
-                Ok(None)
-            }
-            SyncMessage::Update(update) => {
-                if !update.is_empty() {
-                    self.apply_update(&update)?;
+                SyncMessage::SyncStep2(update) => {
+                    if !update.is_empty() {
+                        log::debug!("[Y-sync Body] Applying SyncStep2 update, {} bytes", update.len());
+                        self.apply_update(&update)?;
+                    }
                 }
-                Ok(None)
+                SyncMessage::Update(update) => {
+                    if !update.is_empty() {
+                        log::debug!("[Y-sync Body] Applying Update, {} bytes", update.len());
+                        self.apply_update(&update)?;
+                    }
+                }
             }
         }
+
+        Ok(response)
     }
 
     /// Apply an update to the document.

@@ -788,12 +788,15 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
     ///
     /// Use doc_name="workspace" for the workspace CRDT, or a file path for body docs.
     pub fn create_sync_step1(&self, doc_name: &str) -> Vec<u8> {
+        log::debug!("[Y-sync] create_sync_step1 for doc: {}", doc_name);
         if doc_name == "workspace" {
             let sv = self.crdt.encode_state_vector();
+            log::debug!("[Y-sync] Workspace state_vector {} bytes", sv.len());
             crate::crdt::SyncMessage::SyncStep1(sv).encode()
         } else {
             let doc = self.body_docs.get_or_create(doc_name);
             let sv = doc.encode_state_vector();
+            log::debug!("[Y-sync] Body doc state_vector {} bytes", sv.len());
             crate::crdt::SyncMessage::SyncStep1(sv).encode()
         }
     }
@@ -802,9 +805,17 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
     ///
     /// Returns an optional response message to send back.
     pub fn handle_sync_message(&self, doc_name: &str, message: &[u8]) -> Result<Option<Vec<u8>>> {
+        log::debug!(
+            "[Y-sync] handle_sync_message for doc: {}, {} bytes",
+            doc_name,
+            message.len()
+        );
         let sync_msg = match crate::crdt::SyncMessage::decode(message)? {
             Some(msg) => msg,
-            None => return Ok(None),
+            None => {
+                log::debug!("[Y-sync] Could not decode message, returning None");
+                return Ok(None);
+            }
         };
 
         if doc_name == "workspace" {
@@ -820,29 +831,53 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
     ) -> Result<Option<Vec<u8>>> {
         match msg {
             crate::crdt::SyncMessage::SyncStep1(remote_sv) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received SyncStep1, remote_sv {} bytes",
+                    remote_sv.len()
+                );
                 // Create SyncStep2 with missing updates
                 let diff = self.crdt.encode_diff(&remote_sv)?;
+                log::debug!("[Y-sync] Workspace: Encoded diff {} bytes", diff.len());
                 let step2 = crate::crdt::SyncMessage::SyncStep2(diff).encode();
 
                 // Also send our state vector
                 let our_sv = self.crdt.encode_state_vector();
+                log::debug!("[Y-sync] Workspace: Our state_vector {} bytes", our_sv.len());
                 let step1 = crate::crdt::SyncMessage::SyncStep1(our_sv).encode();
 
                 let mut combined = step2;
                 combined.extend_from_slice(&step1);
+                log::debug!(
+                    "[Y-sync] Workspace: Returning combined response {} bytes (Step2 + Step1)",
+                    combined.len()
+                );
                 Ok(Some(combined))
             }
             crate::crdt::SyncMessage::SyncStep2(update) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received SyncStep2, update {} bytes",
+                    update.len()
+                );
                 if !update.is_empty() {
                     self.crdt
                         .apply_update(&update, crate::crdt::UpdateOrigin::Sync)?;
+                    log::debug!("[Y-sync] Workspace: Applied update successfully");
+                } else {
+                    log::debug!("[Y-sync] Workspace: Update is empty, skipping apply");
                 }
                 Ok(None)
             }
             crate::crdt::SyncMessage::Update(update) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received Update, {} bytes",
+                    update.len()
+                );
                 if !update.is_empty() {
                     self.crdt
                         .apply_update(&update, crate::crdt::UpdateOrigin::Remote)?;
+                    log::debug!("[Y-sync] Workspace: Applied remote update successfully");
+                } else {
+                    log::debug!("[Y-sync] Workspace: Update is empty, skipping apply");
                 }
                 Ok(None)
             }
@@ -854,12 +889,23 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         doc_name: &str,
         msg: crate::crdt::SyncMessage,
     ) -> Result<Option<Vec<u8>>> {
+        log::debug!("[Y-sync] Body doc '{}': handling message", doc_name);
         let doc = self.body_docs.get_or_create(doc_name);
 
         match msg {
             crate::crdt::SyncMessage::SyncStep1(remote_sv) => {
+                log::debug!(
+                    "[Y-sync] Body '{}': Received SyncStep1, remote_sv {} bytes",
+                    doc_name,
+                    remote_sv.len()
+                );
                 // Create SyncStep2 with missing updates
                 let diff = doc.encode_diff(&remote_sv)?;
+                log::debug!(
+                    "[Y-sync] Body '{}': Encoded diff {} bytes",
+                    doc_name,
+                    diff.len()
+                );
                 let step2 = crate::crdt::SyncMessage::SyncStep2(diff).encode();
 
                 // Also send our state vector
@@ -868,17 +914,34 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
 
                 let mut combined = step2;
                 combined.extend_from_slice(&step1);
+                log::debug!(
+                    "[Y-sync] Body '{}': Returning combined {} bytes",
+                    doc_name,
+                    combined.len()
+                );
                 Ok(Some(combined))
             }
             crate::crdt::SyncMessage::SyncStep2(update) => {
+                log::debug!(
+                    "[Y-sync] Body '{}': Received SyncStep2, {} bytes",
+                    doc_name,
+                    update.len()
+                );
                 if !update.is_empty() {
                     doc.apply_update(&update, crate::crdt::UpdateOrigin::Sync)?;
+                    log::debug!("[Y-sync] Body '{}': Applied update", doc_name);
                 }
                 Ok(None)
             }
             crate::crdt::SyncMessage::Update(update) => {
+                log::debug!(
+                    "[Y-sync] Body '{}': Received Update, {} bytes",
+                    doc_name,
+                    update.len()
+                );
                 if !update.is_empty() {
                     doc.apply_update(&update, crate::crdt::UpdateOrigin::Remote)?;
+                    log::debug!("[Y-sync] Body '{}': Applied remote update", doc_name);
                 }
                 Ok(None)
             }

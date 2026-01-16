@@ -1643,6 +1643,7 @@ dependencies = [
  "futures-lite",
  "glob",
  "indexmap 2.12.1",
+ "log",
  "pathdiff",
  "rusqlite",
  "serde",

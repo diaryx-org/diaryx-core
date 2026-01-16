@@ -1,14 +1,12 @@
 <script lang="ts">
   /**
    * EditorContent - The main editor content area
-   * 
+   *
    * Wraps the TipTap editor with loading states.
    * This component handles the editor rendering logic.
    */
-  
+
   import LoadingSpinner from "../shared/LoadingSpinner.svelte";
-  import type { Doc as YDoc } from "yjs";
-  import type { HocuspocusProvider } from "@hocuspocus/provider";
   import type { Api } from "$lib/backend/api";
 
   interface Props {
@@ -16,9 +14,6 @@
     editorRef: any;
     content: string;
     editorKey: string;
-    collaborationEnabled: boolean;
-    currentYDoc: YDoc | null;
-    currentProvider: HocuspocusProvider | null;
     readableLineLength?: boolean;
     onchange: (markdown: string) => void;
     onblur: () => void;
@@ -41,9 +36,6 @@
     editorRef = $bindable(),
     content,
     editorKey,
-    collaborationEnabled,
-    currentYDoc,
-    currentProvider,
     readableLineLength = true,
     onchange,
     onblur,
@@ -86,8 +78,6 @@
           {entryPath}
           {api}
           {onAttachmentInsert}
-          ydoc={collaborationEnabled ? (currentYDoc ?? undefined) : undefined}
-          provider={collaborationEnabled ? (currentProvider ?? undefined) : undefined}
         />
       {/key}
     {:else}

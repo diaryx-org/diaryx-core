@@ -20,6 +20,8 @@ export interface YDocProxyOptions {
   rustApi: RustCrdtApi;
   /** Optional callback when content changes */
   onContentChange?: (content: string) => void;
+  /** Optional callback when local updates should be broadcast to peers */
+  onLocalUpdate?: (update: Uint8Array) => void;
   /** Initial content to seed if CRDT is empty */
   initialContent?: string;
   /** Initialization timeout in milliseconds (default: 10000ms) */
@@ -48,6 +50,7 @@ export class YDocProxy {
   private docName: string;
   private rustApi: RustCrdtApi;
   private onContentChange?: (content: string) => void;
+  private onLocalUpdate?: (update: Uint8Array) => void;
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private destroyed = false;
 
@@ -56,6 +59,7 @@ export class YDocProxy {
     this.docName = options.docName;
     this.rustApi = options.rustApi;
     this.onContentChange = options.onContentChange;
+    this.onLocalUpdate = options.onLocalUpdate;
   }
 
   /**
@@ -149,8 +153,34 @@ export class YDocProxy {
    * Get the current text content.
    */
   getContent(): string {
-    const text = this.ydoc.getText('default');
+    const text = this.ydoc.getText('body');
     return text.toString();
+  }
+
+  /**
+   * Set the text content (replaces existing content).
+   * Used to sync local edits from TipTap to the CRDT.
+   */
+  setContent(newContent: string): void {
+    if (this.destroyed) return;
+
+    const text = this.ydoc.getText('body');
+    const currentContent = text.toString();
+
+    // Skip if content is the same (avoid unnecessary updates)
+    if (currentContent === newContent) return;
+
+    // Use a transaction to batch the delete + insert as a single update
+    this.ydoc.transact(() => {
+      // Clear existing content
+      if (text.length > 0) {
+        text.delete(0, text.length);
+      }
+      // Insert new content
+      if (newContent.length > 0) {
+        text.insert(0, newContent);
+      }
+    }, 'local'); // Origin 'local' to distinguish from 'rust' updates
   }
 
   /**
@@ -188,7 +218,7 @@ export class YDocProxy {
       Y.applyUpdate(this.ydoc, fullState, 'rust');
     } else if (initialContent) {
       // Seed with initial content if CRDT is empty
-      const text = this.ydoc.getText('default');
+      const text = this.ydoc.getText('body');
       text.insert(0, initialContent);
 
       // Sync initial content to Rust
@@ -213,6 +243,12 @@ export class YDocProxy {
         console.log('[YDocProxy] Syncing update to Rust:', this.docName, 'size:', update.length);
         const updateId = await this.rustApi.applyBodyUpdate(this.docName, update);
         console.log('[YDocProxy] Update synced, ID:', updateId);
+
+        // Broadcast update to peers (for real-time sync)
+        if (this.onLocalUpdate) {
+          console.log('[YDocProxy] Broadcasting update to peers:', update.length, 'bytes');
+          this.onLocalUpdate(update);
+        }
 
         // Notify content change
         if (this.onContentChange) {
