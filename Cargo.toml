@@ -27,7 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 indexmap = { version = "2.0", features = ["serde"] }
 
 # Internal crates - version must match workspace.package.version for publishing
-diaryx_core = { path = "crates/diaryx_core", version = "0.8.0" }
+diaryx_core = { path = "crates/diaryx_core", version = "0.9.0" }
 
 # cargo-release configuration
 [workspace.metadata.release]

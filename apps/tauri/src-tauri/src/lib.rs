@@ -74,6 +74,11 @@ pub fn run() {
             // Cloud Backup (Google Drive)
             commands::get_google_auth_config,
             commands::backup_to_google_drive,
+            // Cloud Sync (bidirectional)
+            commands::sync_to_s3,
+            commands::sync_to_google_drive,
+            commands::get_sync_status,
+            commands::resolve_sync_conflict,
             // Import (file picker dialogs)
             commands::import_from_zip,
             commands::pick_and_import_zip,

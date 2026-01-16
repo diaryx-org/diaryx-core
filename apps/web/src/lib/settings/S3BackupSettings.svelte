@@ -1,13 +1,13 @@
 <script lang="ts">
   /**
-   * S3BackupSettings - S3/S3-Compatible storage backup configuration
-   * 
-   * Self-contained component for S3 backup configuration and execution.
+   * S3BackupSettings - S3/S3-Compatible storage backup and sync configuration
+   *
+   * Self-contained component for S3 backup configuration, execution, and bidirectional sync.
    */
   import { Button } from "$lib/components/ui/button";
   import { Label } from "$lib/components/ui/label";
   import { Progress } from "$lib/components/ui/progress";
-  import { Loader2, Check, AlertCircle } from "@lucide/svelte";
+  import { Loader2, Check, AlertCircle, RefreshCw, Upload, Download } from "@lucide/svelte";
   import { getBackend } from "../backend";
   import { getS3Config, storeS3Config, removeS3Credentials } from "../credentials";
 
@@ -35,6 +35,18 @@
   let s3IsBackingUp = $state(false);
   let s3BackupProgress = $state({ stage: "", percent: 0 });
   let s3ConfigSaved = $state(false);
+
+  // Sync state
+  let s3IsSyncing = $state(false);
+  let s3SyncProgress = $state({ stage: "", percent: 0, message: "" });
+  let s3SyncStatus: {
+    success: boolean;
+    message: string;
+    uploaded?: number;
+    downloaded?: number;
+    deleted?: number;
+    conflicts?: Array<{ path: string; local_modified: number | null; remote_modified: string | null }>;
+  } | null = $state(null);
 
   // Load saved config on mount
   $effect(() => {
@@ -202,6 +214,100 @@
   const isConfigValid = $derived(
     s3Config.bucket && s3Config.access_key && s3Config.secret_key
   );
+
+  async function syncToS3() {
+    s3IsSyncing = true;
+    s3SyncStatus = null;
+    s3SyncProgress = { stage: "Starting...", percent: 0, message: "" };
+    let unlisten: (() => void) | null = null;
+    try {
+      const backend = await getBackend();
+      if ("getInvoke" in backend) {
+        const invoke = (backend as any).getInvoke();
+
+        // Listen for sync progress events
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          unlisten = await listen<{
+            stage: string;
+            current: number;
+            total: number;
+            percent: number;
+            message: string | null;
+          }>("sync_progress", (event) => {
+            const { stage, percent, message } = event.payload;
+            const stageLabels: Record<string, string> = {
+              detecting_local: "Scanning local files",
+              detecting_remote: "Fetching remote files",
+              uploading: "Uploading",
+              downloading: "Downloading",
+              deleting: "Cleaning up",
+              complete: "Complete",
+              error: "Error",
+            };
+            s3SyncProgress = {
+              stage: stageLabels[stage] || stage,
+              percent,
+              message: message || "",
+            };
+          });
+        } catch (e) {
+          console.warn("Failed to listen for sync progress:", e);
+        }
+
+        const result = await invoke("sync_to_s3", {
+          workspacePath: workspacePath
+            ? workspacePath.substring(0, workspacePath.lastIndexOf("/"))
+            : null,
+          config: {
+            name: s3Config.name,
+            bucket: s3Config.bucket,
+            region: s3Config.region,
+            prefix: s3Config.prefix || null,
+            endpoint: s3Config.endpoint || null,
+            access_key: s3Config.access_key,
+            secret_key: s3Config.secret_key,
+          },
+        });
+
+        if (result.success) {
+          const parts = [];
+          if (result.files_uploaded > 0) parts.push(`${result.files_uploaded} uploaded`);
+          if (result.files_downloaded > 0) parts.push(`${result.files_downloaded} downloaded`);
+          if (result.files_deleted > 0) parts.push(`${result.files_deleted} deleted`);
+          const message = parts.length > 0 ? `Sync complete: ${parts.join(", ")}` : "Already in sync!";
+
+          s3SyncStatus = {
+            success: true,
+            message,
+            uploaded: result.files_uploaded,
+            downloaded: result.files_downloaded,
+            deleted: result.files_deleted,
+            conflicts: result.conflicts,
+          };
+          await saveS3ConfigToVault();
+        } else {
+          s3SyncStatus = {
+            success: false,
+            message: result.error || "Sync failed",
+          };
+        }
+      } else {
+        s3SyncStatus = {
+          success: false,
+          message: "S3 sync is only available in the desktop app",
+        };
+      }
+    } catch (e) {
+      s3SyncStatus = {
+        success: false,
+        message: e instanceof Error ? e.message : String(e),
+      };
+    } finally {
+      if (unlisten) unlisten();
+      s3IsSyncing = false;
+    }
+  }
 </script>
 
 <div class="space-y-3">
@@ -283,7 +389,7 @@
   </div>
 
   <!-- Actions -->
-  <div class="flex items-center gap-2 pt-2">
+  <div class="flex flex-wrap items-center gap-2 pt-2">
     <Button
       variant="outline"
       size="sm"
@@ -295,18 +401,35 @@
     <Button
       variant="default"
       size="sm"
+      onclick={syncToS3}
+      disabled={s3IsSyncing || s3IsBackingUp || !isConfigValid}
+    >
+      {#if s3IsSyncing}
+        <RefreshCw class="mr-2 size-4 animate-spin" />Syncing...
+      {:else}
+        <RefreshCw class="mr-2 size-4" />Sync Now
+      {/if}
+    </Button>
+    <Button
+      variant="outline"
+      size="sm"
       onclick={backupToS3}
-      disabled={s3IsBackingUp || !isConfigValid}
+      disabled={s3IsBackingUp || s3IsSyncing || !isConfigValid}
     >
       {#if s3IsBackingUp}
         <Loader2 class="mr-2 size-4 animate-spin" />Backing up...
       {:else}
-        Backup Now
+        <Upload class="mr-2 size-4" />Full Backup
       {/if}
     </Button>
   </div>
 
-  <!-- Progress -->
+  <!-- Sync explanation -->
+  <p class="text-xs text-muted-foreground">
+    <strong>Sync</strong> keeps local and cloud files in sync (bidirectional). <strong>Full Backup</strong> creates a one-time ZIP archive.
+  </p>
+
+  <!-- Backup Progress -->
   {#if s3IsBackingUp && s3BackupProgress.stage}
     <div class="space-y-1">
       <div class="flex items-center justify-between text-xs text-muted-foreground">
@@ -314,6 +437,17 @@
         <span>{s3BackupProgress.percent}%</span>
       </div>
       <Progress value={s3BackupProgress.percent} class="h-2" />
+    </div>
+  {/if}
+
+  <!-- Sync Progress -->
+  {#if s3IsSyncing && s3SyncProgress.stage}
+    <div class="space-y-1">
+      <div class="flex items-center justify-between text-xs text-muted-foreground">
+        <span>{s3SyncProgress.message || s3SyncProgress.stage}</span>
+        <span>{s3SyncProgress.percent}%</span>
+      </div>
+      <Progress value={s3SyncProgress.percent} class="h-2" />
     </div>
   {/if}
 
@@ -339,6 +473,49 @@
       {:else}
         <AlertCircle class="size-4 text-destructive" />
         <span class="text-destructive">{s3BackupStatus.message}</span>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Sync Status -->
+  {#if s3SyncStatus}
+    <div class="space-y-2">
+      <div class="flex items-center gap-2 text-sm">
+        {#if s3SyncStatus.success}
+          <Check class="size-4 text-green-500" />
+          <span class="text-green-600">{s3SyncStatus.message}</span>
+        {:else}
+          <AlertCircle class="size-4 text-destructive" />
+          <span class="text-destructive">{s3SyncStatus.message}</span>
+        {/if}
+      </div>
+
+      {#if s3SyncStatus.success && (s3SyncStatus.uploaded || s3SyncStatus.downloaded)}
+        <div class="flex items-center gap-4 text-xs text-muted-foreground">
+          {#if s3SyncStatus.uploaded}
+            <span class="flex items-center gap-1">
+              <Upload class="size-3" />{s3SyncStatus.uploaded} uploaded
+            </span>
+          {/if}
+          {#if s3SyncStatus.downloaded}
+            <span class="flex items-center gap-1">
+              <Download class="size-3" />{s3SyncStatus.downloaded} downloaded
+            </span>
+          {/if}
+        </div>
+      {/if}
+
+      {#if s3SyncStatus.conflicts && s3SyncStatus.conflicts.length > 0}
+        <div class="p-2 border border-yellow-500 rounded bg-yellow-50 dark:bg-yellow-950">
+          <p class="text-xs font-medium text-yellow-700 dark:text-yellow-400">
+            {s3SyncStatus.conflicts.length} conflict(s) detected:
+          </p>
+          <ul class="mt-1 text-xs text-yellow-600 dark:text-yellow-500">
+            {#each s3SyncStatus.conflicts as conflict}
+              <li>{conflict.path}</li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </div>
   {/if}

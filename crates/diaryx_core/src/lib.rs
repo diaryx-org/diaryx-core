@@ -54,6 +54,15 @@ pub mod workspace;
 #[cfg(feature = "crdt")]
 pub mod crdt;
 
+/// Cloud sync module for bidirectional file synchronization
+pub mod sync;
+
+// Re-export key sync types for convenience
+pub use sync::conflict::ConflictResolution;
+pub use sync::engine::CloudSyncProvider;
+pub use sync::manifest::SyncManifest;
+pub use sync::{CloudSyncResult, RemoteFileInfo};
+
 // Re-exports for backwards compatibility
 pub use utils::date;
 pub use utils::path as path_utils;

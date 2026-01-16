@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_tauri"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1694,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "diaryx_wasm"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "comrak",

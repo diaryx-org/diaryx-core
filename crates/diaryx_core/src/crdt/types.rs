@@ -3,9 +3,30 @@
 //! This module defines the data structures used to represent file metadata,
 //! binary attachments, and CRDT updates in the synchronization system.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
+
+/// Deserializes a value that should be a string, but may be an integer or other type.
+/// Converts non-string values to their string representation.
+fn deserialize_string_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(b.to_string())),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(other) => Err(D::Error::custom(format!(
+            "expected string or number, got {:?}",
+            other
+        ))),
+    }
+}
 
 /// Metadata for a file in the workspace CRDT.
 ///
@@ -15,6 +36,7 @@ use ts_rs::TS;
 #[ts(export, export_to = "bindings/")]
 pub struct FileMetadata {
     /// Display title from frontmatter
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub title: Option<String>,
 
     /// Absolute path to parent index file (e.g., "workspace/Daily/index.md")
@@ -33,6 +55,7 @@ pub struct FileMetadata {
     pub audience: Option<Vec<String>>,
 
     /// File description from frontmatter
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub description: Option<String>,
 
     /// Additional frontmatter properties not covered by other fields

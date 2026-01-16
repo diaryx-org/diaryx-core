@@ -23,20 +23,26 @@ const APP_DERIVED_PASSWORD = 'diaryx-vault-key-v1';
  */
 async function initCredentialStoreInternal(): Promise<boolean> {
   try {
+    console.log('[Credentials] Getting app data dir...');
     const dataDir = await appDataDir();
     const vaultPath = `${dataDir}/${VAULT_FILE}`;
-    
+    console.log('[Credentials] Loading Stronghold from:', vaultPath);
+
     strongholdInstance = await Stronghold.load(vaultPath, APP_DERIVED_PASSWORD);
-    
+    console.log('[Credentials] Stronghold loaded, getting client...');
+
     try {
       clientInstance = await strongholdInstance.loadClient(CLIENT_NAME);
+      console.log('[Credentials] Client loaded');
     } catch {
+      console.log('[Credentials] Creating new client...');
       clientInstance = await strongholdInstance.createClient(CLIENT_NAME);
+      console.log('[Credentials] Client created');
     }
-    
+
     return true;
   } catch (e) {
-    console.error('Failed to init credential store:', e);
+    console.error('[Credentials] Failed to init credential store:', e);
     return false;
   }
 }
@@ -136,10 +142,10 @@ export async function removeCredential(key: string): Promise<void> {
   await strongholdInstance.save();
 }
 
-// S3 specific helpers
-const S3_ACCESS_KEY = 's3_access_key';
-const S3_SECRET_KEY = 's3_secret_key';
-const S3_CONFIG = 's3_config';
+// S3 specific helpers - using localStorage for reliability
+const S3_ACCESS_KEY = 'diaryx_s3_access_key';
+const S3_SECRET_KEY = 'diaryx_s3_secret_key';
+const S3_CONFIG = 'diaryx_s3_config';
 
 export interface S3Config {
   name: string;
@@ -155,17 +161,17 @@ export interface S3Config {
  * Store S3 credentials (access key and secret key only).
  */
 export async function storeS3Credentials(accessKey: string, secretKey: string): Promise<void> {
-  await storeCredential(S3_ACCESS_KEY, accessKey);
-  await storeCredential(S3_SECRET_KEY, secretKey);
+  localStorage.setItem(S3_ACCESS_KEY, accessKey);
+  localStorage.setItem(S3_SECRET_KEY, secretKey);
 }
 
 /**
  * Get S3 credentials only.
  */
 export async function getS3Credentials(): Promise<{ accessKey: string; secretKey: string } | null> {
-  const accessKey = await getCredential(S3_ACCESS_KEY);
-  const secretKey = await getCredential(S3_SECRET_KEY);
-  
+  const accessKey = localStorage.getItem(S3_ACCESS_KEY);
+  const secretKey = localStorage.getItem(S3_SECRET_KEY);
+
   if (!accessKey || !secretKey) return null;
   return { accessKey, secretKey };
 }
@@ -182,11 +188,11 @@ export async function storeS3Config(config: S3Config): Promise<void> {
     prefix: config.prefix,
     endpoint: config.endpoint,
   };
-  await storeCredential(S3_CONFIG, JSON.stringify(configWithoutSecrets));
-  
+  localStorage.setItem(S3_CONFIG, JSON.stringify(configWithoutSecrets));
+
   // Store secrets separately
-  await storeCredential(S3_ACCESS_KEY, config.access_key);
-  await storeCredential(S3_SECRET_KEY, config.secret_key);
+  localStorage.setItem(S3_ACCESS_KEY, config.access_key);
+  localStorage.setItem(S3_SECRET_KEY, config.secret_key);
 }
 
 /**
@@ -194,12 +200,12 @@ export async function storeS3Config(config: S3Config): Promise<void> {
  */
 export async function getS3Config(): Promise<S3Config | null> {
   try {
-    const configJson = await getCredential(S3_CONFIG);
-    const accessKey = await getCredential(S3_ACCESS_KEY);
-    const secretKey = await getCredential(S3_SECRET_KEY);
-    
+    const configJson = localStorage.getItem(S3_CONFIG);
+    const accessKey = localStorage.getItem(S3_ACCESS_KEY);
+    const secretKey = localStorage.getItem(S3_SECRET_KEY);
+
     if (!configJson || !accessKey || !secretKey) return null;
-    
+
     const config = JSON.parse(configJson);
     return {
       ...config,
@@ -215,54 +221,55 @@ export async function getS3Config(): Promise<S3Config | null> {
  * Remove all S3 credentials and config.
  */
 export async function removeS3Credentials(): Promise<void> {
-  await removeCredential(S3_ACCESS_KEY);
-  await removeCredential(S3_SECRET_KEY);
-  await removeCredential(S3_CONFIG);
+  localStorage.removeItem(S3_ACCESS_KEY);
+  localStorage.removeItem(S3_SECRET_KEY);
+  localStorage.removeItem(S3_CONFIG);
 }
 
-// Google Drive specific helpers
-const GD_REFRESH_TOKEN = 'gd_refresh_token';
-const GD_FOLDER_ID = 'gd_folder_id';
-const GD_CLIENT_ID = 'gd_client_id';
-const GD_CLIENT_SECRET = 'gd_client_secret';
+// Google Drive specific helpers - using localStorage for reliability
+// (Stronghold has async context issues that cause hangs/panics)
+const GD_REFRESH_TOKEN = 'diaryx_gd_refresh_token';
+const GD_FOLDER_ID = 'diaryx_gd_folder_id';
+const GD_CLIENT_ID = 'diaryx_gd_client_id';
+const GD_CLIENT_SECRET = 'diaryx_gd_client_secret';
 
 /**
  * Store Google Drive refresh token.
  */
 export async function storeGoogleDriveRefreshToken(token: string): Promise<void> {
-  await storeCredential(GD_REFRESH_TOKEN, token);
+  localStorage.setItem(GD_REFRESH_TOKEN, token);
 }
 
 /**
  * Get Google Drive refresh token.
  */
 export async function getGoogleDriveRefreshToken(): Promise<string | null> {
-  return await getCredential(GD_REFRESH_TOKEN);
+  return localStorage.getItem(GD_REFRESH_TOKEN);
 }
 
 /**
  * Store Google Drive folder ID.
  */
 export async function storeGoogleDriveFolderId(folderId: string): Promise<void> {
-  await storeCredential(GD_FOLDER_ID, folderId);
+  localStorage.setItem(GD_FOLDER_ID, folderId);
 }
 
 /**
  * Get Google Drive folder ID.
  */
 export async function getGoogleDriveFolderId(): Promise<string | null> {
-  return await getCredential(GD_FOLDER_ID);
+  return localStorage.getItem(GD_FOLDER_ID);
 }
 
 /**
  * Store Google Client ID and Secret.
  */
 export async function storeGoogleDriveCredentials(clientId: string, clientSecret?: string): Promise<void> {
-  await storeCredential(GD_CLIENT_ID, clientId);
+  localStorage.setItem(GD_CLIENT_ID, clientId);
   if (clientSecret) {
-    await storeCredential(GD_CLIENT_SECRET, clientSecret);
+    localStorage.setItem(GD_CLIENT_SECRET, clientSecret);
   } else {
-    await removeCredential(GD_CLIENT_SECRET);
+    localStorage.removeItem(GD_CLIENT_SECRET);
   }
 }
 
@@ -270,8 +277,8 @@ export async function storeGoogleDriveCredentials(clientId: string, clientSecret
  * Get Google Client ID and Secret.
  */
 export async function getGoogleDriveCredentials(): Promise<{ clientId: string | null; clientSecret: string | null }> {
-  const clientId = await getCredential(GD_CLIENT_ID);
-  const clientSecret = await getCredential(GD_CLIENT_SECRET);
+  const clientId = localStorage.getItem(GD_CLIENT_ID);
+  const clientSecret = localStorage.getItem(GD_CLIENT_SECRET);
   return { clientId, clientSecret };
 }
 
@@ -279,16 +286,16 @@ export async function getGoogleDriveCredentials(): Promise<{ clientId: string | 
  * Remove all Google Drive credentials.
  */
 export async function removeGoogleDriveCredentials(): Promise<void> {
-  await removeCredential(GD_REFRESH_TOKEN);
-  await removeCredential(GD_FOLDER_ID);
-  await removeCredential(GD_CLIENT_ID);
-  await removeCredential(GD_CLIENT_SECRET);
+  localStorage.removeItem(GD_REFRESH_TOKEN);
+  localStorage.removeItem(GD_FOLDER_ID);
+  localStorage.removeItem(GD_CLIENT_ID);
+  localStorage.removeItem(GD_CLIENT_SECRET);
 }
 
-// Live Sync specific helpers
-const SYNC_SERVER_URL = 'sync_server_url';
-const SYNC_WORKSPACE_ID = 'sync_workspace_id';
-const SYNC_ENABLED = 'sync_enabled';
+// Live Sync specific helpers - using localStorage for reliability
+const SYNC_SERVER_URL = 'diaryx_sync_server_url';
+const SYNC_WORKSPACE_ID = 'diaryx_sync_workspace_id';
+const SYNC_ENABLED = 'diaryx_sync_enabled';
 
 export interface SyncConfig {
   serverUrl: string;
@@ -300,9 +307,9 @@ export interface SyncConfig {
  * Store sync configuration.
  */
 export async function storeSyncConfig(config: SyncConfig): Promise<void> {
-  await storeCredential(SYNC_SERVER_URL, config.serverUrl);
-  await storeCredential(SYNC_WORKSPACE_ID, config.workspaceId);
-  await storeCredential(SYNC_ENABLED, config.enabled ? 'true' : 'false');
+  localStorage.setItem(SYNC_SERVER_URL, config.serverUrl);
+  localStorage.setItem(SYNC_WORKSPACE_ID, config.workspaceId);
+  localStorage.setItem(SYNC_ENABLED, config.enabled ? 'true' : 'false');
 }
 
 /**
@@ -310,12 +317,12 @@ export async function storeSyncConfig(config: SyncConfig): Promise<void> {
  */
 export async function getSyncConfig(): Promise<SyncConfig | null> {
   try {
-    const serverUrl = await getCredential(SYNC_SERVER_URL);
-    const workspaceId = await getCredential(SYNC_WORKSPACE_ID);
-    const enabled = await getCredential(SYNC_ENABLED);
-    
+    const serverUrl = localStorage.getItem(SYNC_SERVER_URL);
+    const workspaceId = localStorage.getItem(SYNC_WORKSPACE_ID);
+    const enabled = localStorage.getItem(SYNC_ENABLED);
+
     if (!serverUrl && !workspaceId) return null;
-    
+
     return {
       serverUrl: serverUrl || '',
       workspaceId: workspaceId || '',
@@ -330,7 +337,7 @@ export async function getSyncConfig(): Promise<SyncConfig | null> {
  * Remove sync configuration.
  */
 export async function removeSyncConfig(): Promise<void> {
-  await removeCredential(SYNC_SERVER_URL);
-  await removeCredential(SYNC_WORKSPACE_ID);
-  await removeCredential(SYNC_ENABLED);
+  localStorage.removeItem(SYNC_SERVER_URL);
+  localStorage.removeItem(SYNC_WORKSPACE_ID);
+  localStorage.removeItem(SYNC_ENABLED);
 }
