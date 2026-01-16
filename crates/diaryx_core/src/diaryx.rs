@@ -842,7 +842,10 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
 
                 // Also send our state vector
                 let our_sv = self.crdt.encode_state_vector();
-                log::debug!("[Y-sync] Workspace: Our state_vector {} bytes", our_sv.len());
+                log::debug!(
+                    "[Y-sync] Workspace: Our state_vector {} bytes",
+                    our_sv.len()
+                );
                 let step1 = crate::crdt::SyncMessage::SyncStep1(our_sv).encode();
 
                 let mut combined = step2;

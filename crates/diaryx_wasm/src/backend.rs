@@ -525,7 +525,7 @@ impl DiaryxBackend {
     // ========================================================================
 
     /// Read binary file.
-    /// 
+    ///
     /// Returns data as Uint8Array for efficient handling without base64 encoding.
     #[wasm_bindgen(js_name = "readBinary")]
     pub fn read_binary(&self, path: String) -> Promise {
@@ -541,7 +541,7 @@ impl DiaryxBackend {
     }
 
     /// Write binary file.
-    /// 
+    ///
     /// Accepts Uint8Array for efficient handling without base64 encoding.
     #[wasm_bindgen(js_name = "writeBinary")]
     pub fn write_binary(&self, path: String, data: js_sys::Uint8Array) -> Promise {

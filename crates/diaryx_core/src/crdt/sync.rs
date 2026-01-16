@@ -259,7 +259,7 @@ impl SyncMessage {
                 return Err(DiaryxError::Crdt(format!(
                     "Unknown sync type: {}",
                     sync_type_val
-                )))
+                )));
             }
         };
 
@@ -302,7 +302,10 @@ impl SyncMessage {
             offset += consumed;
         }
 
-        log::debug!("[Y-sync] Decoded {} sub-messages from combined message", messages.len());
+        log::debug!(
+            "[Y-sync] Decoded {} sub-messages from combined message",
+            messages.len()
+        );
         Ok(messages)
     }
 }
@@ -532,7 +535,10 @@ impl BodySyncProtocol {
                 }
                 SyncMessage::SyncStep2(update) => {
                     if !update.is_empty() {
-                        log::debug!("[Y-sync Body] Applying SyncStep2 update, {} bytes", update.len());
+                        log::debug!(
+                            "[Y-sync Body] Applying SyncStep2 update, {} bytes",
+                            update.len()
+                        );
                         self.apply_update(&update)?;
                     }
                 }
