@@ -723,11 +723,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     visited_dirs.insert(dir.to_path_buf());
 
                     // Skip hidden directories
-                    if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-                        if is_hidden_component(name) {
+                    if let Some(name) = dir.file_name().and_then(|n| n.to_str())
+                        && is_hidden_component(name) {
                             return;
                         }
-                    }
 
                     let entries = match fs.list_files(dir).await {
                         Ok(e) => e,
@@ -736,11 +735,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                     for entry_path in entries {
                         // Skip hidden files/dirs
-                        if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                            if is_hidden_component(name) {
+                        if let Some(name) = entry_path.file_name().and_then(|n| n.to_str())
+                            && is_hidden_component(name) {
                                 continue;
                             }
-                        }
 
                         if fs.is_dir(&entry_path).await {
                             // Recurse into subdirectory
