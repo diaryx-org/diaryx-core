@@ -64,6 +64,7 @@
     onHistoryRestore?: () => void;
     // Share props
     onBeforeHost?: () => Promise<void>;
+    onOpenEntry?: (path: string) => Promise<void>;
   }
 
   let {
@@ -82,6 +83,7 @@
     rustApi = null,
     onHistoryRestore,
     onBeforeHost,
+    onOpenEntry,
   }: Props = $props();
 
   // Tab state: "properties" | "history" | "share"
@@ -885,7 +887,7 @@
       {/if}
     {:else if activeTab === "share"}
       <!-- Share Tab -->
-      <ShareTab {onBeforeHost} />
+      <ShareTab {onBeforeHost} {onOpenEntry} />
     {/if}
   </div>
 

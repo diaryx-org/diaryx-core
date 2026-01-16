@@ -30,10 +30,6 @@
     readableLineLength?: boolean;
     focusMode?: boolean;
     workspacePath?: string | null;
-    collaborationEnabled?: boolean;
-    collaborationConnected?: boolean;
-    onCollaborationToggle?: (enabled: boolean) => void;
-    onCollaborationReconnect?: () => void;
   }
 
   let {
@@ -45,10 +41,6 @@
     readableLineLength = $bindable(true),
     focusMode = $bindable(true),
     workspacePath = null,
-    collaborationEnabled = $bindable(false),
-    collaborationConnected = false,
-    onCollaborationToggle,
-    onCollaborationReconnect,
   }: Props = $props();
 
   const mobileState = getMobileState();
@@ -72,13 +64,8 @@
     <!-- Storage Settings -->
     <StorageSettings />
 
-    <!-- Live Sync Settings -->
-    <SyncSettings
-      bind:collaborationEnabled
-      {collaborationConnected}
-      {onCollaborationToggle}
-      {onCollaborationReconnect}
-    />
+    <!-- Collaboration Server Settings -->
+    <SyncSettings />
 
     <!-- Backup Section -->
     <BackupSettings {workspacePath} />

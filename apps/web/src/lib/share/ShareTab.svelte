@@ -28,9 +28,11 @@
     onSessionEnd?: () => void;
     /** Called before hosting to populate CRDT with current files */
     onBeforeHost?: () => Promise<void>;
+    /** Called to open an entry by path */
+    onOpenEntry?: (path: string) => Promise<void>;
   }
 
-  let { onSessionStart, onSessionEnd, onBeforeHost }: Props = $props();
+  let { onSessionStart, onSessionEnd, onBeforeHost, onOpenEntry }: Props = $props();
 
   // Local state
   let joinCodeInput = $state("");
@@ -114,6 +116,12 @@
       // Clear the current entry since the guest path is no longer valid
       entryStore.setCurrentEntry(null);
       entryStore.setDisplayContent("");
+
+      // Open the root entry of the restored tree
+      const restoredTree = workspaceStore.tree;
+      if (restoredTree && onOpenEntry) {
+        await onOpenEntry(restoredTree.path);
+      }
     }
 
     onSessionEnd?.();

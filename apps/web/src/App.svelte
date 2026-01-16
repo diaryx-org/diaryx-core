@@ -11,15 +11,10 @@
     getCollaborationServer,
     getCollaborativeDocument,
     releaseDocument,
-    releaseAllDocuments,
-    disconnectAll,
-    reconnectAll,
     cleanup as cleanupCollaboration,
   } from "./lib/crdt/collaborationBridge";
   import {
     disconnectWorkspace,
-    reconnectWorkspace,
-    destroyWorkspace,
     setWorkspaceServer,
     setWorkspaceId,
     setBackendApi,
@@ -107,7 +102,6 @@
   let tree = $derived(workspaceStore.tree);
   let expandedNodes = $derived(workspaceStore.expandedNodes);
   let validationResult = $derived(workspaceStore.validationResult);
-  let workspaceCrdtInitialized = $derived(workspaceStore.workspaceCrdtInitialized);
   let workspaceId = $derived(workspaceStore.workspaceId);
   let backend = $derived(workspaceStore.backend);
   let showUnlinkedFiles = $derived(workspaceStore.showUnlinkedFiles);
@@ -126,7 +120,6 @@
   // Collaboration state - proxied from collaborationStore
   let currentCollaborationPath = $derived(collaborationStore.currentCollaborationPath);
   let collaborationEnabled = $derived(collaborationStore.collaborationEnabled);
-  let collaborationConnected = $derived(collaborationStore.collaborationConnected);
   let collaborationServerUrl = $derived(collaborationStore.collaborationServerUrl);
 
   // Current YDocProxy for syncing local edits
@@ -250,6 +243,13 @@
         if (crdtTree) {
           console.log('[App] Setting tree from CRDT:', crdtTree);
           workspaceStore.setTree(crdtTree);
+
+          // If we're a guest in a share session, automatically open the root entry
+          if (shareSessionStore.isGuest) {
+            console.log('[App] Guest session - opening root entry:', crdtTree.path);
+            workspaceStore.expandNode(crdtTree.path);
+            await openEntry(crdtTree.path);
+          }
         } else {
           console.log('[App] No CRDT tree available, falling back to filesystem refresh');
           await refreshTree();
@@ -448,7 +448,7 @@
       setWorkspaceId(workspaceId);
 
       // Initialize workspace CRDT using service with Rust API
-      workspaceCrdtInitialized = await initializeWorkspaceCrdt(
+      const initialized = await initializeWorkspaceCrdt(
         workspaceId,
         workspacePath,
         collaborationServerUrl,
@@ -461,9 +461,10 @@
           },
         },
       );
+      workspaceStore.setWorkspaceCrdtInitialized(initialized);
     } catch (e) {
       console.error("[App] Failed to initialize workspace CRDT:", e);
-      workspaceCrdtInitialized = false;
+      workspaceStore.setWorkspaceCrdtInitialized(false);
     }
   }
 
@@ -701,75 +702,6 @@
   }
 
   // Keyboard shortcuts
-  // Collaboration handlers
-  async function handleCollaborationToggle(enabled: boolean) {
-    collaborationStore.setEnabled(enabled);
-
-    if (enabled) {
-      // Reconnect with the current server URL
-      if (collaborationServerUrl) {
-        setCollaborationServer(collaborationServerUrl);
-        await setWorkspaceServer(collaborationServerUrl);
-      }
-      // Re-initialize workspace CRDT if needed
-      if (!workspaceCrdtInitialized && !workspaceCrdtDisabled) {
-        await setupWorkspaceCrdt();
-      } else {
-        reconnectWorkspace();
-        reconnectAll(); // Also reconnect per-file documents
-      }
-      // Refresh current entry to establish collaboration
-      if (currentEntry) {
-        await openEntry(currentEntry.path);
-      }
-    } else {
-      // Disconnect collaboration
-      collaborationStore.setConnected(false);
-      disconnectWorkspace();
-      disconnectAll(); // Disconnect all per-file documents
-      if (currentCollaborationPath) {
-        collaborationStore.clearCollaborationSession();
-        currentYDocProxy = null;
-      }
-      // Refresh current entry without collaboration
-      if (currentEntry) {
-        await openEntry(currentEntry.path);
-      }
-    }
-  }
-
-  async function handleCollaborationReconnect() {
-    if (!collaborationEnabled) return;
-
-    // Reload server URL from localStorage in case it was updated
-    const savedUrl = localStorage.getItem("diaryx-sync-server");
-    if (savedUrl) {
-      collaborationStore.setServerUrl(savedUrl);
-      setCollaborationServer(savedUrl);
-      await setWorkspaceServer(savedUrl);
-    }
-
-    // Disconnect and reconnect
-    collaborationStore.setConnected(false);
-    disconnectWorkspace();
-    disconnectAll(); // Disconnect all per-file documents
-    collaborationStore.clearCollaborationSession();
-    currentYDocProxy = null;
-
-    // Re-initialize
-    if (!workspaceCrdtDisabled) {
-      await destroyWorkspace();
-      await releaseAllDocuments(); // Release all document sessions
-      workspaceStore.setWorkspaceCrdtInitialized(false);
-      await setupWorkspaceCrdt();
-    }
-
-    // Refresh current entry
-    if (currentEntry) {
-      await openEntry(currentEntry.path);
-    }
-  }
-
   function handleKeydown(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key === "s") {
       event.preventDefault();
@@ -1577,10 +1509,6 @@
   bind:readableLineLength
   bind:focusMode
   workspacePath={tree?.path}
-  bind:collaborationEnabled
-  {collaborationConnected}
-  onCollaborationToggle={handleCollaborationToggle}
-  onCollaborationReconnect={handleCollaborationReconnect}
 />
 
 <!-- Export Dialog -->
@@ -1707,6 +1635,7 @@
       }
     }}
     onBeforeHost={populateCrdtBeforeHost}
+    onOpenEntry={async (path) => await openEntry(path)}
   />
 </div>
 
