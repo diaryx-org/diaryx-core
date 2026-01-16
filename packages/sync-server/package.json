@@ -12,5 +12,8 @@
     "build": "tsc",
     "start": "node dist/server.js"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "yjs": "^13.6.29"
+  }
 }
