@@ -15,6 +15,10 @@ import type { TreeNode, ValidationResultWithMeta, Backend } from '$lib/backend';
 let tree = $state<TreeNode | null>(null);
 let expandedNodes = $state(new Set<string>());
 
+// Saved tree state for session restoration (when guest leaves a session)
+let savedTree = $state<TreeNode | null>(null);
+let savedExpandedNodes = $state<Set<string> | null>(null);
+
 // Validation
 let validationResult = $state<ValidationResultWithMeta | null>(null);
 
@@ -206,6 +210,51 @@ export function getWorkspaceStore() {
         localStorage.setItem('diaryx-show-unlinked-files', String(showUnlinkedFiles));
         localStorage.setItem('diaryx-show-hidden-files', String(showHiddenFiles));
       }
+    },
+
+    // Session state management (for guest sessions)
+    /**
+     * Save the current tree state before joining a session.
+     * Call this before joining a share session as a guest.
+     */
+    saveTreeState() {
+      console.log('[WorkspaceStore] Saving tree state before session');
+      savedTree = tree;
+      savedExpandedNodes = new Set(expandedNodes);
+    },
+
+    /**
+     * Restore the previously saved tree state.
+     * Call this when leaving a share session as a guest.
+     * Returns true if state was restored, false if no saved state.
+     */
+    restoreTreeState(): boolean {
+      if (savedTree) {
+        console.log('[WorkspaceStore] Restoring saved tree state');
+        tree = savedTree;
+        expandedNodes = savedExpandedNodes ?? new Set();
+        savedTree = null;
+        savedExpandedNodes = null;
+        return true;
+      }
+      console.log('[WorkspaceStore] No saved tree state to restore');
+      return false;
+    },
+
+    /**
+     * Clear saved tree state without restoring.
+     * Call this if the session ended abnormally.
+     */
+    clearSavedTreeState() {
+      savedTree = null;
+      savedExpandedNodes = null;
+    },
+
+    /**
+     * Check if there's a saved tree state.
+     */
+    hasSavedTreeState(): boolean {
+      return savedTree !== null;
     },
   };
 }

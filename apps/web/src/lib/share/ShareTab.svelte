@@ -20,6 +20,7 @@
     endShareSession,
   } from "@/models/services/shareService";
   import { workspaceStore } from "@/models/stores/workspaceStore.svelte";
+  import { entryStore } from "@/models/stores/entryStore.svelte";
 
   // Props
   interface Props {
@@ -85,11 +86,16 @@
 
     isJoining = true;
     try {
+      // Save current tree state before joining so we can restore it when leaving
+      workspaceStore.saveTreeState();
+
       await joinShareSession(joinCodeInput.trim());
       joinCodeInput = "";
       onSessionStart?.();
     } catch (e) {
       console.error("[ShareTab] Failed to join session:", e);
+      // Clear saved state if join failed
+      workspaceStore.clearSavedTreeState();
     } finally {
       isJoining = false;
     }
@@ -97,7 +103,19 @@
 
   // Handle ending session
   async function handleEndSession() {
+    // Check if we were a guest before ending (mode will be cleared after)
+    const wasGuest = mode === "guest";
+
     await endShareSession();
+
+    // Restore previous workspace tree if we were a guest
+    if (wasGuest) {
+      workspaceStore.restoreTreeState();
+      // Clear the current entry since the guest path is no longer valid
+      entryStore.setCurrentEntry(null);
+      entryStore.setDisplayContent("");
+    }
+
     onSessionEnd?.();
   }
 

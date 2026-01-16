@@ -24,6 +24,7 @@
     setWorkspaceId,
     setBackendApi,
     onSessionSync,
+    onBodyChange,
     getTreeFromCrdt,
     populateCrdtFromFiles,
     updateFileBodyInYDoc,
@@ -252,6 +253,18 @@
         } else {
           console.log('[App] No CRDT tree available, falling back to filesystem refresh');
           await refreshTree();
+        }
+      });
+
+      // Register callback to reload editor when remote body changes arrive
+      onBodyChange(async (path, body) => {
+        console.log('[App] Body change received for:', path, 'current entry:', currentEntry?.path);
+        // Only update if this is the currently open file
+        if (currentEntry && path === currentEntry.path) {
+          console.log('[App] Updating display content with remote body, length:', body.length);
+          // Transform attachment paths to blob URLs for display
+          const transformed = await transformAttachmentPaths(body, path, api);
+          entryStore.setDisplayContent(transformed);
         }
       });
 

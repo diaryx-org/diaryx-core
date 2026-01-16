@@ -81,6 +81,10 @@ const fileChangeCallbacks = new Set<FileChangeCallback>();
 type SessionSyncCallback = () => void;
 const sessionSyncCallbacks = new Set<SessionSyncCallback>();
 
+// Body change callbacks - called when a file's body content changes remotely
+type BodyChangeCallback = (path: string, body: string) => void;
+const bodyChangeCallbacks = new Set<BodyChangeCallback>();
+
 // ===========================================================================
 // Configuration
 // ===========================================================================
@@ -243,6 +247,10 @@ async function applyIncrementalUpdateToRust(_update: Uint8Array): Promise<void> 
         } catch (e) {
           console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
         }
+
+        // Notify about body change so the editor can reload if this is the current file
+        // Pass storage path so the listener can match directly against currentEntry.path
+        notifyBodyChange(storagePath, body);
       }
 
       notifyFileChange(path, metadata);
@@ -321,6 +329,10 @@ async function syncFullStateToRust(): Promise<void> {
         } catch (e) {
           console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
         }
+
+        // Notify about body change so the editor can reload if this is the current file
+        // Pass storage path so the listener can match directly against currentEntry.path
+        notifyBodyChange(storagePath, body);
       }
 
       notifyFileChange(path, metadata);
@@ -1451,6 +1463,33 @@ export function onFileChange(callback: FileChangeCallback): () => void {
 export function onSessionSync(callback: SessionSyncCallback): () => void {
   sessionSyncCallbacks.add(callback);
   return () => sessionSyncCallbacks.delete(callback);
+}
+
+/**
+ * Subscribe to file body changes.
+ * Called when a file's body content changes remotely (from another session participant).
+ * Use this to reload the editor when the current file's content changes.
+ *
+ * @param callback - Receives the canonical path and new body content
+ * @returns Unsubscribe function
+ */
+export function onBodyChange(callback: BodyChangeCallback): () => void {
+  bodyChangeCallbacks.add(callback);
+  return () => bodyChangeCallbacks.delete(callback);
+}
+
+/**
+ * Notify all body change callbacks.
+ */
+function notifyBodyChange(path: string, body: string): void {
+  console.log('[WorkspaceCrdtBridge] Notifying body change callbacks, path:', path, 'callbacks:', bodyChangeCallbacks.size);
+  for (const callback of bodyChangeCallbacks) {
+    try {
+      callback(path, body);
+    } catch (error) {
+      console.error('[WorkspaceCrdtBridge] Body change callback error:', error);
+    }
+  }
 }
 
 /**
