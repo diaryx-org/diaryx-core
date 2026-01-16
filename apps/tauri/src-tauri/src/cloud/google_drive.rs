@@ -340,9 +340,10 @@ impl GoogleDriveTarget {
 
         if let Some(files) = result["files"].as_array()
             && let Some(folder) = files.first()
-                && let Some(id) = folder["id"].as_str() {
-                    return Ok(id.to_string());
-                }
+            && let Some(id) = folder["id"].as_str()
+        {
+            return Ok(id.to_string());
+        }
 
         // Create folder
         let mut metadata = serde_json::json!({
@@ -398,11 +399,12 @@ impl GoogleDriveTarget {
         let mut current_parent_id = sync_folder_id.to_string();
         for component in parent_path.components() {
             if let std::path::Component::Normal(name) = component
-                && let Some(name_str) = name.to_str() {
-                    current_parent_id = self
-                        .get_or_create_folder(name_str, Some(&current_parent_id))
-                        .await?;
-                }
+                && let Some(name_str) = name.to_str()
+            {
+                current_parent_id = self
+                    .get_or_create_folder(name_str, Some(&current_parent_id))
+                    .await?;
+            }
         }
 
         Ok(current_parent_id)
@@ -453,9 +455,10 @@ impl GoogleDriveTarget {
 
         if let Some(files) = result["files"].as_array()
             && let Some(file) = files.first()
-                && let Some(id) = file["id"].as_str() {
-                    return Ok(Some(id.to_string()));
-                }
+            && let Some(id) = file["id"].as_str()
+        {
+            return Ok(Some(id.to_string()));
+        }
 
         Ok(None)
     }

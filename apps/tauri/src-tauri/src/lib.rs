@@ -79,6 +79,8 @@ pub fn run() {
             commands::sync_to_google_drive,
             commands::get_sync_status,
             commands::resolve_sync_conflict,
+            // Export
+            commands::export_to_zip,
             // Import (file picker dialogs)
             commands::import_from_zip,
             commands::pick_and_import_zip,

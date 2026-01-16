@@ -1777,6 +1777,158 @@ pub async fn finish_import_upload(
 }
 
 // ============================================================================
+// Export Commands
+// ============================================================================
+
+/// Export result
+#[derive(Debug, Serialize)]
+pub struct ExportResult {
+    pub success: bool,
+    pub files_exported: usize,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+    pub cancelled: bool,
+}
+
+/// Export workspace to a zip file using native save dialog
+#[tauri::command]
+pub async fn export_to_zip<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+) -> Result<ExportResult, SerializableError> {
+    use diaryx_core::fs::FileSystem;
+    use std::io::Write;
+    use tauri_plugin_dialog::DialogExt;
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or(paths.default_workspace);
+
+    // Get workspace name for default filename
+    let workspace_name = workspace
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d");
+    let default_filename = format!("{}-{}.zip", workspace_name, timestamp);
+
+    // Show native save dialog
+    let save_path = app
+        .dialog()
+        .file()
+        .add_filter("Zip Archive", &["zip"])
+        .set_file_name(&default_filename)
+        .set_title("Export Workspace to Zip")
+        .blocking_save_file();
+
+    let output_path = match save_path {
+        Some(path) => path.into_path().map_err(|e| SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!("Failed to get save path: {:?}", e),
+            path: None,
+        })?,
+        None => {
+            // User cancelled
+            return Ok(ExportResult {
+                success: false,
+                files_exported: 0,
+                output_path: None,
+                error: None,
+                cancelled: true,
+            });
+        }
+    };
+
+    log::info!(
+        "[Export] Exporting workspace {:?} to {:?}",
+        workspace,
+        output_path
+    );
+
+    // Create zip file
+    let file = std::fs::File::create(&output_path).map_err(|e| SerializableError {
+        kind: "ExportError".to_string(),
+        message: format!("Failed to create zip file: {}", e),
+        path: Some(output_path.clone()),
+    })?;
+
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(6));
+
+    let fs = RealFileSystem;
+
+    // Get all files in workspace
+    let all_files = fs
+        .list_all_files_recursive(&workspace)
+        .map_err(|e| SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!("Failed to list files: {}", e),
+            path: None,
+        })?;
+
+    let mut files_exported = 0;
+
+    for file_path in all_files {
+        // Skip hidden files and directories
+        let relative_path =
+            pathdiff::diff_paths(&file_path, &workspace).unwrap_or_else(|| file_path.clone());
+
+        let should_skip = relative_path
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+
+        if should_skip {
+            continue;
+        }
+
+        let relative_str = relative_path.to_string_lossy().to_string();
+
+        // Read file content
+        let content = match fs.read_binary(&file_path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("[Export] Failed to read {:?}: {}", file_path, e);
+                continue;
+            }
+        };
+
+        // Add to zip
+        if let Err(e) = zip.start_file(&relative_str, options) {
+            log::warn!("[Export] Failed to start zip entry {}: {}", relative_str, e);
+            continue;
+        }
+
+        if let Err(e) = zip.write_all(&content) {
+            log::warn!("[Export] Failed to write zip entry {}: {}", relative_str, e);
+            continue;
+        }
+
+        files_exported += 1;
+    }
+
+    zip.finish().map_err(|e| SerializableError {
+        kind: "ExportError".to_string(),
+        message: format!("Failed to finalize zip: {}", e),
+        path: Some(output_path.clone()),
+    })?;
+
+    log::info!("[Export] Complete: {} files exported", files_exported);
+
+    Ok(ExportResult {
+        success: true,
+        files_exported,
+        output_path: Some(output_path.to_string_lossy().to_string()),
+        error: None,
+        cancelled: false,
+    })
+}
+
+// ============================================================================
 // Cloud Sync Commands
 // ============================================================================
 

@@ -674,70 +674,107 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 root_path,
                 audience: _,
             } => {
-                // Collect all binary attachments from workspace
-                let ws = self.workspace().inner();
+                // Collect all non-hidden binary files from workspace
                 let root_index = Path::new(&root_path);
                 let root_dir = root_index.parent().unwrap_or(root_index);
 
                 let mut attachments = Vec::new();
-                let mut visited = std::collections::HashSet::new();
+                let mut visited_dirs = std::collections::HashSet::new();
 
-                async fn collect_attachments<FS: AsyncFileSystem>(
-                    ws: &crate::workspace::Workspace<FS>,
-                    path: &Path,
+                // Helper to check if a file is a binary attachment (not markdown)
+                fn is_binary_file(path: &Path) -> bool {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase());
+
+                    match ext.as_deref() {
+                        // Text/markdown files - not binary
+                        Some("md" | "txt" | "json" | "yaml" | "yml" | "toml") => false,
+                        // Common binary formats
+                        Some(
+                            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "bmp" | "pdf"
+                            | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "mp3" | "mp4"
+                            | "wav" | "ogg" | "flac" | "m4a" | "aac" | "mov" | "avi" | "mkv"
+                            | "webm" | "zip" | "tar" | "gz" | "rar" | "7z" | "ttf" | "otf" | "woff"
+                            | "woff2" | "sqlite" | "db",
+                        ) => true,
+                        // Unknown extension - check if it looks like a text file
+                        _ => false,
+                    }
+                }
+
+                // Helper to check if a path component is hidden
+                fn is_hidden_component(name: &str) -> bool {
+                    name.starts_with('.')
+                }
+
+                // Recursively collect binary files from a directory
+                async fn collect_binaries_recursive<FS: AsyncFileSystem>(
+                    fs: &FS,
+                    dir: &Path,
                     root_dir: &Path,
                     attachments: &mut Vec<crate::command::BinaryExportFile>,
-                    visited: &mut std::collections::HashSet<PathBuf>,
+                    visited_dirs: &mut std::collections::HashSet<PathBuf>,
                 ) {
-                    if visited.contains(path) {
+                    if visited_dirs.contains(dir) {
                         return;
                     }
-                    visited.insert(path.to_path_buf());
+                    visited_dirs.insert(dir.to_path_buf());
 
-                    if let Ok(index) = ws.parse_index(path).await {
-                        // Check for _attachments folder
-                        if let Some(entry_dir) = path.parent() {
-                            let attachments_dir = entry_dir.join("_attachments");
-                            if ws.fs_ref().is_dir(&attachments_dir).await
-                                && let Ok(entries) = ws.fs_ref().list_files(&attachments_dir).await
-                            {
-                                for entry_path in entries {
-                                    if !ws.fs_ref().is_dir(&entry_path).await
-                                        && let Ok(data) = ws.fs_ref().read_binary(&entry_path).await
-                                    {
-                                        let relative_path =
-                                            pathdiff::diff_paths(&entry_path, root_dir)
-                                                .unwrap_or_else(|| entry_path.clone());
-                                        attachments.push(crate::command::BinaryExportFile {
-                                            path: relative_path.to_string_lossy().to_string(),
-                                            data,
-                                        });
-                                    }
-                                }
+                    // Skip hidden directories
+                    if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+                        if is_hidden_component(name) {
+                            return;
+                        }
+                    }
+
+                    let entries = match fs.list_files(dir).await {
+                        Ok(e) => e,
+                        Err(_) => return,
+                    };
+
+                    for entry_path in entries {
+                        // Skip hidden files/dirs
+                        if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            if is_hidden_component(name) {
+                                continue;
                             }
                         }
 
-                        // Recurse into children
-                        if index.frontmatter.is_index() {
-                            for child_rel in index.frontmatter.contents_list() {
-                                let child_path = index.resolve_path(child_rel);
-                                if ws.fs_ref().exists(&child_path).await {
-                                    Box::pin(collect_attachments(
-                                        ws,
-                                        &child_path,
-                                        root_dir,
-                                        attachments,
-                                        visited,
-                                    ))
-                                    .await;
-                                }
+                        if fs.is_dir(&entry_path).await {
+                            // Recurse into subdirectory
+                            Box::pin(collect_binaries_recursive(
+                                fs,
+                                &entry_path,
+                                root_dir,
+                                attachments,
+                                visited_dirs,
+                            ))
+                            .await;
+                        } else if is_binary_file(&entry_path) {
+                            // Read and add binary file
+                            if let Ok(data) = fs.read_binary(&entry_path).await {
+                                let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
+                                    .unwrap_or_else(|| entry_path.clone());
+                                attachments.push(crate::command::BinaryExportFile {
+                                    path: relative_path.to_string_lossy().to_string(),
+                                    data,
+                                });
                             }
                         }
                     }
                 }
 
-                collect_attachments(&ws, root_index, root_dir, &mut attachments, &mut visited)
-                    .await;
+                collect_binaries_recursive(
+                    self.fs(),
+                    root_dir,
+                    root_dir,
+                    &mut attachments,
+                    &mut visited_dirs,
+                )
+                .await;
+
                 Ok(Response::BinaryFiles(attachments))
             }
 

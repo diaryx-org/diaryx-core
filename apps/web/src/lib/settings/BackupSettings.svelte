@@ -1,14 +1,14 @@
 <script lang="ts">
   /**
-   * BackupSettings - Backup and export settings section
+   * BackupSettings - Export workspace to zip file
    *
-   * Extracted from SettingsDialog for modularity.
+   * On Tauri: Uses native file save dialog
+   * On Web: Downloads via browser
    */
   import { Button } from "$lib/components/ui/button";
-  import { Save, Download, Loader2, Check, AlertCircle } from "@lucide/svelte";
+  import { Download, Loader2, Check, AlertCircle } from "@lucide/svelte";
   import { getBackend } from "../backend";
   import { createApi } from "../backend/api";
-  import type { BackupStatus } from "../backend/interface";
 
   interface Props {
     workspacePath?: string | null;
@@ -16,96 +16,135 @@
 
   let { workspacePath = null }: Props = $props();
 
-  // Backup state
-  let backupTargets: string[] = $state([]);
-  let backupStatus: BackupStatus[] | null = $state(null);
-  let isBackingUp: boolean = $state(false);
   let isExporting: boolean = $state(false);
-  let backupError: string | null = $state(null);
+  let exportError: string | null = $state(null);
+  let exportSuccess: { files: number; path?: string } | null = $state(null);
 
-  // Load backup targets on mount
-  $effect(() => {
-    loadBackupTargets();
-  });
-
-  async function loadBackupTargets() {
-    try {
-      const backend = await getBackend();
-      if ("getInvoke" in backend) {
-        const invoke = (backend as any).getInvoke();
-        backupTargets = await invoke("list_backup_targets", {});
-      } else {
-        backupTargets = ["IndexedDB (Local)"];
-      }
-    } catch (e) {
-      backupTargets = [];
-    }
-  }
-
-  async function performBackup() {
-    isBackingUp = true;
-    backupError = null;
-    backupStatus = null;
-    try {
-      const backend = await getBackend();
-      if ("getInvoke" in backend) {
-        const invoke = (backend as any).getInvoke();
-        backupStatus = await invoke("run_backups", {});
-      }
-    } catch (e) {
-      backupError = e instanceof Error ? e.message : String(e);
-    } finally {
-      isBackingUp = false;
-    }
-  }
-
-  async function handleQuickExport() {
+  async function handleExport() {
     if (!workspacePath) return;
 
     isExporting = true;
+    exportError = null;
+    exportSuccess = null;
+
     try {
       const backend = await getBackend();
-      const api = createApi(backend);
 
-      // Export all markdown files
-      const files = await api.exportToMemory(workspacePath, "*");
+      // Check if we're on Tauri (has getInvoke method)
+      if ("getInvoke" in backend) {
+        // Tauri: Use native save dialog
+        const invoke = (backend as any).getInvoke();
+        const result = await invoke("export_to_zip", {
+          workspacePath: workspacePath.substring(
+            0,
+            workspacePath.lastIndexOf("/"),
+          ),
+        });
 
-      // Export all binary attachments
-      const binaryFiles = await api.exportBinaryAttachments(
-        workspacePath,
-        "*",
-      );
+        if (result.cancelled) {
+          // User cancelled - do nothing
+          return;
+        }
 
-      // Create zip
-      const JSZip = (await import("jszip")).default;
-      const zip = new JSZip();
+        if (result.success) {
+          exportSuccess = {
+            files: result.files_exported,
+            path: result.output_path,
+          };
+        } else {
+          exportError = result.error || "Export failed";
+        }
+      } else {
+        // Web: Use workspace tree + file reads to build zip
+        const api = createApi(backend);
 
-      // Add text files
-      for (const file of files) {
-        zip.file(file.path, file.content);
+        // Get workspace directory from index path
+        const workspaceDir = workspacePath.substring(
+          0,
+          workspacePath.lastIndexOf("/"),
+        );
+
+        // Get workspace tree to find all files
+        const tree = await api.getFilesystemTree(workspaceDir, false);
+
+        // Create zip
+        const JSZip = (await import("jszip")).default;
+        const zip = new JSZip();
+
+        // Helper to recursively collect files from tree
+        async function addFilesToZip(
+          node: { path: string; children?: { path: string; children?: unknown[] }[] },
+          basePath: string,
+        ): Promise<number> {
+          let count = 0;
+
+          // Skip hidden files/directories
+          const name = node.path.split("/").pop() || "";
+          if (name.startsWith(".")) {
+            return 0;
+          }
+
+          if (node.children) {
+            // It's a directory - recurse into children
+            for (const child of node.children) {
+              count += await addFilesToZip(child as typeof node, basePath);
+            }
+          } else {
+            // It's a file - add to zip
+            const relativePath =
+              node.path.startsWith(basePath + "/")
+                ? node.path.substring(basePath.length + 1)
+                : node.path;
+
+            try {
+              // Determine if it's a text or binary file
+              const ext = node.path.split(".").pop()?.toLowerCase() || "";
+              const textExts = ["md", "txt", "json", "yaml", "yml", "toml"];
+
+              if (textExts.includes(ext)) {
+                const content = await api.readFile(node.path);
+                zip.file(relativePath, content);
+                count++;
+              } else {
+                // Binary file - use backend.execute or cast to any for readBinary
+                const backendAny = backend as unknown as {
+                  readBinary: (path: string) => Promise<Uint8Array>;
+                };
+                if (typeof backendAny.readBinary === "function") {
+                  const data = await backendAny.readBinary(node.path);
+                  zip.file(relativePath, data, { binary: true });
+                  count++;
+                }
+              }
+            } catch (e) {
+              console.warn(`[Export] Failed to read ${node.path}:`, e);
+            }
+          }
+
+          return count;
+        }
+
+        const fileCount = await addFilesToZip(tree, workspaceDir);
+
+        const blob = await zip.generateAsync({ type: "blob" });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        const baseName =
+          workspacePath.split("/").pop()?.replace(".md", "") || "workspace";
+        const timestamp = new Date().toISOString().slice(0, 10);
+        a.download = `${baseName}-${timestamp}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        exportSuccess = { files: fileCount };
       }
-
-      // Add binary files (attachments)
-      for (const file of binaryFiles) {
-        zip.file(file.path, new Uint8Array(file.data), { binary: true });
-      }
-
-      const blob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = url;
-      const baseName =
-        workspacePath.split("/").pop()?.replace(".md", "") || "workspace";
-      const timestamp = new Date().toISOString().slice(0, 10);
-      a.download = `${baseName}-${timestamp}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     } catch (e) {
       console.error("Export failed:", e);
-      backupError = e instanceof Error ? e.message : String(e);
+      exportError = e instanceof Error ? e.message : String(e);
     } finally {
       isExporting = false;
     }
@@ -114,68 +153,50 @@
 
 <div class="space-y-3">
   <h3 class="font-medium flex items-center gap-2">
-    <Save class="size-4" />
-    Backup
+    <Download class="size-4" />
+    Export
   </h3>
 
-  {#if backupTargets.length > 0}
-    <div class="text-sm text-muted-foreground px-1">
-      Configured targets: {backupTargets.join(", ")}
-    </div>
-  {/if}
+  <div class="px-1 space-y-2">
+    <p class="text-xs text-muted-foreground">
+      Export your workspace to a zip file for backup or transfer.
+    </p>
 
-  <div class="flex items-center gap-2 px-1">
     <Button
       variant="outline"
       size="sm"
-      onclick={performBackup}
-      disabled={isBackingUp}
-    >
-      {#if isBackingUp}
-        <Loader2 class="mr-2 size-4 animate-spin" />
-      {/if}
-      Run Backup
-    </Button>
-    <Button
-      variant="outline"
-      size="sm"
-      onclick={handleQuickExport}
+      onclick={handleExport}
       disabled={isExporting || !workspacePath}
     >
       {#if isExporting}
         <Loader2 class="mr-2 size-4 animate-spin" />
+        Exporting...
       {:else}
-        <Download class="mr-2 size-4" />
+        Export to Zip...
       {/if}
-      Download Zip
     </Button>
-  </div>
 
-  {#if backupError}
-    <div
-      class="flex items-center gap-2 text-sm text-destructive bg-destructive/10 p-2 rounded"
-    >
-      <AlertCircle class="size-4" />
-      <span>{backupError}</span>
-    </div>
-  {/if}
+    {#if exportError}
+      <div
+        class="flex items-center gap-2 text-sm text-destructive bg-destructive/10 p-2 rounded"
+      >
+        <AlertCircle class="size-4" />
+        <span>{exportError}</span>
+      </div>
+    {/if}
 
-  {#if backupStatus}
-    <div class="space-y-1 px-1">
-      {#each backupStatus as status}
-        <div class="flex items-center gap-2 text-sm">
-          {#if status.success}
-            <Check class="size-4 text-green-500" />
-          {:else}
-            <AlertCircle class="size-4 text-destructive" />
+    {#if exportSuccess}
+      <div
+        class="flex items-center gap-2 text-sm text-green-600 bg-green-50 dark:bg-green-950/20 p-2 rounded"
+      >
+        <Check class="size-4" />
+        <span>
+          Exported {exportSuccess.files} files
+          {#if exportSuccess.path}
+            to {exportSuccess.path.split("/").pop()}
           {/if}
-          <span
-            >{status.target_name}: {status.success
-              ? `${status.files_processed} files`
-              : status.error || "Failed"}</span
-          >
-        </div>
-      {/each}
-    </div>
-  {/if}
+        </span>
+      </div>
+    {/if}
+  </div>
 </div>
