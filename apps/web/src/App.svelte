@@ -39,7 +39,7 @@
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { toast } from "svelte-sonner";
   // Note: Button, icons, and LoadingSpinner are now only used in extracted view components
-  
+
   // Import stores
   import {
     entryStore,
@@ -52,7 +52,7 @@
 
   // Initialize theme store immediately
   getThemeStore();
-  
+
   // Import services
   import {
     revokeBlobUrls,
@@ -81,7 +81,7 @@
   // Store-backed state (using getters for now, will migrate fully later)
   // This allows gradual migration without breaking the component
   // ========================================================================
-  
+
   // Entry state - proxied from entryStore
   let currentEntry = $derived(entryStore.currentEntry);
   let isDirty = $derived(entryStore.isDirty);
@@ -89,7 +89,7 @@
   let isLoading = $derived(entryStore.isLoading);
   let titleError = $derived(entryStore.titleError);
   let displayContent = $derived(entryStore.displayContent);
-  
+
   // UI state - proxied from uiStore
   let leftSidebarCollapsed = $derived(uiStore.leftSidebarCollapsed);
   let rightSidebarCollapsed = $derived(uiStore.rightSidebarCollapsed);
@@ -98,7 +98,7 @@
   let showNewEntryModal = $derived(uiStore.showNewEntryModal);
   let exportPath = $derived(uiStore.exportPath);
   let editorRef = $derived(uiStore.editorRef);
-  
+
   // Workspace state - proxied from workspaceStore
   let tree = $derived(workspaceStore.tree);
   let expandedNodes = $derived(workspaceStore.expandedNodes);
@@ -117,7 +117,7 @@
 
   // Rust CRDT API instance
   let rustApi: RustCrdtApi | null = $state(null);
-  
+
   // Collaboration state - proxied from collaborationStore
   let currentCollaborationPath = $derived(collaborationStore.currentCollaborationPath);
   let collaborationEnabled = $derived(collaborationStore.collaborationEnabled);
@@ -130,7 +130,7 @@
   // ========================================================================
   // Non-store state (component-specific, not shared)
   // ========================================================================
-  
+
   // Auto-save timer (component-local, not needed in global store)
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const AUTO_SAVE_DELAY_MS = 2500; // 2.5 seconds
@@ -237,20 +237,22 @@
 
       // Register callback to refresh tree when session data is received
       onSessionSync(async () => {
-        console.log('[App] Session sync received, building tree from CRDT');
-        // Build tree from CRDT metadata instead of filesystem
-        // This is needed because guests don't have the files on disk
+        // Only build tree from CRDT when in guest mode
+        // Guests don't have files on disk, so they need the CRDT tree
+        // Hosts and local users should use the filesystem tree (already loaded)
+        if (!shareSessionStore.isGuest) {
+          console.log('[App] Session sync received, but not in guest mode - skipping CRDT tree');
+          return;
+        }
+
+        console.log('[App] Session sync received (guest mode), building tree from CRDT');
         const crdtTree = await getTreeFromCrdt();
         if (crdtTree) {
           console.log('[App] Setting tree from CRDT:', crdtTree);
           workspaceStore.setTree(crdtTree);
-
-          // If we're a guest in a share session, automatically open the root entry
-          if (shareSessionStore.isGuest) {
-            console.log('[App] Guest session - opening root entry:', crdtTree.path);
-            workspaceStore.expandNode(crdtTree.path);
-            await openEntry(crdtTree.path);
-          }
+          console.log('[App] Guest session - opening root entry:', crdtTree.path);
+          workspaceStore.expandNode(crdtTree.path);
+          await openEntry(crdtTree.path);
         } else {
           console.log('[App] No CRDT tree available, falling back to filesystem refresh');
           await refreshTree();
@@ -489,7 +491,7 @@
       // Normalize frontmatter to Object
       entry.frontmatter = normalizeFrontmatter(entry.frontmatter);
       currentEntry = entry;
-      
+
       titleError = null; // Clear any title error when switching files
       console.log("[App] Loaded entry:", currentEntry);
       console.log("[App] Frontmatter:", currentEntry?.frontmatter);
@@ -510,7 +512,7 @@
         // Destroy the previous collaboration session to prevent stale data from corrupting other clients.
         // We use destroyDocument with a delay to let TipTap plugins finish tearing down.
         // IMPORTANT: Skip destruction if we're re-opening the same file (e.g., from remote sync callback)
-        
+
         // Calculate what the new collaboration path will be
         let workspaceDir = tree?.path || "";
         if (workspaceDir.endsWith("/"))
@@ -530,7 +532,7 @@
             workspaceDir.length + 1,
           );
         }
-        
+
         // Only destroy previous session if switching to a different file
         if (currentCollaborationPath && currentCollaborationPath !== newRelativePath) {
           const pathToDestroy = currentCollaborationPath;
@@ -642,7 +644,7 @@
       entryStore.setSaving(false);
     }
   }
-  
+
   // Cancel pending auto-save
   function cancelAutoSave() {
     if (autoSaveTimer) {
@@ -650,7 +652,7 @@
       autoSaveTimer = null;
     }
   }
-  
+
   // Schedule auto-save with debounce
   function scheduleAutoSave() {
     cancelAutoSave();
@@ -674,7 +676,7 @@
       currentYDocProxy.setContent(markdownForSync);
     }
   }
-  
+
   // Handle editor blur - save immediately if dirty
   function handleEditorBlur() {
     cancelAutoSave();
