@@ -235,31 +235,32 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
         let mut filtered_contents = Vec::new();
 
         if frontmatter.is_index()
-            && let Some(ref index) = index_for_children {
-                let child_audience = effective_audience.as_ref().or(inherited_audience);
+            && let Some(ref index) = index_for_children
+        {
+            let child_audience = effective_audience.as_ref().or(inherited_audience);
 
-                for child_path_str in frontmatter.contents_list() {
-                    let child_path = index.resolve_path(child_path_str);
+            for child_path_str in frontmatter.contents_list() {
+                let child_path = index.resolve_path(child_path_str);
 
-                    if self.workspace.fs_ref().exists(&child_path).await {
-                        let child_included = Box::pin(self.plan_file_recursive(
-                            &child_path,
-                            root_dir,
-                            dest_dir,
-                            audience,
-                            child_audience,
-                            included,
-                            excluded,
-                            visited,
-                        ))
-                        .await?;
+                if self.workspace.fs_ref().exists(&child_path).await {
+                    let child_included = Box::pin(self.plan_file_recursive(
+                        &child_path,
+                        root_dir,
+                        dest_dir,
+                        audience,
+                        child_audience,
+                        included,
+                        excluded,
+                        visited,
+                    ))
+                    .await?;
 
-                        if !child_included {
-                            filtered_contents.push(child_path_str.clone());
-                        }
+                    if !child_included {
+                        filtered_contents.push(child_path_str.clone());
                     }
                 }
             }
+        }
 
         // Add this file to included list
         included.push(ExportFile {
