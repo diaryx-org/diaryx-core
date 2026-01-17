@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cd ../web && bun run dev --port 5174",
     "devUrl": "http://localhost:5174",
-    "beforeBuildCommand": "cd ../web && bun run build",
+    "beforeBuildCommand": "cd ../web && mkdir -p src/lib/wasm && cp src/lib/wasm-stub.js src/lib/wasm/diaryx_wasm.js && bun run build",
     "frontendDist": "../../web/dist"
   },
   "app": {

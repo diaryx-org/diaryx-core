@@ -83,6 +83,12 @@ jobs:
           cd apps/web
           bun install
 
+      - name: Create WASM stub for Tauri build
+        shell: bash
+        run: |
+          mkdir -p apps/web/src/lib/wasm
+          cp apps/web/src/lib/wasm-stub.js apps/web/src/lib/wasm/diaryx_wasm.js
+
       - name: Determine tag
         id: tag
         shell: bash
