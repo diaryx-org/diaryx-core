@@ -361,6 +361,18 @@ export interface Backend {
   persist(): Promise<void>;
 
   /**
+   * Read a binary file's content.
+   * Uses native Uint8Array transfer (no JSON/base64 overhead).
+   */
+  readBinary(path: string): Promise<Uint8Array>;
+
+  /**
+   * Write binary content to a file.
+   * Uses native Uint8Array transfer (no JSON/base64 overhead).
+   */
+  writeBinary(path: string, data: Uint8Array): Promise<void>;
+
+  /**
    * Import workspace from a zip file.
    * Handles large files by streaming in chunks.
    * @param file The File object from a file input.

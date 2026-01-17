@@ -369,13 +369,13 @@ export function createApi(backend: Backend) {
       return expectResponse(response, 'ExportedFiles').data;
     },
 
-    /** Export binary attachments. */
-    async exportBinaryAttachments(rootPath: string, audience: string): Promise<BinaryExportFile[]> {
+    /** Export binary attachments (returns paths only, use readBinary to get data). */
+    async exportBinaryAttachments(rootPath: string, audience: string): Promise<{ source_path: string; relative_path: string }[]> {
       const response = await backend.execute({
         type: 'ExportBinaryAttachments',
         params: { root_path: rootPath, audience },
       });
-      return expectResponse(response, 'BinaryFiles').data;
+      return expectResponse(response, 'BinaryFilePaths').data;
     },
 
     // =========================================================================
@@ -504,6 +504,16 @@ export function createApi(backend: Backend) {
     /** Delete a file. */
     async deleteFile(path: string): Promise<void> {
       await backend.execute({ type: 'DeleteFile', params: { path } });
+    },
+
+    /** Read a binary file's content. */
+    async readBinary(path: string): Promise<Uint8Array> {
+      return backend.readBinary(path);
+    },
+
+    /** Write binary content to a file. */
+    async writeBinary(path: string, data: Uint8Array): Promise<void> {
+      return backend.writeBinary(path, data);
     },
 
     // =========================================================================

@@ -8,9 +8,39 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 use ts_rs::TS;
+
+/// Deserializes a value that should be a string, but may be an array or other type.
+/// - String: returned as-is
+/// - Array: takes the first element if it's a string
+/// - Number/Bool: converted to string
+/// - Null/None: returns None
+fn deserialize_string_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(Value::Bool(b)) => Ok(Some(b.to_string())),
+        Some(Value::Null) => Ok(None),
+        Some(Value::Sequence(seq)) => {
+            // Take the first string element from the array
+            for item in seq {
+                if let Value::String(s) = item {
+                    return Ok(Some(s));
+                }
+            }
+            Ok(None)
+        }
+        Some(Value::Mapping(_)) => Ok(None), // Can't convert a mapping to string
+        Some(Value::Tagged(_)) => Ok(None), // Tagged YAML values are rare, skip them
+    }
+}
 
 /// Normalize a path by resolving `.` and `..` components without filesystem access.
 /// This is necessary for web/WASM where the virtual filesystem doesn't handle `..` in paths.
@@ -43,12 +73,14 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 /// Represents an index file's frontmatter
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexFrontmatter {
     /// Display name for this index
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub title: Option<String>,
 
     /// Description of this area
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub description: Option<String>,
 
     /// List of paths to child index files (relative to this file)
@@ -58,6 +90,7 @@ pub struct IndexFrontmatter {
 
     /// Path to parent index file (relative to this file)
     /// If absent, this is a root index (workspace root)
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub part_of: Option<String>,
 
     /// Audience groups that can see this file and its contents

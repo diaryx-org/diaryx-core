@@ -73,7 +73,11 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let frontmatter_str = &rest[..end_idx];
         let body = &rest[end_idx + 5..]; // Skip "\n---\n"
 
-        let frontmatter: IndexFrontmatter = serde_yaml::from_str(frontmatter_str)?;
+        let frontmatter: IndexFrontmatter =
+            serde_yaml::from_str(frontmatter_str).map_err(|e| DiaryxError::YamlParse {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })?;
 
         Ok(IndexFile {
             path: path.to_path_buf(),

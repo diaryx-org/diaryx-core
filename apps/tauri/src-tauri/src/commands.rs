@@ -1120,6 +1120,8 @@ pub async fn import_from_zip(
                 || lower.ends_with(".svg")
                 || lower.ends_with(".pdf")
                 || lower.ends_with(".webp")
+                || lower.ends_with(".heic")
+                || lower.ends_with(".heif")
         };
 
         if !is_markdown && !is_in_attachments && !is_common_attachment {
@@ -1448,6 +1450,8 @@ pub async fn import_from_zip_data(
                 || lower.ends_with(".svg")
                 || lower.ends_with(".pdf")
                 || lower.ends_with(".webp")
+                || lower.ends_with(".heic")
+                || lower.ends_with(".heif")
         };
 
         if !is_markdown && !is_in_attachments && !is_common_attachment {

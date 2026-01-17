@@ -84,7 +84,7 @@
             return 0;
           }
 
-          if (node.children) {
+          if (node.children && node.children.length > 0) {
             // It's a directory - recurse into children
             for (const child of node.children) {
               count += await addFilesToZip(child as typeof node, basePath);

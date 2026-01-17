@@ -625,21 +625,34 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 audience,
             } => {
                 // Plan the export first
+                log::info!("[Export] ExportToMemory starting - root_path: {:?}, audience: {:?}", root_path, audience);
                 let plan = self
                     .export()
                     .plan_export(Path::new(&root_path), &audience, Path::new("/tmp/export"))
                     .await?;
 
+                log::info!("[Export] plan_export returned {} included files", plan.included.len());
+                for included in &plan.included {
+                    log::info!("[Export] planned file: {:?} -> {:?}", included.source_path, included.relative_path);
+                }
+
                 // Read each included file
                 let mut files = Vec::new();
                 for included in &plan.included {
-                    if let Ok(content) = self.fs().read_to_string(&included.source_path).await {
-                        files.push(crate::command::ExportedFile {
-                            path: included.relative_path.to_string_lossy().to_string(),
-                            content,
-                        });
+                    match self.fs().read_to_string(&included.source_path).await {
+                        Ok(content) => {
+                            log::info!("[Export] read success: {:?} ({} bytes)", included.source_path, content.len());
+                            files.push(crate::command::ExportedFile {
+                                path: included.relative_path.to_string_lossy().to_string(),
+                                content,
+                            });
+                        }
+                        Err(e) => {
+                            log::warn!("[Export] read failed: {:?} - {}", included.source_path, e);
+                        }
                     }
                 }
+                log::info!("[Export] ExportToMemory returning {} files", files.len());
                 Ok(Response::ExportedFiles(files))
             }
 
@@ -678,7 +691,9 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let root_index = Path::new(&root_path);
                 let root_dir = root_index.parent().unwrap_or(root_index);
 
-                let mut attachments = Vec::new();
+                log::info!("[Export] ExportBinaryAttachments starting - root_path: {:?}, root_dir: {:?}", root_path, root_dir);
+
+                let mut attachments: Vec<crate::command::BinaryFileInfo> = Vec::new();
                 let mut visited_dirs = std::collections::HashSet::new();
 
                 // Helper to check if a file is a binary attachment (not markdown)
@@ -694,10 +709,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         // Common binary formats
                         Some(
                             "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "bmp" | "pdf"
-                            | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "mp3" | "mp4"
-                            | "wav" | "ogg" | "flac" | "m4a" | "aac" | "mov" | "avi" | "mkv"
-                            | "webm" | "zip" | "tar" | "gz" | "rar" | "7z" | "ttf" | "otf" | "woff"
-                            | "woff2" | "sqlite" | "db",
+                            | "heic" | "heif" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
+                            | "mp3" | "mp4" | "wav" | "ogg" | "flac" | "m4a" | "aac" | "mov"
+                            | "avi" | "mkv" | "webm" | "zip" | "tar" | "gz" | "rar" | "7z" | "ttf"
+                            | "otf" | "woff" | "woff2" | "sqlite" | "db",
                         ) => true,
                         // Unknown extension - check if it looks like a text file
                         _ => false,
@@ -709,15 +724,16 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     name.starts_with('.')
                 }
 
-                // Recursively collect binary files from a directory
+                // Recursively collect binary file paths from a directory (no data, for efficiency)
                 async fn collect_binaries_recursive<FS: AsyncFileSystem>(
                     fs: &FS,
                     dir: &Path,
                     root_dir: &Path,
-                    attachments: &mut Vec<crate::command::BinaryExportFile>,
+                    attachments: &mut Vec<crate::command::BinaryFileInfo>,
                     visited_dirs: &mut std::collections::HashSet<PathBuf>,
                 ) {
                     if visited_dirs.contains(dir) {
+                        log::debug!("[Export] skipping already visited dir: {:?}", dir);
                         return;
                     }
                     visited_dirs.insert(dir.to_path_buf());
@@ -725,12 +741,20 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     // Skip hidden directories
                     if let Some(name) = dir.file_name().and_then(|n| n.to_str())
                         && is_hidden_component(name) {
+                            log::debug!("[Export] skipping hidden dir: {:?}", dir);
                             return;
                         }
 
+                    log::info!("[Export] listing files in dir: {:?}", dir);
                     let entries = match fs.list_files(dir).await {
-                        Ok(e) => e,
-                        Err(_) => return,
+                        Ok(e) => {
+                            log::info!("[Export] list_files returned {} entries for {:?}", e.len(), dir);
+                            e
+                        }
+                        Err(e) => {
+                            log::warn!("[Export] list_files failed for {:?}: {}", dir, e);
+                            return;
+                        }
                     };
 
                     for entry_path in entries {
@@ -751,15 +775,16 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                             ))
                             .await;
                         } else if is_binary_file(&entry_path) {
-                            // Read and add binary file
-                            if let Ok(data) = fs.read_binary(&entry_path).await {
-                                let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
-                                    .unwrap_or_else(|| entry_path.clone());
-                                attachments.push(crate::command::BinaryExportFile {
-                                    path: relative_path.to_string_lossy().to_string(),
-                                    data,
-                                });
-                            }
+                            // Just record the path, don't read data (for efficiency)
+                            let relative_path = pathdiff::diff_paths(&entry_path, root_dir)
+                                .unwrap_or_else(|| entry_path.clone());
+                            log::debug!("[Export] found binary file: {:?}", entry_path);
+                            attachments.push(crate::command::BinaryFileInfo {
+                                source_path: entry_path.to_string_lossy().to_string(),
+                                relative_path: relative_path.to_string_lossy().to_string(),
+                            });
+                        } else {
+                            log::debug!("[Export] skipping non-binary file: {:?}", entry_path);
                         }
                     }
                 }
@@ -773,7 +798,8 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 )
                 .await;
 
-                Ok(Response::BinaryFiles(attachments))
+                log::info!("[Export] ExportBinaryAttachments returning {} attachment paths", attachments.len());
+                Ok(Response::BinaryFilePaths(attachments))
             }
 
             // === Template Operations ===

@@ -392,4 +392,23 @@ export class TauriBackend implements Backend {
       };
     }
   }
+
+  /**
+   * Read a binary file's content.
+   * Uses Tauri's read_binary_file command.
+   */
+  async readBinary(path: string): Promise<Uint8Array> {
+    const invoke = this.getInvoke();
+    const data = await invoke<number[]>("read_binary_file", { path });
+    return new Uint8Array(data);
+  }
+
+  /**
+   * Write binary content to a file.
+   * Uses Tauri's write_binary_file command.
+   */
+  async writeBinary(path: string, data: Uint8Array): Promise<void> {
+    const invoke = this.getInvoke();
+    await invoke("write_binary_file", { path, data: Array.from(data) });
+  }
 }

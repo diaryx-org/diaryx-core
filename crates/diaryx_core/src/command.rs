@@ -697,8 +697,11 @@ pub enum Response {
     /// Exported files response.
     ExportedFiles(Vec<ExportedFile>),
 
-    /// Binary files response.
+    /// Binary files response (includes data - use for small files only).
     BinaryFiles(Vec<BinaryExportFile>),
+
+    /// Binary file paths response (no data - for efficient listing).
+    BinaryFilePaths(Vec<BinaryFileInfo>),
 
     /// Templates list response.
     Templates(Vec<TemplateInfo>),
@@ -803,6 +806,17 @@ pub struct BinaryExportFile {
     pub path: String,
     /// Binary data.
     pub data: Vec<u8>,
+}
+
+/// Binary file path info (without data) for efficient transfer.
+/// Use this when you need to list files and fetch data separately.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct BinaryFileInfo {
+    /// Source path (absolute, for reading).
+    pub source_path: String,
+    /// Relative path (for zip file structure).
+    pub relative_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

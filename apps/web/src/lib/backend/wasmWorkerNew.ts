@@ -339,11 +339,35 @@ const workerApi = {
   async readBinary(path: string): Promise<Uint8Array> {
     return getBackend().readBinary(path);
   },
-  
+
   async writeBinary(path: string, data: Uint8Array): Promise<void> {
     return getBackend().writeBinary(path, data);
   },
-  
+
+  // =========================================================================
+  // Export Operations (uses commands)
+  // =========================================================================
+
+  async getAvailableAudiences(rootPath: string): Promise<string[]> {
+    return executeAndExtract('GetAvailableAudiences', { root_path: rootPath }, 'Strings');
+  },
+
+  async planExport(rootPath: string, audience: string): Promise<any> {
+    return executeAndExtract('PlanExport', { root_path: rootPath, audience }, 'ExportPlan');
+  },
+
+  async exportToMemory(rootPath: string, audience: string): Promise<any[]> {
+    return executeAndExtract('ExportToMemory', { root_path: rootPath, audience }, 'ExportedFiles');
+  },
+
+  async exportToHtml(rootPath: string, audience: string): Promise<any[]> {
+    return executeAndExtract('ExportToHtml', { root_path: rootPath, audience }, 'ExportedFiles');
+  },
+
+  async exportBinaryAttachments(rootPath: string, audience: string): Promise<{ source_path: string; relative_path: string }[]> {
+    return executeAndExtract('ExportBinaryAttachments', { root_path: rootPath, audience }, 'BinaryFilePaths');
+  },
+
   // Generic method call for any other operations (fallback to native)
   async call(method: string, args: unknown[]): Promise<unknown> {
     const b = getBackend();

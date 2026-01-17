@@ -55,6 +55,16 @@ pub enum DiaryxError {
     #[error("YAML parsing error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 
+    /// YAML parsing error with file path context.
+    /// Use this when you know which file caused the YAML parse error.
+    #[error("YAML parsing error in '{path}': {message}")]
+    YamlParse {
+        /// Path to the file with the YAML error
+        path: PathBuf,
+        /// The YAML error message
+        message: String,
+    },
+
     /// An error that occurs when no frontmatter is found in a file.
     ///
     /// Diaryx should gracefully work around this error by doing things such as the following:
@@ -176,6 +186,7 @@ impl From<&DiaryxError> for SerializableError {
             DiaryxError::FileRead { .. } => "FileRead",
             DiaryxError::FileWrite { .. } => "FileWrite",
             DiaryxError::Yaml(_) => "Yaml",
+            DiaryxError::YamlParse { .. } => "YamlParse",
             DiaryxError::NoFrontmatter(_) => "NoFrontmatter",
             DiaryxError::InvalidFrontmatter(_) => "InvalidFrontmatter",
             DiaryxError::InvalidDateFormat(_) => "InvalidDateFormat",
@@ -202,6 +213,7 @@ impl From<&DiaryxError> for SerializableError {
         let path = match err {
             DiaryxError::FileRead { path, .. } => Some(path.clone()),
             DiaryxError::FileWrite { path, .. } => Some(path.clone()),
+            DiaryxError::YamlParse { path, .. } => Some(path.clone()),
             DiaryxError::NoFrontmatter(path) => Some(path.clone()),
             DiaryxError::InvalidFrontmatter(path) => Some(path.clone()),
             DiaryxError::WorkspaceNotFound(path) => Some(path.clone()),

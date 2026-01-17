@@ -102,10 +102,10 @@
       exportPlan = normalizeToObject(rawPlan);
       console.log("[ExportDialog] planExport returned:", exportPlan);
       
-      // Also fetch binary attachments for preview
+      // Also fetch binary attachments for preview (just paths, no data)
       const rawAttachments = await api.exportBinaryAttachments(rootPath, audience);
       const attachments = normalizeToObject(rawAttachments) ?? [];
-      binaryFiles = attachments.map((f: any) => ({ path: f.path }));
+      binaryFiles = attachments.map((f: any) => ({ path: f.relative_path }));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       exportPlan = null;
@@ -142,19 +142,24 @@
     }
   }
 
-  async function downloadAsZip(files: ExportedFile[], binaryFiles: import("./backend").BinaryExportFile[] = []) {
+  async function downloadAsZip(files: ExportedFile[], binaryFileInfos: { source_path: string; relative_path: string }[] = []) {
     // Use JSZip library - dynamically import since it's optional
     const JSZip = (await import("jszip")).default;
     const zip = new JSZip();
-    
+
     // Add text files
     for (const file of files) {
       zip.file(file.path, file.content);
     }
-    
-    // Add binary files (attachments)
-    for (const file of binaryFiles) {
-      zip.file(file.path, new Uint8Array(file.data), { binary: true });
+
+    // Add binary files (fetch data for each file separately to avoid JSON bloat)
+    for (const info of binaryFileInfos) {
+      try {
+        const data = await api!.readBinary(info.source_path);
+        zip.file(info.relative_path, data, { binary: true });
+      } catch (e) {
+        console.warn(`[Export] Failed to read binary file ${info.source_path}:`, e);
+      }
     }
     
     const blob = await zip.generateAsync({ type: "blob" });

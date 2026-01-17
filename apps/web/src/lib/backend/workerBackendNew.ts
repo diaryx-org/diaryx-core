@@ -345,7 +345,7 @@ export class WorkerBackendNew implements Backend {
       const isBinary = !isMarkdown;
 
       // Only import markdown and common binary attachments
-      const isCommonAttachment = /\.(png|jpg|jpeg|gif|svg|pdf|webp|mp3|mp4|wav|mov|docx?|xlsx?|pptx?)$/i.test(fileName);
+      const isCommonAttachment = /\.(png|jpg|jpeg|gif|svg|pdf|webp|heic|heif|mp3|mp4|wav|mov|docx?|xlsx?|pptx?)$/i.test(fileName);
 
       if (!isMarkdown && !isCommonAttachment) {
         filesSkipped++;

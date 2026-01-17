@@ -184,17 +184,41 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
         }
         visited.insert(canonical);
 
-        // Parse the file
-        let index = self.workspace.parse_index(path).await?;
-        let frontmatter = &index.frontmatter;
+        // Parse the file - handle files without frontmatter gracefully
+        let parse_result = self.workspace.parse_index(path).await;
+
+        // For files without frontmatter or with parse errors, use default frontmatter
+        // and inherit parent's audience
+        let (frontmatter, index_for_children) = match parse_result {
+            Ok(index) => (index.frontmatter.clone(), Some(index)),
+            Err(crate::error::DiaryxError::NoFrontmatter(_)) => {
+                // File has no frontmatter - treat as a simple file that inherits parent's visibility
+                (IndexFrontmatter::default(), None)
+            }
+            Err(crate::error::DiaryxError::YamlParse { path, message }) => {
+                // Log the YAML parse error but continue with default frontmatter
+                log::warn!(
+                    "[Export] Skipping file with YAML parse error: {} - {}",
+                    path.display(),
+                    message
+                );
+                (IndexFrontmatter::default(), None)
+            }
+            Err(crate::error::DiaryxError::Yaml(e)) => {
+                // Legacy YAML error without path context - log and continue
+                log::warn!("[Export] Skipping file with YAML error: {}", e);
+                (IndexFrontmatter::default(), None)
+            }
+            Err(e) => return Err(e),
+        };
 
         // Determine visibility
         let (is_visible, effective_audience) =
-            self.check_visibility(frontmatter, audience, inherited_audience);
+            self.check_visibility(&frontmatter, audience, inherited_audience);
 
         if !is_visible {
             // Record exclusion reason
-            let reason = self.get_exclusion_reason(frontmatter, audience, inherited_audience);
+            let reason = self.get_exclusion_reason(&frontmatter, audience, inherited_audience);
             excluded.push(ExcludedFile {
                 path: path.to_path_buf(),
                 reason,
@@ -211,26 +235,28 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
         let mut filtered_contents = Vec::new();
 
         if frontmatter.is_index() {
-            let child_audience = effective_audience.as_ref().or(inherited_audience);
+            if let Some(ref index) = index_for_children {
+                let child_audience = effective_audience.as_ref().or(inherited_audience);
 
-            for child_path_str in frontmatter.contents_list() {
-                let child_path = index.resolve_path(child_path_str);
+                for child_path_str in frontmatter.contents_list() {
+                    let child_path = index.resolve_path(child_path_str);
 
-                if self.workspace.fs_ref().exists(&child_path).await {
-                    let child_included = Box::pin(self.plan_file_recursive(
-                        &child_path,
-                        root_dir,
-                        dest_dir,
-                        audience,
-                        child_audience,
-                        included,
-                        excluded,
-                        visited,
-                    ))
-                    .await?;
+                    if self.workspace.fs_ref().exists(&child_path).await {
+                        let child_included = Box::pin(self.plan_file_recursive(
+                            &child_path,
+                            root_dir,
+                            dest_dir,
+                            audience,
+                            child_audience,
+                            included,
+                            excluded,
+                            visited,
+                        ))
+                        .await?;
 
-                    if !child_included {
-                        filtered_contents.push(child_path_str.clone());
+                        if !child_included {
+                            filtered_contents.push(child_path_str.clone());
+                        }
                     }
                 }
             }
@@ -255,9 +281,16 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
         audience: &str,
         inherited: Option<&Vec<String>>,
     ) -> (bool, Option<Vec<String>>) {
-        // Check for explicit private
+        // Check for explicit private - always excluded
         if frontmatter.is_private() {
             return (false, None);
+        }
+
+        // Special case: "*" means "all non-private files"
+        if audience == "*" {
+            // Return the file's explicit audience for inheritance, or None
+            let effective_audience = frontmatter.audience.clone();
+            return (true, effective_audience);
         }
 
         // Check explicit audience
