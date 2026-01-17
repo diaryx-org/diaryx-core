@@ -2255,15 +2255,14 @@ pub async fn resolve_sync_conflict<R: Runtime>(
 
     let _paths = get_platform_paths(&app)?;
 
-    let resolution =
-        ConflictResolution::from_str(&resolution).map_err(|_| SerializableError {
-            kind: "SyncError".to_string(),
-            message: format!(
-                "Invalid resolution: {}. Use 'local', 'remote', 'both', or 'skip'",
-                resolution
-            ),
-            path: None,
-        })?;
+    let resolution = ConflictResolution::from_str(&resolution).map_err(|_| SerializableError {
+        kind: "SyncError".to_string(),
+        message: format!(
+            "Invalid resolution: {}. Use 'local', 'remote', 'both', or 'skip'",
+            resolution
+        ),
+        path: None,
+    })?;
 
     // For now, just return success - the actual resolution would need to be implemented
     // with the full sync engine context
