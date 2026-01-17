@@ -1,0 +1,43 @@
+repos:
+  # Built-in hooks (fast, native implementations)
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  # Local project hooks
+  - repo: local
+    hooks:
+      # Sync version from README.md to all project files
+      - id: sync-versions
+        name: Sync versions
+        entry: ./scripts/sync-versions.sh
+        language: system
+        files: ^README\.md$
+        pass_filenames: false
+
+      # Rust formatting
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Rust linting
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -p diaryx_core -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Svelte type checking
+      - id: svelte-check
+        name: svelte-check
+        entry: bash -c 'cd apps/web && bun run check'
+        language: system
+        files: ^apps/web/.*\.(svelte|ts)$
+        pass_filenames: false

@@ -2,7 +2,7 @@
 title: Diaryx
 description: Repository for the Diaryx project
 author: adammharris
-version: v0.9.0
+version: v0.9.1
 updated: 2026-01-10T13:50:20-05:00
 contents:
   - crates/diaryx/README.md
@@ -21,7 +21,7 @@ audience:
 
 Diaryx is software for personal writing, designed to embed standardized metadata into markdown files, eliminating the need to index a vault and introducing greater portability across applications.
 
-This repo uses Diaryx for its own documentation. The "root index file" is [README.md](README.md). In the frontmatter, it has a `contents` property that includes a list of markdown files considered part of the documentation. Each of these files has a `part_of` property set to `README.md`, allowing for bidirectional traversal. Markdown files are considered "leaf" files if they do not have a `contents` property, or "index" files if they do. A root index file is a file that has a `contents` property but no `part_of` property. 
+This repo uses Diaryx for its own documentation. The "root index file" is [README.md](README.md). In the frontmatter, it has a `contents` property that includes a list of markdown files considered part of the documentation. Each of these files has a `part_of` property set to `README.md`, allowing for bidirectional traversal. Markdown files are considered "leaf" files if they do not have a `contents` property, or "index" files if they do. A root index file is a file that has a `contents` property but no `part_of` property.
 
 Another important feature of Diaryx enabled by this structure is "audience filtering." Files may have an `audience` property, which defines access groups for the file and its children. Thus, Diaryx may export different subsets of the documentation to different audiences.
 
