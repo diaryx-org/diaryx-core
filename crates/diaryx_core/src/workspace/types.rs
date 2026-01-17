@@ -38,7 +38,7 @@ where
             Ok(None)
         }
         Some(Value::Mapping(_)) => Ok(None), // Can't convert a mapping to string
-        Some(Value::Tagged(_)) => Ok(None), // Tagged YAML values are rare, skip them
+        Some(Value::Tagged(_)) => Ok(None),  // Tagged YAML values are rare, skip them
     }
 }
 

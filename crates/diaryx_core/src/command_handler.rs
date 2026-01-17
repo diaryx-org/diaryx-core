@@ -625,15 +625,26 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 audience,
             } => {
                 // Plan the export first
-                log::info!("[Export] ExportToMemory starting - root_path: {:?}, audience: {:?}", root_path, audience);
+                log::info!(
+                    "[Export] ExportToMemory starting - root_path: {:?}, audience: {:?}",
+                    root_path,
+                    audience
+                );
                 let plan = self
                     .export()
                     .plan_export(Path::new(&root_path), &audience, Path::new("/tmp/export"))
                     .await?;
 
-                log::info!("[Export] plan_export returned {} included files", plan.included.len());
+                log::info!(
+                    "[Export] plan_export returned {} included files",
+                    plan.included.len()
+                );
                 for included in &plan.included {
-                    log::info!("[Export] planned file: {:?} -> {:?}", included.source_path, included.relative_path);
+                    log::info!(
+                        "[Export] planned file: {:?} -> {:?}",
+                        included.source_path,
+                        included.relative_path
+                    );
                 }
 
                 // Read each included file
@@ -641,7 +652,11 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 for included in &plan.included {
                     match self.fs().read_to_string(&included.source_path).await {
                         Ok(content) => {
-                            log::info!("[Export] read success: {:?} ({} bytes)", included.source_path, content.len());
+                            log::info!(
+                                "[Export] read success: {:?} ({} bytes)",
+                                included.source_path,
+                                content.len()
+                            );
                             files.push(crate::command::ExportedFile {
                                 path: included.relative_path.to_string_lossy().to_string(),
                                 content,
@@ -691,7 +706,11 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let root_index = Path::new(&root_path);
                 let root_dir = root_index.parent().unwrap_or(root_index);
 
-                log::info!("[Export] ExportBinaryAttachments starting - root_path: {:?}, root_dir: {:?}", root_path, root_dir);
+                log::info!(
+                    "[Export] ExportBinaryAttachments starting - root_path: {:?}, root_dir: {:?}",
+                    root_path,
+                    root_dir
+                );
 
                 let mut attachments: Vec<crate::command::BinaryFileInfo> = Vec::new();
                 let mut visited_dirs = std::collections::HashSet::new();
@@ -740,15 +759,20 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                     // Skip hidden directories
                     if let Some(name) = dir.file_name().and_then(|n| n.to_str())
-                        && is_hidden_component(name) {
-                            log::debug!("[Export] skipping hidden dir: {:?}", dir);
-                            return;
-                        }
+                        && is_hidden_component(name)
+                    {
+                        log::debug!("[Export] skipping hidden dir: {:?}", dir);
+                        return;
+                    }
 
                     log::info!("[Export] listing files in dir: {:?}", dir);
                     let entries = match fs.list_files(dir).await {
                         Ok(e) => {
-                            log::info!("[Export] list_files returned {} entries for {:?}", e.len(), dir);
+                            log::info!(
+                                "[Export] list_files returned {} entries for {:?}",
+                                e.len(),
+                                dir
+                            );
                             e
                         }
                         Err(e) => {
@@ -760,9 +784,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     for entry_path in entries {
                         // Skip hidden files/dirs
                         if let Some(name) = entry_path.file_name().and_then(|n| n.to_str())
-                            && is_hidden_component(name) {
-                                continue;
-                            }
+                            && is_hidden_component(name)
+                        {
+                            continue;
+                        }
 
                         if fs.is_dir(&entry_path).await {
                             // Recurse into subdirectory
@@ -798,7 +823,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 )
                 .await;
 
-                log::info!("[Export] ExportBinaryAttachments returning {} attachment paths", attachments.len());
+                log::info!(
+                    "[Export] ExportBinaryAttachments returning {} attachment paths",
+                    attachments.len()
+                );
                 Ok(Response::BinaryFilePaths(attachments))
             }
 
