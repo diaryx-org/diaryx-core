@@ -70,6 +70,34 @@ export function isHeicFile(path: string): boolean {
 }
 
 /**
+ * Check if a file is an image based on its extension.
+ */
+export function isImageFile(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic', 'heif'].includes(ext);
+}
+
+/**
+ * Extract the filename from a path.
+ */
+export function getFilename(path: string): string {
+  return path.split('/').pop() || path;
+}
+
+/**
+ * Convert bytes to base64 in chunks to avoid stack overflow.
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 8192;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+/**
  * Convert HEIC/HEIF blob to JPEG for browser display.
  * Returns original blob if conversion fails.
  */

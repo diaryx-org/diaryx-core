@@ -125,6 +125,67 @@ src/
     └── ...
 ```
 
+## Testing
+
+The web app includes comprehensive unit tests (Vitest) and E2E tests (Playwright).
+
+### Running Tests
+
+```bash
+# Run unit tests
+bun run test
+
+# Run tests with coverage
+bun run test:coverage
+
+# Run tests with UI
+bun run test:ui
+
+# Run E2E tests
+bun run test:e2e
+
+# Run E2E tests with UI
+bun run test:e2e:ui
+```
+
+### Test Structure
+
+```
+src/
+├── test/
+│   └── setup.ts                    # Test setup and mocks
+├── models/
+│   ├── services/
+│   │   ├── attachmentService.test.ts
+│   │   ├── shareService.test.ts
+│   │   ├── toastService.test.ts
+│   │   └── workspaceCrdtService.test.ts
+│   └── stores/
+│       ├── workspaceStore.test.ts
+│       ├── entryStore.test.ts
+│       ├── collaborationStore.test.ts
+│       └── uiStore.test.ts
+├── lib/
+│   ├── backend/
+│   │   └── api.test.ts
+│   ├── crdt/
+│   │   ├── workspaceCrdtBridge.test.ts
+│   │   └── collaborationBridge.test.ts
+│   └── components/
+│       ├── AttachmentPicker.test.ts
+│       └── Editor.test.ts
+e2e/
+├── workspace.spec.ts               # Workspace navigation tests
+├── editor.spec.ts                  # Editor functionality tests
+├── attachments.spec.ts             # Attachment handling tests
+└── share.spec.ts                   # Share session tests
+```
+
+### Configuration
+
+- `vitest.config.ts` - Vitest configuration with Svelte support and jsdom environment
+- `playwright.config.ts` - Playwright configuration for E2E testing
+
 ## Building WASM
 
 The WASM module is built from `crates/diaryx_wasm`:

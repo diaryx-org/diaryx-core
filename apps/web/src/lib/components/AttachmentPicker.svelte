@@ -9,7 +9,7 @@
     FolderOpen,
   } from "@lucide/svelte";
   import type { Api } from "$lib/backend/api";
-  import { isHeicFile, convertHeicToJpeg } from "$lib/../models/services/attachmentService";
+  import { isHeicFile, convertHeicToJpeg, isImageFile, getFilename, getMimeType, bytesToBase64 } from "$lib/../models/services/attachmentService";
 
   interface Props {
     open: boolean;
@@ -169,42 +169,6 @@
     }
   }
 
-  function isImageFile(path: string): boolean {
-    const ext = path.split(".").pop()?.toLowerCase() || "";
-    return ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "heic", "heif"].includes(
-      ext
-    );
-  }
-
-  function getMimeType(path: string): string {
-    const ext = path.split(".").pop()?.toLowerCase() || "";
-    const mimeTypes: Record<string, string> = {
-      png: "image/png",
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      gif: "image/gif",
-      webp: "image/webp",
-      svg: "image/svg+xml",
-      bmp: "image/bmp",
-      ico: "image/x-icon",
-      heic: "image/heic",
-      heif: "image/heif",
-      pdf: "application/pdf",
-      doc: "application/msword",
-      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      xls: "application/vnd.ms-excel",
-      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      txt: "text/plain",
-      md: "text/markdown",
-      csv: "text/csv",
-      json: "application/json",
-    };
-    return mimeTypes[ext] || "application/octet-stream";
-  }
-
-  function getFilename(path: string): string {
-    return path.split("/").pop() || path;
-  }
 
   function getFileIcon(path: string) {
     const ext = path.split(".").pop()?.toLowerCase();
@@ -218,17 +182,6 @@
       default:
         return FileIcon;
     }
-  }
-
-  // Convert bytes to base64 in chunks to avoid stack overflow
-  function bytesToBase64(bytes: Uint8Array): string {
-    const chunkSize = 8192;
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-      binary += String.fromCharCode(...chunk);
-    }
-    return btoa(binary);
   }
 
   async function handleSelect(
