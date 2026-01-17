@@ -271,7 +271,7 @@ jobs:
   tauri-check:
     name: Check Tauri Build
     runs-on: ubuntu-latest
-    needs: [wasm, changes]
+    needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.tauri == 'true'
 
     steps:
@@ -298,26 +298,15 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
-
-      - name: Install web dependencies
+      - name: Install dependencies
         run: |
           cd apps/web
-          bun install
-
-      - name: Install Tauri dependencies
-        run: |
-          cd apps/tauri
           bun install
 
       - name: Build Tauri app (debug)
         run: |
           cd apps/tauri
-          bun run tauri build --debug --target x86_64-unknown-linux-gnu
+          ../web/node_modules/.bin/tauri build --debug --target x86_64-unknown-linux-gnu
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 

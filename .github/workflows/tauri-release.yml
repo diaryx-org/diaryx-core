@@ -14,40 +14,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Build WASM first (shared by all platforms)
-  build-wasm:
-    name: Build WASM
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Build WASM package
-        run: |
-          cd crates/diaryx_wasm
-          wasm-pack build --target web --out-dir ../../apps/web/src/lib/wasm
-
-      - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
-
   # Build Tauri app for all platforms and create release
   build-tauri:
     name: Build Tauri (${{ matrix.name }})
-    needs: build-wasm
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -109,20 +78,9 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
-
-      - name: Install web dependencies
+      - name: Install dependencies
         run: |
           cd apps/web
-          bun install
-
-      - name: Install Tauri dependencies
-        run: |
-          cd apps/tauri
           bun install
 
       - name: Determine tag
@@ -152,7 +110,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/tauri
-          tauriScript: bun run tauri
+          tauriScript: ../web/node_modules/.bin/tauri
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           tagName: ${{ steps.tag.outputs.tag }}
           releaseName: "Diaryx ${{ steps.tag.outputs.tag }}"
