@@ -358,6 +358,63 @@ export function getWorkspaceStore() {
       expandedNodes = nodes;
     },
 
+    /**
+     * Reveal a file in the tree by expanding all parent folders.
+     * This makes the file visible in the sidebar.
+     *
+     * Note: Tree nodes use index file paths (e.g., "workspace/README.md"),
+     * not directory paths. We need to find ancestor nodes in the tree.
+     */
+    revealPath(filePath: string) {
+      console.log('[WorkspaceStore] revealPath called with:', filePath);
+
+      if (!tree) {
+        console.log('[WorkspaceStore] revealPath - no tree loaded');
+        return;
+      }
+
+      // Find all ancestor nodes in the tree that contain the target file
+      const ancestorPaths: string[] = [];
+
+      function findAncestors(node: TreeNode, targetPath: string): boolean {
+        // Check if any child matches the target or contains it
+        for (const child of node.children) {
+          if (child.path === targetPath) {
+            // Found the target - this node is a direct parent
+            ancestorPaths.push(node.path);
+            return true;
+          }
+          // Check if target is nested under this child
+          // Compare directory prefixes to see if target is under this subtree
+          const childDir = child.path.substring(0, child.path.lastIndexOf('/'));
+          const targetDir = targetPath.substring(0, targetPath.lastIndexOf('/'));
+
+          if (targetDir.startsWith(childDir) || targetPath.startsWith(childDir + '/')) {
+            // Target might be under this child's subtree
+            if (findAncestors(child, targetPath)) {
+              ancestorPaths.push(node.path);
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      findAncestors(tree, filePath);
+
+      console.log('[WorkspaceStore] revealPath - ancestor node paths to expand:', ancestorPaths);
+      console.log('[WorkspaceStore] revealPath - current expandedNodes:', [...expandedNodes]);
+
+      // Expand all ancestor nodes
+      if (ancestorPaths.length > 0) {
+        for (const path of ancestorPaths) {
+          expandedNodes.add(path);
+        }
+        expandedNodes = new Set(expandedNodes); // Trigger reactivity
+        console.log('[WorkspaceStore] revealPath - expandedNodes after:', [...expandedNodes]);
+      }
+    },
+
     // Validation
     setValidationResult(result: ValidationResultWithMeta | null) {
       validationResult = result;

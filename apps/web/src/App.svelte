@@ -8,7 +8,6 @@
   import { RustCrdtApi } from "./lib/crdt/rustCrdtApi";
   import {
     initCollaboration,
-    setCollaborationServer,
     getCollaborationServer,
     getCollaborativeDocument,
     releaseDocument,
@@ -16,7 +15,6 @@
   } from "./lib/crdt/collaborationBridge";
   import {
     disconnectWorkspace,
-    setWorkspaceServer,
     setWorkspaceId,
     setBackendApi,
     onSessionSync,
@@ -63,6 +61,7 @@
     initializeWorkspaceCrdt,
     updateCrdtFileMetadata,
     addFileToCrdt,
+    joinShareSession,
   } from "./models/services";
 
   // Import controllers
@@ -100,6 +99,10 @@
   let showNewEntryModal = $derived(uiStore.showNewEntryModal);
   let exportPath = $derived(uiStore.exportPath);
   let editorRef = $derived(uiStore.editorRef);
+
+  // Right sidebar tab/session control
+  let requestedSidebarTab: "properties" | "history" | "share" | null = $state(null);
+  let triggerStartSession = $state(false);
 
   // Workspace state - proxied from workspaceStore
   let tree = $derived(workspaceStore.tree);
@@ -204,17 +207,19 @@
   onMount(async () => {
     // Expand sidebars on desktop
     if (window.innerWidth >= 768) {
-      leftSidebarCollapsed = false;
-      rightSidebarCollapsed = false;
+      uiStore.setLeftSidebarCollapsed(false);
+      uiStore.setRightSidebarCollapsed(false);
     }
 
     // Load saved collaboration settings
+    // Note: We only load the URL into the store, but do NOT call setWorkspaceServer()
+    // or setCollaborationServer() here. Those are called by initializeWorkspaceCrdt()
+    // only when collaborationEnabled is true. This prevents the sync bridge from
+    // trying to connect when there's no active sync session.
     if (typeof window !== "undefined") {
       const savedServerUrl = localStorage.getItem("diaryx-sync-server");
       if (savedServerUrl) {
         collaborationStore.setServerUrl(savedServerUrl);
-        setCollaborationServer(savedServerUrl);
-        setWorkspaceServer(savedServerUrl);
         // Auto-enable collaboration if we have a saved server
         // collaborationStore.setEnabled(true); // DISABLED BY DEFAULT per user request
       }
@@ -720,11 +725,11 @@
 
   // Sidebar toggles
   function toggleLeftSidebar() {
-    leftSidebarCollapsed = !leftSidebarCollapsed;
+    uiStore.toggleLeftSidebar();
   }
 
   function toggleRightSidebar() {
-    rightSidebarCollapsed = !rightSidebarCollapsed;
+    uiStore.toggleRightSidebar();
   }
 
   // Keyboard shortcuts
@@ -1026,6 +1031,251 @@
   async function loadNodeChildren(nodePath: string) {
     if (!api) return;
     await loadNodeChildrenController(api, nodePath, showUnlinkedFiles, showHiddenFiles);
+  }
+
+  // ========================================================================
+  // Command Palette Handlers
+  // ========================================================================
+
+  // Validation with toast feedback
+  async function handleValidateWorkspace() {
+    await runValidation();
+    const result = workspaceStore.validationResult;
+    if (result) {
+      const errorCount = result.errors?.length ?? 0;
+      const warningCount = result.warnings?.length ?? 0;
+      if (errorCount === 0 && warningCount === 0) {
+        toast.success("Workspace is valid", { description: "No issues found" });
+      } else {
+        toast.warning("Validation complete", {
+          description: `${errorCount} error(s), ${warningCount} warning(s) found`,
+        });
+      }
+    }
+  }
+
+  // Refresh tree with toast
+  async function handleRefreshTree() {
+    await refreshTree();
+    toast.success("Tree refreshed");
+  }
+
+  // Duplicate current entry
+  async function handleDuplicateCurrentEntry() {
+    if (!api || !currentEntry) {
+      toast.error("No entry selected");
+      return;
+    }
+    try {
+      const newPath = await handleDuplicateEntry(currentEntry.path);
+      await openEntry(newPath);
+      toast.success("Entry duplicated", { description: newPath.split("/").pop() });
+    } catch (e) {
+      toast.error("Failed to duplicate", { description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Rename current entry (prompt for new name)
+  async function handleRenameCurrentEntry() {
+    if (!api || !currentEntry) {
+      toast.error("No entry selected");
+      return;
+    }
+    const currentName = currentEntry.path.split("/").pop()?.replace(".md", "") || "";
+    const newName = window.prompt("Enter new name:", currentName);
+    if (!newName || newName === currentName) return;
+
+    try {
+      const newPath = await handleRenameEntry(currentEntry.path, newName + ".md");
+      await openEntry(newPath);
+      toast.success("Entry renamed", { description: newName });
+    } catch (e) {
+      toast.error("Failed to rename", { description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Delete current entry
+  async function handleDeleteCurrentEntry() {
+    if (!currentEntry) {
+      toast.error("No entry selected");
+      return;
+    }
+    await handleDeleteEntry(currentEntry.path);
+  }
+
+  // Move current entry (prompt for new parent)
+  async function handleMoveCurrentEntry() {
+    const entry = currentEntry;
+    const currentTree = tree;
+    if (!api || !entry || !currentTree) {
+      toast.error("No entry selected");
+      return;
+    }
+    // Collect all potential parent paths
+    const allEntries: string[] = [];
+    function collectPaths(node: typeof currentTree) {
+      if (!node) return;
+      // Only index files (with children) can be parents
+      if (node.children.length > 0 || node.path.endsWith("index.md") || node.path.endsWith("README.md")) {
+        allEntries.push(node.path);
+      }
+      node.children.forEach(collectPaths);
+    }
+    collectPaths(currentTree);
+
+    const parentOptions = allEntries
+      .filter(p => p !== entry.path)
+      .map(p => p.split("/").pop()?.replace(".md", "") || p)
+      .join(", ");
+
+    const newParentName = window.prompt(
+      `Move "${entry.path.split("/").pop()?.replace(".md", "")}" to which parent?\n\nAvailable: ${parentOptions}`
+    );
+    if (!newParentName) return;
+
+    // Find the matching parent path
+    const newParentPath = allEntries.find(p =>
+      p.split("/").pop()?.replace(".md", "").toLowerCase() === newParentName.toLowerCase()
+    );
+    if (!newParentPath) {
+      toast.error("Parent not found", { description: `"${newParentName}" is not a valid parent` });
+      return;
+    }
+
+    try {
+      await handleMoveEntry(entry.path, newParentPath);
+      toast.success("Entry moved", { description: `Moved to ${newParentName}` });
+    } catch (e) {
+      toast.error("Failed to move", { description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Create child entry under current
+  async function handleCreateChildUnderCurrent() {
+    if (!currentEntry) {
+      toast.error("No entry selected");
+      return;
+    }
+    await handleCreateChildEntry(currentEntry.path);
+    toast.success("Child entry created");
+  }
+
+  // Start share session
+  async function handleStartShareSession() {
+    if (shareSessionStore.mode !== 'idle') {
+      toast.info("Session already active", { description: "End current session first" });
+      return;
+    }
+    // Open right sidebar, navigate to share tab, and trigger session start
+    uiStore.setRightSidebarCollapsed(false);
+    requestedSidebarTab = "share";
+    // Wait for sidebar to render before triggering session start
+    await tick();
+    triggerStartSession = true;
+  }
+
+  // Join share session
+  async function handleJoinShareSession() {
+    if (shareSessionStore.mode !== 'idle') {
+      toast.info("Session already active", { description: "End current session first" });
+      return;
+    }
+    const joinCode = window.prompt("Enter join code:");
+    if (!joinCode?.trim()) return;
+
+    try {
+      workspaceStore.saveTreeState();
+      await joinShareSession(joinCode.trim());
+      toast.success("Joined session", { description: `Code: ${joinCode.trim()}` });
+    } catch (e) {
+      workspaceStore.clearSavedTreeState();
+      toast.error("Failed to join", { description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Find in file (trigger browser's find or show info)
+  function handleFindInFile() {
+    // Use browser's native find functionality
+    if (typeof window !== "undefined") {
+      // Try to trigger the browser's find dialog
+      // This works in most browsers
+      try {
+        // @ts-ignore - execCommand is deprecated but still works
+        document.execCommand('find');
+      } catch {
+        // Fallback: show keyboard shortcut hint
+        toast.info("Find in File", { description: "Use Cmd/Ctrl+F to search" });
+      }
+    }
+  }
+
+  // Word count for current entry
+  function handleWordCount() {
+    if (!editorRef || !currentEntry) {
+      toast.error("No entry open");
+      return;
+    }
+    const markdown = editorRef.getMarkdown() || "";
+    const text = markdown.replace(/[#*_`~\[\]()>-]/g, " "); // Remove markdown syntax
+    const words = text.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
+    const characters = text.length;
+    const lines = markdown.split("\n").length;
+
+    toast.info("Word Count", {
+      description: `${words.toLocaleString()} words · ${characters.toLocaleString()} characters · ${lines} lines`,
+      duration: 5000,
+    });
+  }
+
+  // Import from clipboard
+  async function handleImportFromClipboard() {
+    if (!api || !tree) {
+      toast.error("Workspace not ready");
+      return;
+    }
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (!clipboardText.trim()) {
+        toast.error("Clipboard is empty");
+        return;
+      }
+
+      // Create a new entry with clipboard content
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const newPath = `${tree.path.replace(/[^/]+\.md$/, "")}imported-${timestamp}.md`;
+
+      // Check if it has frontmatter, if not add a basic title
+      let content = clipboardText;
+      if (!clipboardText.trim().startsWith("---")) {
+        const title = `Imported ${new Date().toLocaleDateString()}`;
+        content = `---\ntitle: "${title}"\n---\n\n${clipboardText}`;
+      }
+
+      await api.createEntry(newPath, { title: `Imported ${timestamp}` });
+      await api.saveEntry(newPath, content);
+      await refreshTree();
+      await openEntry(newPath);
+      toast.success("Imported from clipboard", { description: `${clipboardText.length} characters` });
+    } catch (e) {
+      toast.error("Failed to import", { description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Copy current entry as markdown
+  async function handleCopyAsMarkdown() {
+    if (!editorRef || !currentEntry) {
+      toast.error("No entry open");
+      return;
+    }
+    try {
+      const markdown = editorRef.getMarkdown() || "";
+      // Reverse blob URLs to attachment paths for clean export
+      const cleanMarkdown = reverseBlobUrlsToAttachmentPaths(markdown);
+      await navigator.clipboard.writeText(cleanMarkdown);
+      toast.success("Copied to clipboard", { description: `${cleanMarkdown.length} characters` });
+    } catch (e) {
+      toast.error("Failed to copy", { description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   /**
@@ -1619,6 +1869,7 @@
   bind:open={uiStore.showCommandPalette}
   {tree}
   {api}
+  currentEntryPath={currentEntry?.path ?? null}
   onOpenEntry={openEntry}
   onNewEntry={() => (showNewEntryModal = true)}
   onDailyEntry={handleDailyEntry}
@@ -1627,6 +1878,19 @@
     exportPath = currentEntry?.path ?? tree?.path ?? "";
     if (exportPath) showExportDialog = true;
   }}
+  onValidate={handleValidateWorkspace}
+  onRefreshTree={handleRefreshTree}
+  onDuplicateEntry={handleDuplicateCurrentEntry}
+  onRenameEntry={handleRenameCurrentEntry}
+  onDeleteEntry={handleDeleteCurrentEntry}
+  onMoveEntry={handleMoveCurrentEntry}
+  onCreateChildEntry={handleCreateChildUnderCurrent}
+  onStartShare={handleStartShareSession}
+  onJoinSession={handleJoinShareSession}
+  onFindInFile={handleFindInFile}
+  onWordCount={handleWordCount}
+  onImportFromClipboard={handleImportFromClipboard}
+  onCopyAsMarkdown={handleCopyAsMarkdown}
 />
 
 <!-- Settings Dialog -->
@@ -1685,6 +1949,12 @@
     onValidationFix={async () => {
       await refreshTree();
       await runValidation();
+      // Refresh current entry to reflect frontmatter changes
+      if (currentEntry && api) {
+        const entry = await api.getEntry(currentEntry.path);
+        entry.frontmatter = normalizeFrontmatter(entry.frontmatter);
+        currentEntry = entry;
+      }
     }}
     onLoadChildren={loadNodeChildren}
     onValidate={handleValidate}
@@ -1770,6 +2040,10 @@
     onBeforeHost={async (audience) => await populateCrdtBeforeHost(audience)}
     onOpenEntry={async (path) => await openEntry(path)}
     {api}
+    requestedTab={requestedSidebarTab}
+    onRequestedTabConsumed={() => (requestedSidebarTab = null)}
+    {triggerStartSession}
+    onTriggerStartSessionConsumed={() => (triggerStartSession = false)}
   />
 </div>
 

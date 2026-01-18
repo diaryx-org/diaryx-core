@@ -43,6 +43,180 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Check if a path is clearly non-portable (machine-specific absolute path).
+///
+/// This function uses heuristics to detect paths that are clearly specific to
+/// a particular machine and will never work when synced to other environments.
+/// It does not require filesystem access, making it WASM-safe.
+fn is_clearly_non_portable_path(value: &str) -> bool {
+    let path = Path::new(value);
+    let value_lower = value.to_lowercase();
+
+    // Common patterns for machine-specific paths
+    // Check these first since they work cross-platform (pattern matching)
+    // All patterns must be lowercase since we compare against value_lower
+    let machine_specific_patterns = [
+        "/users/", // macOS
+        "/home/",  // Linux
+        "/root/",  // Linux root
+        "/var/",   // Unix system directories
+        "/tmp/",
+        "/opt/",
+        "/usr/",
+        "c:\\users\\", // Windows (backslash)
+        "c:/users/",   // Windows (forward slash)
+        "d:\\users\\",
+        "d:/users/",
+        "c:\\program files",
+        "c:/program files",
+        "c:\\windows",
+        "c:/windows",
+        "\\\\", // UNC paths
+    ];
+
+    for pattern in machine_specific_patterns {
+        if value_lower.starts_with(pattern) {
+            return true;
+        }
+    }
+
+    // Check if it's any absolute path (platform-specific check)
+    // Note: Path::is_absolute() is platform-specific, so we need to check Windows-style paths separately
+    let is_windows_absolute = value.len() >= 2
+        && value
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && (value.chars().nth(1) == Some(':'));
+
+    let is_absolute = path.is_absolute() || is_windows_absolute;
+
+    if !is_absolute {
+        return false;
+    }
+
+    // Deep absolute paths (>4 components) are likely machine-specific
+    // e.g., /some/deep/nested/path/file.md
+    path.components().count() > 4
+}
+
+/// Check if a path string looks like an absolute path (cross-platform, WASM-safe).
+///
+/// This doesn't rely on `Path::is_absolute()` which is platform-specific and
+/// may not work correctly in WASM contexts.
+fn looks_like_absolute_path(value: &str) -> bool {
+    // Unix-style absolute path
+    if value.starts_with('/') {
+        return true;
+    }
+
+    // Windows-style absolute path (C:\... or C:/...)
+    if value.len() >= 2
+        && value
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && value.chars().nth(1) == Some(':')
+    {
+        return true;
+    }
+
+    // UNC path (\\server\...)
+    if value.starts_with("\\\\") {
+        return true;
+    }
+
+    false
+}
+
+/// Compute a suggested portable path without using filesystem operations.
+///
+/// For absolute paths, tries to compute a relative path by matching directory
+/// structure between the absolute path and the source file's location.
+/// For relative paths with . or .. components, it normalizes them.
+fn compute_suggested_portable_path(value: &str, base_dir: &Path) -> String {
+    let path = Path::new(value);
+
+    // Use our cross-platform check instead of path.is_absolute()
+    // which doesn't work correctly in WASM
+    if looks_like_absolute_path(value) {
+        let filename = match path.file_name() {
+            Some(f) => f.to_string_lossy().to_string(),
+            None => return value.to_string(),
+        };
+
+        // Collect directory components from the absolute path (excluding filename)
+        let target_dirs: Vec<&std::ffi::OsStr> = path
+            .parent()
+            .map(|p| p.iter().collect())
+            .unwrap_or_default();
+
+        // Collect directory components from base_dir
+        let source_dirs: Vec<&std::ffi::OsStr> = base_dir.iter().collect();
+
+        // Try to find a common directory by matching from the end of the target path
+        // This handles cases like:
+        //   target: /Users/adam/Documents/journal/Ideas/file.md
+        //   source: /workspace/Ideas/note.md
+        // Where "Ideas" is the common directory
+        for (target_idx, target_dir) in target_dirs.iter().enumerate().rev() {
+            // Skip root components (/, C:\, etc.) as they're not meaningful matches
+            let target_str = target_dir.to_string_lossy();
+            if target_str == "/" || target_str == "\\" || target_str.ends_with(':') {
+                continue;
+            }
+
+            for (source_idx, source_dir) in source_dirs.iter().enumerate().rev() {
+                // Also skip root components in source
+                let source_str = source_dir.to_string_lossy();
+                if source_str == "/" || source_str == "\\" || source_str.ends_with(':') {
+                    continue;
+                }
+
+                if target_dir == source_dir {
+                    // Found a potential match point. Check if subsequent components also match.
+                    let target_suffix = &target_dirs[target_idx..];
+                    let source_suffix = &source_dirs[source_idx..];
+
+                    // Check how many components match starting from this point
+                    let matching_count = target_suffix
+                        .iter()
+                        .zip(source_suffix.iter())
+                        .take_while(|(t, s)| t == s)
+                        .count();
+
+                    if matching_count > 0 {
+                        // Compute relative path based on the match
+                        // levels_up = how many dirs we need to go up from source
+                        // extra_dirs = any directories in target after the matching portion
+                        let levels_up = source_suffix.len() - matching_count;
+                        let extra_dirs = &target_suffix[matching_count..];
+
+                        let mut result = "../".repeat(levels_up);
+                        for dir in extra_dirs {
+                            result.push_str(&dir.to_string_lossy());
+                            result.push('/');
+                        }
+                        result.push_str(&filename);
+                        return result;
+                    }
+                }
+            }
+        }
+
+        // No match found, just return the filename as a fallback
+        return filename;
+    }
+
+    // For relative paths with . or .., normalize without filesystem
+    let target_path = base_dir.join(value);
+    let normalized = normalize_path(&target_path);
+
+    pathdiff::diff_paths(&normalized, base_dir)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
 /// A validation error indicating a broken reference.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings/")]
@@ -616,12 +790,23 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
             // Check part_of if present
             if let Some(ref part_of) = index.frontmatter.part_of {
-                let parent_path = normalize_path(&dir.join(part_of));
-                if !self.ws.fs_ref().exists(&parent_path).await {
-                    result.errors.push(ValidationError::BrokenPartOf {
+                if is_clearly_non_portable_path(part_of) {
+                    // Non-portable path - add warning, skip exists() check
+                    result.warnings.push(ValidationWarning::NonPortablePath {
                         file: path.to_path_buf(),
-                        target: part_of.clone(),
+                        property: "part_of".to_string(),
+                        value: part_of.clone(),
+                        suggested: compute_suggested_portable_path(part_of, dir),
                     });
+                } else {
+                    // Portable path - check if file exists
+                    let parent_path = normalize_path(&dir.join(part_of));
+                    if !self.ws.fs_ref().exists(&parent_path).await {
+                        result.errors.push(ValidationError::BrokenPartOf {
+                            file: path.to_path_buf(),
+                            target: part_of.clone(),
+                        });
+                    }
                 }
             }
 
@@ -697,17 +882,27 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
             // Check part_of if present
             if let Some(ref part_of) = index.frontmatter.part_of {
-                let parent_path = normalize_path(&dir.join(part_of));
-                if !self.ws.fs_ref().exists(&parent_path).await {
-                    result.errors.push(ValidationError::BrokenPartOf {
+                if is_clearly_non_portable_path(part_of) {
+                    // Non-portable path - add warning, skip exists() check
+                    result.warnings.push(ValidationWarning::NonPortablePath {
                         file: path.clone(),
-                        target: part_of.clone(),
+                        property: "part_of".to_string(),
+                        value: part_of.clone(),
+                        suggested: compute_suggested_portable_path(part_of, dir),
                     });
-                }
-
-                // Check if part_of is a non-portable path
-                if let Some(warning) = check_non_portable_path(&path, "part_of", part_of, dir) {
-                    result.warnings.push(warning);
+                } else {
+                    // Portable path - check if file exists
+                    let parent_path = normalize_path(&dir.join(part_of));
+                    if !self.ws.fs_ref().exists(&parent_path).await {
+                        result.errors.push(ValidationError::BrokenPartOf {
+                            file: path.clone(),
+                            target: part_of.clone(),
+                        });
+                    }
+                    // Also check for . or .. in non-absolute paths
+                    if let Some(warning) = check_non_portable_path(&path, "part_of", part_of, dir) {
+                        result.warnings.push(warning);
+                    }
                 }
             } else {
                 // File has no part_of - check if it's a root index
@@ -841,7 +1036,10 @@ impl<FS: AsyncFileSystem> Validator<FS> {
     }
 }
 
-/// Check if a path reference is non-portable (absolute, contains `.` or `..`)
+/// Check if a path reference is non-portable (contains `.` or `..` components).
+///
+/// NOTE: Absolute paths are handled separately by `is_clearly_non_portable_path`.
+/// This function only handles relative paths with `.` or `..` components.
 fn check_non_portable_path(
     file: &Path,
     property: &str,
@@ -850,28 +1048,9 @@ fn check_non_portable_path(
 ) -> Option<ValidationWarning> {
     let path = Path::new(value);
 
-    // Check for absolute paths
+    // Absolute paths are handled by is_clearly_non_portable_path
     if path.is_absolute() {
-        // Try to compute a relative path
-        let target = Path::new(value);
-        let suggested = if let Ok(target_canonical) = target.canonicalize() {
-            if let Ok(base_canonical) = base_dir.canonicalize() {
-                pathdiff::diff_paths(&target_canonical, &base_canonical)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| value.to_string())
-            } else {
-                value.to_string()
-            }
-        } else {
-            value.to_string()
-        };
-
-        return Some(ValidationWarning::NonPortablePath {
-            file: file.to_path_buf(),
-            property: property.to_string(),
-            value: value.to_string(),
-            suggested,
-        });
+        return None;
     }
 
     // Check for `.` or `..` components
@@ -883,19 +1062,7 @@ fn check_non_portable_path(
     });
 
     if has_dot_component {
-        // Normalize the path by resolving it and computing relative path back
-        let target_path = base_dir.join(value);
-        let suggested = if let Ok(target_canonical) = target_path.canonicalize() {
-            if let Ok(base_canonical) = base_dir.canonicalize() {
-                pathdiff::diff_paths(&target_canonical, &base_canonical)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| value.to_string())
-            } else {
-                value.to_string()
-            }
-        } else {
-            value.to_string()
-        };
+        let suggested = compute_suggested_portable_path(value, base_dir);
 
         // Only warn if the suggested path is actually different
         if suggested != value {
@@ -1714,6 +1881,163 @@ mod tests {
                 assert_eq!(target, "missing_parent.md");
             }
             _ => panic!("Expected BrokenPartOf"),
+        }
+    }
+
+    #[test]
+    fn test_detects_macos_absolute_path() {
+        assert!(super::is_clearly_non_portable_path(
+            "/Users/adam/Documents/file.md"
+        ));
+    }
+
+    #[test]
+    fn test_detects_linux_absolute_path() {
+        assert!(super::is_clearly_non_portable_path(
+            "/home/user/diary/file.md"
+        ));
+    }
+
+    #[test]
+    fn test_detects_linux_root_path() {
+        assert!(super::is_clearly_non_portable_path("/root/file.md"));
+    }
+
+    #[test]
+    fn test_detects_windows_absolute_path_backslash() {
+        assert!(super::is_clearly_non_portable_path(
+            r"C:\Users\adam\Documents\file.md"
+        ));
+    }
+
+    #[test]
+    fn test_detects_windows_absolute_path_forward_slash() {
+        assert!(super::is_clearly_non_portable_path(
+            "C:/Users/adam/Documents/file.md"
+        ));
+    }
+
+    #[test]
+    fn test_allows_simple_relative_path() {
+        assert!(!super::is_clearly_non_portable_path("../index.md"));
+        assert!(!super::is_clearly_non_portable_path("subdir/file.md"));
+        assert!(!super::is_clearly_non_portable_path("file.md"));
+    }
+
+    #[test]
+    fn test_allows_shallow_absolute_path() {
+        // Paths with <= 4 components that don't match known patterns are allowed
+        assert!(!super::is_clearly_non_portable_path("/data/file.md"));
+    }
+
+    #[test]
+    fn test_detects_deep_absolute_path() {
+        // Deep absolute paths (>4 components) are flagged even without known patterns
+        assert!(super::is_clearly_non_portable_path(
+            "/some/deep/nested/path/file.md"
+        ));
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_for_absolute() {
+        let base = Path::new("/workspace");
+        let suggested =
+            super::compute_suggested_portable_path("/Users/adam/Documents/file.md", base);
+        assert_eq!(suggested, "file.md");
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_for_relative_with_dots() {
+        // Test that ./file.md gets normalized to file.md
+        let base = Path::new("/workspace/subdir");
+        let suggested = super::compute_suggested_portable_path("./file.md", base);
+        assert_eq!(suggested, "file.md");
+
+        // Test that subdir/../file.md gets normalized to file.md
+        let suggested2 = super::compute_suggested_portable_path("subdir/../file.md", base);
+        assert_eq!(suggested2, "file.md");
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_same_directory() {
+        // When target and source are in the same directory, should return just filename
+        // Source: /workspace/Ideas/note.md (base_dir = /workspace/Ideas)
+        // Target: /Users/adam/journal/Ideas/index.md
+        // Result: index.md (same Ideas directory)
+        let base = Path::new("/workspace/Ideas");
+        let suggested =
+            super::compute_suggested_portable_path("/Users/adam/journal/Ideas/index.md", base);
+        assert_eq!(suggested, "index.md");
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_parent_directory() {
+        // When target is in parent directory relative to source
+        // Source: /workspace/Ideas/SubFolder/note.md (base_dir = /workspace/Ideas/SubFolder)
+        // Target: /Users/adam/journal/Ideas/index.md
+        // Result: ../index.md
+        let base = Path::new("/workspace/Ideas/SubFolder");
+        let suggested =
+            super::compute_suggested_portable_path("/Users/adam/journal/Ideas/index.md", base);
+        assert_eq!(suggested, "../index.md");
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_grandparent_directory() {
+        // When target is in grandparent directory relative to source
+        // Source: /workspace/Ideas/SubFolder/Deep/note.md (base_dir = /workspace/Ideas/SubFolder/Deep)
+        // Target: /Users/adam/journal/Ideas/index.md
+        // Result: ../../index.md
+        let base = Path::new("/workspace/Ideas/SubFolder/Deep");
+        let suggested =
+            super::compute_suggested_portable_path("/Users/adam/journal/Ideas/index.md", base);
+        assert_eq!(suggested, "../../index.md");
+    }
+
+    #[test]
+    fn test_compute_suggested_portable_path_sibling_directory() {
+        // When target is in a sibling directory relative to source
+        // Source: /workspace/Ideas/note.md (base_dir = /workspace/Ideas)
+        // Target: /Users/adam/journal/Projects/index.md
+        // Both Ideas and Projects are under journal, so result: ../Projects/index.md
+        let base = Path::new("/workspace/journal/Ideas");
+        let suggested = super::compute_suggested_portable_path(
+            "/Users/adam/Documents/journal/Projects/index.md",
+            base,
+        );
+        assert_eq!(suggested, "../Projects/index.md");
+    }
+
+    #[test]
+    fn test_non_portable_path_in_workspace_validation() {
+        let fs = make_test_fs();
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\ncontents:\n  - note.md\n---\n",
+        )
+        .unwrap();
+        fs.write_file(
+            Path::new("note.md"),
+            "---\ntitle: Note\npart_of: /Users/adam/Documents/README.md\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have a warning (NonPortablePath), not an error (BrokenPartOf)
+        assert!(result.is_ok()); // No errors
+        assert_eq!(result.warnings.len(), 1);
+        match &result.warnings[0] {
+            ValidationWarning::NonPortablePath {
+                property, value, ..
+            } => {
+                assert_eq!(property, "part_of");
+                assert!(value.starts_with("/Users/"));
+            }
+            _ => panic!("Expected NonPortablePath warning"),
         }
     }
 }

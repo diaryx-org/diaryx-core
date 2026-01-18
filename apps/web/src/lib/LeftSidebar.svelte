@@ -10,6 +10,7 @@
   import MobileActionSheet from "../views/sidebar/MobileActionSheet.svelte";
   import { createContextMenuState, type TreeNodeMenuData } from "./hooks/useContextMenu.svelte";
   import { getMobileState } from "./hooks/useMobile.svelte";
+  import { workspaceStore } from "../models/stores/workspaceStore.svelte";
   import {
     ChevronRight,
     ChevronDown,
@@ -650,10 +651,87 @@
     }
   }
 
+  // Reveal a file in the tree by expanding all ancestor nodes
+  // This handles lazy loading - loading children as we navigate down
+  async function revealFileInTree(filePath: string) {
+    if (!tree) return;
+
+    // Get the directory of the target file
+    const targetDir = filePath.substring(0, filePath.lastIndexOf('/'));
+
+    // Find and expand nodes along the path
+    async function expandAncestors(node: TreeNode): Promise<boolean> {
+      // Check if any child matches or contains the target
+      for (const child of node.children) {
+        // Skip placeholder nodes
+        if (child.name.startsWith('... (')) continue;
+
+        const childDir = child.path.substring(0, child.path.lastIndexOf('/'));
+
+        // Check if target is this child or under this child's directory
+        if (child.path === filePath) {
+          // Found the target! Expand this node to show it
+          if (!expandedNodes.has(node.path)) {
+            workspaceStore.expandNode(node.path);
+          }
+          return true;
+        }
+
+        // Check if target is under this child's subtree
+        if (targetDir.startsWith(childDir) || targetDir === childDir) {
+          // This child is an ancestor - expand current node first
+          if (!expandedNodes.has(node.path)) {
+            workspaceStore.expandNode(node.path);
+          }
+
+          // Load children if needed
+          if (hasUnloadedChildren(child) && onLoadChildren) {
+            await onLoadChildren(child.path);
+          }
+
+          // Expand the child and recurse
+          if (!expandedNodes.has(child.path)) {
+            workspaceStore.expandNode(child.path);
+          }
+
+          // Recurse into the child
+          if (await expandAncestors(child)) {
+            return true;
+          }
+        }
+      }
+
+      // If we have unloaded children, load them and try again
+      if (hasUnloadedChildren(node) && onLoadChildren) {
+        await onLoadChildren(node.path);
+        // Try again with loaded children
+        for (const child of node.children) {
+          if (child.name.startsWith('... (')) continue;
+
+          const childDir = child.path.substring(0, child.path.lastIndexOf('/'));
+          if (child.path === filePath || targetDir.startsWith(childDir) || targetDir === childDir) {
+            if (!expandedNodes.has(node.path)) {
+              workspaceStore.expandNode(node.path);
+            }
+            if (await expandAncestors(child)) {
+              return true;
+            }
+          }
+        }
+      }
+
+      return false;
+    }
+
+    await expandAncestors(tree);
+  }
+
   // Navigate to a file from a warning
-  function handleViewWarning(warning: ValidationWarningWithMeta) {
+  async function handleViewWarning(warning: ValidationWarningWithMeta) {
     const filePath = getWarningFilePath(warning);
     if (filePath && filePath.endsWith('.md')) {
+      // Expand parent folders to reveal the file in the tree
+      await revealFileInTree(filePath);
       onOpenEntry(filePath);
     }
   }
@@ -689,9 +767,11 @@
   }
 
   // Navigate to a file from an error
-  function handleViewError(error: ValidationErrorWithMeta) {
+  async function handleViewError(error: ValidationErrorWithMeta) {
     const filePath = getErrorFilePath(error);
     if (filePath && filePath.endsWith('.md')) {
+      // Expand parent folders to reveal the file in the tree
+      await revealFileInTree(filePath);
       onOpenEntry(filePath);
     }
   }

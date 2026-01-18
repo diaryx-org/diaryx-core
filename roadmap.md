@@ -11,9 +11,13 @@ part_of: README.md
 
 # Roadmap
 
-## v0.8.0
+## v0.11.0
 
 ### Template support for web frontend
+
+### Export different file types
+
+Possibly embed pandoc?
 
 ### Improved Sync/Backup
 

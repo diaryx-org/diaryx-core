@@ -27,6 +27,7 @@
   import { workspaceStore } from "@/models/stores/workspaceStore.svelte";
   import { entryStore } from "@/models/stores/entryStore.svelte";
   import type { Api } from "$lib/backend/api";
+  import { toast } from "svelte-sonner";
 
   // Props
   interface Props {
@@ -38,9 +39,13 @@
     onOpenEntry?: (path: string) => Promise<void>;
     /** API instance for loading audiences */
     api: Api | null;
+    /** When true, automatically starts a hosting session */
+    triggerStart?: boolean;
+    /** Called after triggerStart is consumed */
+    onTriggerStartConsumed?: () => void;
   }
 
-  let { onSessionStart, onSessionEnd, onBeforeHost, onOpenEntry, api }: Props = $props();
+  let { onSessionStart, onSessionEnd, onBeforeHost, onOpenEntry, api, triggerStart = false, onTriggerStartConsumed }: Props = $props();
 
   // Local state
   let joinCodeInput = $state("");
@@ -66,6 +71,14 @@
   // Load available audiences when component mounts or tree changes
   $effect(() => {
     loadAudiences();
+  });
+
+  // Handle external trigger to start session
+  $effect(() => {
+    if (triggerStart && mode === 'idle' && !isCreating) {
+      handleCreateSession();
+      onTriggerStartConsumed?.();
+    }
   });
 
   async function loadAudiences() {
@@ -107,9 +120,11 @@
         await onBeforeHost(audienceToUse);
       }
       await createShareSession(wsId, preSessionReadOnly, audienceToUse);
+      toast.success("Share session started", { description: "Others can now join with your code" });
       onSessionStart?.();
     } catch (e) {
       console.error("[ShareTab] Failed to create session:", e);
+      toast.error("Failed to start session", { description: e instanceof Error ? e.message : String(e) });
     } finally {
       isCreating = false;
     }

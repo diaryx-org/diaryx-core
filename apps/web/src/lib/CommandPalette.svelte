@@ -11,39 +11,82 @@
     FilePlus,
     FileText,
     Download,
+    ShieldCheck,
+    RefreshCw,
+    Copy,
+    Pencil,
+    Trash2,
+    FolderInput,
+    FilePlus2,
+    Share2,
+    UserPlus,
+    FileSearch,
+    ClipboardPaste,
+    LetterText,
   } from "@lucide/svelte";
 
   interface Props {
     open: boolean;
     tree: TreeNode | null;
     api: Api | null;
+    currentEntryPath: string | null;
     onOpenEntry: (path: string) => void;
     onNewEntry: () => void;
     onDailyEntry: () => void;
     onSettings: () => void;
     onExport: () => void;
+    onValidate: () => void;
+    onRefreshTree: () => void;
+    onDuplicateEntry: () => void;
+    onRenameEntry: () => void;
+    onDeleteEntry: () => void;
+    onMoveEntry: () => void;
+    onCreateChildEntry: () => void;
+    onStartShare: () => void;
+    onJoinSession: () => void;
+    onFindInFile: () => void;
+    onWordCount: () => void;
+    onImportFromClipboard: () => void;
+    onCopyAsMarkdown: () => void;
   }
 
   let {
     open = $bindable(),
     tree,
     api,
+    currentEntryPath,
     onOpenEntry,
     onNewEntry,
     onDailyEntry,
     onSettings,
     onExport,
+    onValidate,
+    onRefreshTree,
+    onDuplicateEntry,
+    onRenameEntry,
+    onDeleteEntry,
+    onMoveEntry,
+    onCreateChildEntry,
+    onStartShare,
+    onJoinSession,
+    onFindInFile,
+    onWordCount,
+    onImportFromClipboard,
+    onCopyAsMarkdown,
   }: Props = $props();
 
   let searchValue = $state("");
   let searchResults: SearchResults | null = $state(null);
   let searchTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // Check if we have a current entry for entry-specific commands
+  const hasCurrentEntry = $derived(!!currentEntryPath);
+
   // Collect all entry paths from tree for quick navigation
   function getAllEntries(node: TreeNode | null): { path: string; name: string }[] {
     if (!node) return [];
     const entries: { path: string; name: string }[] = [];
-    
+
     function traverse(n: TreeNode) {
       entries.push({ path: n.path, name: n.name });
       for (const child of n.children) {
@@ -108,8 +151,8 @@
   <Command.List>
     <Command.Empty>No results found.</Command.Empty>
 
-    <!-- Commands Group -->
-    <Command.Group heading="Commands">
+    <!-- General Commands -->
+    <Command.Group heading="General">
       <Command.Item onSelect={() => handleCommand(onDailyEntry)}>
         <CalendarDays class="mr-2 size-4" />
         <span>Daily Entry</span>
@@ -120,15 +163,97 @@
         <span>New Entry</span>
         <Command.Shortcut>Create new entry</Command.Shortcut>
       </Command.Item>
+      <Command.Item onSelect={() => handleCommand(onImportFromClipboard)}>
+        <ClipboardPaste class="mr-2 size-4" />
+        <span>Import from Clipboard</span>
+        <Command.Shortcut>Create entry from clipboard</Command.Shortcut>
+      </Command.Item>
       <Command.Item onSelect={() => handleCommand(onSettings)}>
         <Settings class="mr-2 size-4" />
         <span>Settings</span>
         <Command.Shortcut>Open settings</Command.Shortcut>
       </Command.Item>
+    </Command.Group>
+
+    <!-- Current Entry Commands -->
+    {#if hasCurrentEntry}
+      <Command.Separator />
+      <Command.Group heading="Current Entry">
+        <Command.Item onSelect={() => handleCommand(onFindInFile)}>
+          <FileSearch class="mr-2 size-4" />
+          <span>Find in File</span>
+          <Command.Shortcut>Cmd/Ctrl+F</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onWordCount)}>
+          <LetterText class="mr-2 size-4" />
+          <span>Word Count</span>
+          <Command.Shortcut>Show statistics</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onCopyAsMarkdown)}>
+          <Copy class="mr-2 size-4" />
+          <span>Copy as Markdown</span>
+          <Command.Shortcut>Copy to clipboard</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onCreateChildEntry)}>
+          <FilePlus2 class="mr-2 size-4" />
+          <span>Create Child Entry</span>
+          <Command.Shortcut>New entry under this one</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onDuplicateEntry)}>
+          <Copy class="mr-2 size-4" />
+          <span>Duplicate Entry</span>
+          <Command.Shortcut>Create a copy</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onRenameEntry)}>
+          <Pencil class="mr-2 size-4" />
+          <span>Rename Entry</span>
+          <Command.Shortcut>Change filename</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onMoveEntry)}>
+          <FolderInput class="mr-2 size-4" />
+          <span>Move Entry...</span>
+          <Command.Shortcut>Move to different parent</Command.Shortcut>
+        </Command.Item>
+        <Command.Item onSelect={() => handleCommand(onDeleteEntry)}>
+          <Trash2 class="mr-2 size-4 text-destructive" />
+          <span class="text-destructive">Delete Entry</span>
+          <Command.Shortcut>Remove permanently</Command.Shortcut>
+        </Command.Item>
+      </Command.Group>
+    {/if}
+
+    <!-- Workspace Commands -->
+    <Command.Separator />
+    <Command.Group heading="Workspace">
+      <Command.Item onSelect={() => handleCommand(onRefreshTree)}>
+        <RefreshCw class="mr-2 size-4" />
+        <span>Refresh Tree</span>
+        <Command.Shortcut>Reload file tree</Command.Shortcut>
+      </Command.Item>
+      <Command.Item onSelect={() => handleCommand(onValidate)}>
+        <ShieldCheck class="mr-2 size-4" />
+        <span>Validate Workspace</span>
+        <Command.Shortcut>Check for issues</Command.Shortcut>
+      </Command.Item>
       <Command.Item onSelect={() => handleCommand(onExport)}>
         <Download class="mr-2 size-4" />
         <span>Export...</span>
         <Command.Shortcut>Export workspace</Command.Shortcut>
+      </Command.Item>
+    </Command.Group>
+
+    <!-- Collaboration Commands -->
+    <Command.Separator />
+    <Command.Group heading="Collaboration">
+      <Command.Item onSelect={() => handleCommand(onStartShare)}>
+        <Share2 class="mr-2 size-4" />
+        <span>Start Share Session</span>
+        <Command.Shortcut>Host a session</Command.Shortcut>
+      </Command.Item>
+      <Command.Item onSelect={() => handleCommand(onJoinSession)}>
+        <UserPlus class="mr-2 size-4" />
+        <span>Join Session</span>
+        <Command.Shortcut>Enter join code</Command.Shortcut>
       </Command.Item>
     </Command.Group>
 

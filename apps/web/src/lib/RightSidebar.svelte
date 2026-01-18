@@ -67,6 +67,11 @@
     onOpenEntry?: (path: string) => Promise<void>;
     // API for share tab
     api?: Api | null;
+    // External tab/session control
+    requestedTab?: "properties" | "history" | "share" | null;
+    onRequestedTabConsumed?: () => void;
+    triggerStartSession?: boolean;
+    onTriggerStartSessionConsumed?: () => void;
   }
 
   let {
@@ -86,11 +91,23 @@
     onBeforeHost,
     onOpenEntry,
     api = null,
+    requestedTab = null,
+    onRequestedTabConsumed,
+    triggerStartSession = false,
+    onTriggerStartSessionConsumed,
   }: Props = $props();
 
   // Tab state: "properties" | "history" | "share"
   type TabType = "properties" | "history" | "share";
   let activeTab: TabType = $state("properties");
+
+  // Handle external tab request
+  $effect(() => {
+    if (requestedTab && requestedTab !== activeTab) {
+      activeTab = requestedTab;
+      onRequestedTabConsumed?.();
+    }
+  });
 
   // History state
   let history: CrdtHistoryEntry[] = $state([]);
@@ -879,7 +896,13 @@
       {/if}
     {:else if activeTab === "share"}
       <!-- Share Tab -->
-      <ShareTab {onBeforeHost} {onOpenEntry} {api} />
+      <ShareTab
+        {onBeforeHost}
+        {onOpenEntry}
+        {api}
+        triggerStart={triggerStartSession}
+        onTriggerStartConsumed={onTriggerStartSessionConsumed}
+      />
     {/if}
   </div>
 
