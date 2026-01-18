@@ -15,6 +15,7 @@
     content: string;
     editorKey: string;
     readableLineLength?: boolean;
+    readonly?: boolean;
     onchange: (markdown: string) => void;
     onblur: () => void;
     // These match the Editor component prop types
@@ -37,6 +38,7 @@
     content,
     editorKey,
     readableLineLength = true,
+    readonly = false,
     onchange,
     onblur,
     onFileDrop,
@@ -72,7 +74,8 @@
           {content}
           {onchange}
           {onblur}
-          placeholder="Start writing..."
+          placeholder={readonly ? "" : "Start writing..."}
+          {readonly}
           {onFileDrop}
           {onLinkClick}
           {entryPath}

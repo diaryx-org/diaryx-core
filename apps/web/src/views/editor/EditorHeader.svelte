@@ -35,6 +35,7 @@
     leftSidebarOpen: boolean;
     rightSidebarOpen: boolean;
     focusMode?: boolean;
+    readonly?: boolean;
     onSave: () => void;
     onToggleLeftSidebar: () => void;
     onToggleRightSidebar: () => void;
@@ -51,6 +52,7 @@
     leftSidebarOpen,
     rightSidebarOpen,
     focusMode = false,
+    readonly = false,
     onSave,
     onToggleLeftSidebar,
     onToggleRightSidebar,
@@ -129,40 +131,49 @@
 
   <!-- Right side: actions -->
   <div class="flex items-center gap-1 md:gap-2 ml-2 shrink-0">
-    {#if isDirty && !isSaving}
+    {#if readonly}
+      <!-- View-only indicator for read-only mode -->
       <span
-        class="hidden sm:inline-flex px-2 py-1 text-xs font-medium rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+        class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
       >
-        Unsaved
+        View only
       </span>
-    {/if}
-
-    <!-- Save button with tooltip -->
-    <Tooltip.Root>
-      <Tooltip.Trigger>
-        <Button
-          onclick={onSave}
-          disabled={!isDirty || isSaving}
-          variant={!isDirty && !isSaving ? "ghost" : "default"}
-          size="sm"
-          class="gap-1 md:gap-2 min-w-[80px]"
+    {:else}
+      {#if isDirty && !isSaving}
+        <span
+          class="hidden sm:inline-flex px-2 py-1 text-xs font-medium rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
         >
-          {#if isSaving}
-            <Loader2 class="size-4 animate-spin" />
-            <span class="hidden sm:inline">Saving...</span>
-          {:else if !isDirty}
-            <Save class="size-4 opacity-50" />
-            <span class="hidden sm:inline opacity-50">Saved</span>
-          {:else}
-            <Save class="size-4" />
-            <span class="hidden sm:inline">Save</span>
-          {/if}
-        </Button>
-      </Tooltip.Trigger>
-      {#if !mobileState.isMobile}
-        <Tooltip.Content>Save ({modKey}S)</Tooltip.Content>
+          Unsaved
+        </span>
       {/if}
-    </Tooltip.Root>
+
+      <!-- Save button with tooltip -->
+      <Tooltip.Root>
+        <Tooltip.Trigger>
+          <Button
+            onclick={onSave}
+            disabled={!isDirty || isSaving}
+            variant={!isDirty && !isSaving ? "ghost" : "default"}
+            size="sm"
+            class="gap-1 md:gap-2 min-w-[80px]"
+          >
+            {#if isSaving}
+              <Loader2 class="size-4 animate-spin" />
+              <span class="hidden sm:inline">Saving...</span>
+            {:else if !isDirty}
+              <Save class="size-4 opacity-50" />
+              <span class="hidden sm:inline opacity-50">Saved</span>
+            {:else}
+              <Save class="size-4" />
+              <span class="hidden sm:inline">Save</span>
+            {/if}
+          </Button>
+        </Tooltip.Trigger>
+        {#if !mobileState.isMobile}
+          <Tooltip.Content>Save ({modKey}S)</Tooltip.Content>
+        {/if}
+      </Tooltip.Root>
+    {/if}
 
     <!-- Command palette button with tooltip -->
     <Tooltip.Root>

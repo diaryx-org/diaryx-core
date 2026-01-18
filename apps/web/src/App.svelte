@@ -86,6 +86,8 @@
   let currentEntry = $derived(entryStore.currentEntry);
   let isDirty = $derived(entryStore.isDirty);
   let isSaving = $derived(entryStore.isSaving);
+  // Editor is read-only when guest is in a read-only session
+  let editorReadonly = $derived(shareSessionStore.isGuest && shareSessionStore.readOnly);
   let isLoading = $derived(entryStore.isLoading);
   let titleError = $derived(entryStore.titleError);
   let displayContent = $derived(entryStore.displayContent);
@@ -1626,6 +1628,7 @@
         leftSidebarOpen={!leftSidebarCollapsed}
         rightSidebarOpen={!rightSidebarCollapsed}
         {focusMode}
+        readonly={editorReadonly}
         onSave={save}
         onToggleLeftSidebar={toggleLeftSidebar}
         onToggleRightSidebar={toggleRightSidebar}
@@ -1638,6 +1641,7 @@
         content={displayContent}
         editorKey={currentEntry.path}
         {readableLineLength}
+        readonly={editorReadonly}
         onchange={handleContentChange}
         onblur={handleEditorBlur}
         entryPath={currentEntry.path}
