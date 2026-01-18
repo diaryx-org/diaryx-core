@@ -299,9 +299,16 @@
       // Run initial validation
       await runValidation();
 
-      // Add swipe-down gesture for command palette on mobile
+      // Add swipe gestures for mobile:
+      // - Swipe down from top: open command palette
+      // - Swipe right from left edge: open left sidebar
+      // - Swipe left from right edge: open right sidebar
       let touchStartY = 0;
       let touchStartX = 0;
+      const EDGE_THRESHOLD = 30; // pixels from edge to start swipe
+      const SWIPE_THRESHOLD = 80; // minimum swipe distance
+      const CROSS_AXIS_MAX = 50; // max movement in perpendicular direction
+
       const handleTouchStart = (e: TouchEvent) => {
         touchStartY = e.touches[0].clientY;
         touchStartX = e.touches[0].clientX;
@@ -310,10 +317,31 @@
         const touchEndY = e.changedTouches[0].clientY;
         const touchEndX = e.changedTouches[0].clientX;
         const deltaY = touchEndY - touchStartY;
-        const deltaX = Math.abs(touchEndX - touchStartX);
-        // Swipe down from top 100px of screen, mostly vertical
-        if (touchStartY < 100 && deltaY > 80 && deltaX < 50) {
+        const deltaX = touchEndX - touchStartX;
+        const absDeltaY = Math.abs(deltaY);
+        const absDeltaX = Math.abs(deltaX);
+        const screenWidth = window.innerWidth;
+
+        // Swipe down from top 100px of screen, mostly vertical → open command palette
+        if (touchStartY < 100 && deltaY > SWIPE_THRESHOLD && absDeltaX < CROSS_AXIS_MAX) {
           uiStore.openCommandPalette();
+          return;
+        }
+
+        // Swipe right from left edge, mostly horizontal → open left sidebar
+        if (touchStartX < EDGE_THRESHOLD && deltaX > SWIPE_THRESHOLD && absDeltaY < CROSS_AXIS_MAX) {
+          if (leftSidebarCollapsed) {
+            toggleLeftSidebar();
+          }
+          return;
+        }
+
+        // Swipe left from right edge, mostly horizontal → open right sidebar
+        if (touchStartX > screenWidth - EDGE_THRESHOLD && deltaX < -SWIPE_THRESHOLD && absDeltaY < CROSS_AXIS_MAX) {
+          if (rightSidebarCollapsed) {
+            toggleRightSidebar();
+          }
+          return;
         }
       };
       document.addEventListener("touchstart", handleTouchStart);
