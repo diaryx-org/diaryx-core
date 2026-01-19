@@ -1,6 +1,6 @@
 /**
  * Collaboration Store - Manages Y.js collaboration state
- * 
+ *
  * This store holds state related to real-time collaboration,
  * including Y.Doc, provider, connection status, and server configuration.
  */
@@ -20,6 +20,12 @@ let currentCollaborationPath = $state<string | null>(null);
 // Connection status
 let collaborationEnabled = $state(false);
 let collaborationConnected = $state(false);
+
+// Sync status for multi-device sync
+export type SyncStatus = 'not_configured' | 'idle' | 'connecting' | 'syncing' | 'synced' | 'error';
+let syncStatus = $state<SyncStatus>('not_configured');
+let syncProgress = $state<{ total: number; completed: number } | null>(null);
+let syncError = $state<string | null>(null);
 
 // Server configuration
 function getInitialServerUrl(): string | null {
@@ -51,20 +57,23 @@ export function getCollaborationStore() {
     get collaborationEnabled() { return collaborationEnabled; },
     get collaborationConnected() { return collaborationConnected; },
     get collaborationServerUrl() { return collaborationServerUrl; },
-    
+    get syncStatus() { return syncStatus; },
+    get syncProgress() { return syncProgress; },
+    get syncError() { return syncError; },
+
     // Y.Doc management
     setYDoc(ydoc: YDoc | null) {
       currentYDoc = ydoc;
     },
-    
+
     setProvider(provider: HocuspocusProvider | null) {
       currentProvider = provider;
     },
-    
+
     setCollaborationPath(path: string | null) {
       currentCollaborationPath = path;
     },
-    
+
     // Set all collaboration state at once
     setCollaborationSession(
       ydoc: YDoc | null,
@@ -75,23 +84,43 @@ export function getCollaborationStore() {
       currentProvider = provider;
       currentCollaborationPath = path;
     },
-    
+
     // Clear collaboration session
     clearCollaborationSession() {
       currentYDoc = null;
       currentProvider = null;
       currentCollaborationPath = null;
     },
-    
+
     // Connection status
     setEnabled(enabled: boolean) {
       collaborationEnabled = enabled;
     },
-    
+
     setConnected(connected: boolean) {
       collaborationConnected = connected;
     },
-    
+
+    // Sync status for multi-device sync
+    setSyncStatus(status: SyncStatus) {
+      syncStatus = status;
+      // Clear error when status changes to non-error state
+      if (status !== 'error') {
+        syncError = null;
+      }
+    },
+
+    setSyncProgress(progress: { total: number; completed: number } | null) {
+      syncProgress = progress;
+    },
+
+    setSyncError(error: string | null) {
+      syncError = error;
+      if (error) {
+        syncStatus = 'error';
+      }
+    },
+
     // Server URL
     setServerUrl(url: string | null) {
       collaborationServerUrl = url;

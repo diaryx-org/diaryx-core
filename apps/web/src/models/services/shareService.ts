@@ -11,8 +11,7 @@
 import { shareSessionStore } from '../stores/shareSessionStore.svelte';
 import { collaborationStore } from '../stores/collaborationStore.svelte';
 import { workspaceStore } from '../stores/workspaceStore.svelte';
-import { startSessionSync, stopSessionSync, setBackendApi } from '$lib/crdt/workspaceCrdtBridge';
-import { setActiveSessionCode } from '$lib/crdt/collaborationBridge';
+import { startSessionSync, stopSessionSync, setBackendApi, setActiveSessionCode } from '$lib/crdt';
 import { createGuestBackend, type WorkerBackendNew } from '$lib/backend/workerBackendNew';
 import { createApi, type Api } from '$lib/backend/api';
 import { isTauri, type Backend } from '$lib/backend/interface';

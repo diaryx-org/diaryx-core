@@ -25,13 +25,11 @@ vi.mock('../stores/collaborationStore.svelte', () => ({
   },
 }))
 
-vi.mock('$lib/crdt/workspaceCrdtBridge', () => ({
+vi.mock('$lib/crdt', () => ({
   startSessionSync: vi.fn(),
   stopSessionSync: vi.fn(),
-}))
-
-vi.mock('$lib/crdt/collaborationBridge', () => ({
   setActiveSessionCode: vi.fn(),
+  setBackendApi: vi.fn(),
 }))
 
 import {

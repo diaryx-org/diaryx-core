@@ -10,9 +10,13 @@ vi.mock('$lib/crdt/workspaceCrdtBridge', () => ({
   getWorkspaceStats: vi.fn().mockResolvedValue({ activeFiles: 10, deletedFiles: 2 }),
 }))
 
-vi.mock('$lib/crdt/collaborationBridge', () => ({
-  setCollaborationWorkspaceId: vi.fn(),
-}))
+vi.mock('$lib/crdt', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    setCollaborationWorkspaceId: vi.fn(),
+  };
+})
 
 import {
   initializeWorkspaceCrdt,
@@ -33,7 +37,7 @@ import {
   getWorkspaceStats,
 } from '$lib/crdt/workspaceCrdtBridge'
 
-import { setCollaborationWorkspaceId } from '$lib/crdt/collaborationBridge'
+import { setCollaborationWorkspaceId } from '$lib/crdt'
 
 describe('workspaceCrdtService', () => {
   const mockRustApi = {

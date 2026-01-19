@@ -9,7 +9,7 @@
  */
 
 import { AuthService, createAuthService, type User, type Workspace, type Device, AuthError } from './authService';
-import { setAuthToken, setCollaborationServer, setCollaborationWorkspaceId } from '../crdt/collaborationBridge';
+import { setAuthToken, setCollaborationServer, setCollaborationWorkspaceId } from '../crdt';
 import { collaborationStore } from '@/models/stores/collaborationStore.svelte';
 
 // ============================================================================
@@ -134,6 +134,10 @@ export async function initAuth(): Promise<void> {
       // Enable collaboration for returning authenticated users
       collaborationStore.setEnabled(true);
 
+      // Update sync status to show we're ready to connect
+      // The actual connection will happen when workspace CRDT initializes
+      collaborationStore.setSyncStatus('idle');
+
       // Save user for faster restore next time
       localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(me.user));
     } catch (err) {
@@ -145,6 +149,8 @@ export async function initAuth(): Promise<void> {
         console.warn('[AuthStore] Failed to validate token:', err);
         if (savedUser) {
           state.isAuthenticated = true;
+          collaborationStore.setEnabled(true);
+          collaborationStore.setSyncStatus('idle');
         }
       }
     } finally {

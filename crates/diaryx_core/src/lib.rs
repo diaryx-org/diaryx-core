@@ -38,6 +38,9 @@ pub mod search;
 /// Frontmatter parsing and manipulation utilities
 pub mod frontmatter;
 
+/// Metadata-to-frontmatter conversion and file writing utilities
+pub mod metadata_writer;
+
 /// Templates for creating new entries
 pub mod template;
 

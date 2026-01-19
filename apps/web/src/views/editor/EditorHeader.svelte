@@ -13,6 +13,7 @@
   import { Button } from "$lib/components/ui/button";
   import * as Tooltip from "$lib/components/ui/tooltip";
   import { getMobileState } from "$lib/hooks/useMobile.svelte";
+  import SyncStatusIndicator from "$lib/SyncStatusIndicator.svelte";
   import {
     Save,
     PanelLeft,
@@ -48,6 +49,8 @@
     onPrevDay?: () => void;
     /** Navigate to the next day's entry */
     onNextDay?: () => void;
+    /** Open settings dialog (for sync indicator) */
+    onOpenSettings?: () => void;
   }
 
   let {
@@ -68,6 +71,7 @@
     onOpenCommandPalette,
     onPrevDay,
     onNextDay,
+    onOpenSettings,
   }: Props = $props();
 
   // Focus mode: header is invisible when both sidebars are closed
@@ -184,6 +188,9 @@
 
   <!-- Right side: actions -->
   <div class="flex items-center gap-1 md:gap-2 ml-2 shrink-0">
+    <!-- Sync status indicator -->
+    <SyncStatusIndicator onOpenSettings={onOpenSettings} />
+
     {#if readonly}
       <!-- View-only indicator for read-only mode -->
       <span

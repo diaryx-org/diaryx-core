@@ -6,10 +6,10 @@ import {
   updateFileMetadata as updateFileInCrdt,
   addToContents,
   getWorkspaceStats,
+  setCollaborationWorkspaceId,
   type FileMetadata,
   type BinaryRef,
-} from '$lib/crdt/workspaceCrdtBridge';
-import { setCollaborationWorkspaceId } from '$lib/crdt/collaborationBridge';
+} from '$lib/crdt';
 import type { JsonValue } from '$lib/backend/generated/serde_json/JsonValue';
 
 // ============================================================================
@@ -25,6 +25,55 @@ export interface WorkspaceCrdtCallbacks {
 export interface WorkspaceCrdtStats {
   activeFiles: number;
   totalAttachments: number;
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Calculate a relative path from one file to another.
+ * Used for CRDT part_of and contents fields which should store relative paths.
+ *
+ * @param fromPath - The file path we're calculating relative to (e.g., "workspace/folder/file.md")
+ * @param toPath - The target file path (e.g., "workspace/folder/parent.md")
+ * @returns The relative path from fromPath's directory to toPath (e.g., "parent.md")
+ */
+function calculateRelativePath(fromPath: string, toPath: string): string {
+  // Get directory of the fromPath (remove filename)
+  const fromParts = fromPath.split('/');
+  fromParts.pop(); // Remove the filename
+  const fromDir = fromParts;
+
+  const toParts = toPath.split('/');
+
+  // Find common prefix length
+  let commonLength = 0;
+  while (
+    commonLength < fromDir.length &&
+    commonLength < toParts.length &&
+    fromDir[commonLength] === toParts[commonLength]
+  ) {
+    commonLength++;
+  }
+
+  // Calculate how many levels we need to go up from fromDir
+  const upCount = fromDir.length - commonLength;
+
+  // Build the relative path
+  const relativeParts: string[] = [];
+
+  // Add ".." for each level we need to go up
+  for (let i = 0; i < upCount; i++) {
+    relativeParts.push('..');
+  }
+
+  // Add the remaining parts of toPath after the common prefix
+  for (let i = commonLength; i < toParts.length; i++) {
+    relativeParts.push(toParts[i]);
+  }
+
+  return relativeParts.join('/');
 }
 
 // ============================================================================
@@ -160,7 +209,10 @@ export async function addFileToCrdt(
 
     const metadata: FileMetadata = {
       title: (frontmatter.title as string) ?? null,
-      part_of: parentPath ?? (frontmatter.part_of as string) ?? null,
+      // Convert parentPath to relative path if provided
+      part_of: parentPath
+        ? calculateRelativePath(path, parentPath)
+        : (frontmatter.part_of as string) ?? null,
       // Keep contents as relative paths (as stored in frontmatter)
       // The CRDT uses relative paths consistently - don't convert to full paths
       contents: frontmatter.contents

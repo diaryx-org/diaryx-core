@@ -82,32 +82,37 @@ function encodeSyncMessage(syncType: 0 | 1 | 2, payload: Uint8Array): Uint8Array
 }
 
 /**
- * Decode a Y-sync message.
- * Returns null if not a valid sync message.
+ * Decode ALL Y-sync messages in a buffer (server may concatenate multiple messages).
  */
-function decodeSyncMessage(data: Uint8Array): { type: number; payload: Uint8Array } | null {
+function decodeAllSyncMessages(data: Uint8Array): Array<{ type: number; payload: Uint8Array }> {
+  const messages: Array<{ type: number; payload: Uint8Array }> = [];
   let offset = 0;
 
-  // Read message type
-  const [msgType, msgBytes] = readVarUint(data, offset);
-  if (msgType !== MSG_SYNC) {
-    console.warn('[SimpleSyncBridge] Not a sync message, msgType:', msgType);
-    return null;
+  while (offset < data.length) {
+    // Read message type
+    const [msgType, msgBytes] = readVarUint(data, offset);
+    if (msgType !== MSG_SYNC) {
+      console.warn('[SimpleSyncBridge] Not a sync message at offset', offset, ', msgType:', msgType);
+      break;
+    }
+    offset += msgBytes;
+
+    // Read sync type
+    const [syncType, syncBytes] = readVarUint(data, offset);
+    offset += syncBytes;
+
+    // Read payload length
+    const [payloadLen, lenBytes] = readVarUint(data, offset);
+    offset += lenBytes;
+
+    // Extract payload
+    const payload = data.slice(offset, offset + payloadLen);
+    offset += payloadLen;
+
+    messages.push({ type: syncType, payload });
   }
-  offset += msgBytes;
 
-  // Read sync type
-  const [syncType, syncBytes] = readVarUint(data, offset);
-  offset += syncBytes;
-
-  // Read payload length
-  const [payloadLen, lenBytes] = readVarUint(data, offset);
-  offset += lenBytes;
-
-  // Extract payload
-  const payload = data.slice(offset, offset + payloadLen);
-
-  return { type: syncType, payload };
+  return messages;
 }
 
 export class SimpleSyncBridge {
@@ -224,12 +229,13 @@ export class SimpleSyncBridge {
   }
 
   /**
-   * Handle incoming Y-sync message.
+   * Handle incoming Y-sync message(s).
+   * The server may send multiple messages concatenated in one WebSocket frame.
    */
   private handleMessage(data: Uint8Array): void {
-    const decoded = decodeSyncMessage(data);
+    const messages = decodeAllSyncMessages(data);
 
-    if (!decoded) {
+    if (messages.length === 0) {
       console.warn('[SimpleSyncBridge] Received invalid sync message, trying as raw update');
       // Fallback: try applying as raw Y.js update for backwards compatibility
       try {
@@ -241,46 +247,52 @@ export class SimpleSyncBridge {
       return;
     }
 
-    switch (decoded.type) {
-      case SYNC_STEP1: {
-        // Server sent SyncStep1: respond with SyncStep2 (diff based on their state vector)
-        console.log(`[SimpleSyncBridge] Received SyncStep1: ${decoded.payload.length} bytes state vector`);
-        const diff = Y.encodeStateAsUpdate(this.doc, decoded.payload);
-        if (diff.length > 0) {
-          const msg = encodeSyncMessage(SYNC_STEP2, diff);
-          console.log(`[SimpleSyncBridge] Sending SyncStep2: ${diff.length} bytes diff`);
-          this.ws?.send(msg);
+    console.log(`[SimpleSyncBridge] Received ${messages.length} message(s) in frame`);
+
+    for (const decoded of messages) {
+      switch (decoded.type) {
+        case SYNC_STEP1: {
+          // Server sent SyncStep1: respond with SyncStep2 (diff based on their state vector)
+          console.log(`[SimpleSyncBridge] Received SyncStep1: ${decoded.payload.length} bytes state vector`);
+          const diff = Y.encodeStateAsUpdate(this.doc, decoded.payload);
+          if (diff.length > 0) {
+            const msg = encodeSyncMessage(SYNC_STEP2, diff);
+            console.log(`[SimpleSyncBridge] Sending SyncStep2: ${diff.length} bytes diff (OUR content to server)`);
+            this.ws?.send(msg);
+          } else {
+            console.log(`[SimpleSyncBridge] No diff to send (our doc is empty or identical)`);
+          }
+          break;
         }
-        break;
-      }
 
-      case SYNC_STEP2: {
-        // Server sent SyncStep2: apply the diff
-        console.log(`[SimpleSyncBridge] Received SyncStep2: ${decoded.payload.length} bytes diff`);
-        Y.applyUpdate(this.doc, decoded.payload, 'server');
+        case SYNC_STEP2: {
+          // Server sent SyncStep2: apply the diff
+          console.log(`[SimpleSyncBridge] Received SyncStep2: ${decoded.payload.length} bytes diff`);
+          Y.applyUpdate(this.doc, decoded.payload, 'server');
 
-        // Mark as synced after receiving SyncStep2
-        if (!this.synced) {
-          this.synced = true;
-          this.onSynced?.();
+          // Mark as synced after receiving SyncStep2
+          if (!this.synced) {
+            this.synced = true;
+            this.onSynced?.();
+          }
+          break;
         }
-        break;
-      }
 
-      case SYNC_UPDATE: {
-        // Server sent incremental update: apply it
-        console.log(`[SimpleSyncBridge] Received Update: ${decoded.payload.length} bytes`);
-        Y.applyUpdate(this.doc, decoded.payload, 'server');
+        case SYNC_UPDATE: {
+          // Server sent incremental update: apply it
+          console.log(`[SimpleSyncBridge] Received Update: ${decoded.payload.length} bytes`);
+          Y.applyUpdate(this.doc, decoded.payload, 'server');
 
-        if (!this.synced) {
-          this.synced = true;
-          this.onSynced?.();
+          if (!this.synced) {
+            this.synced = true;
+            this.onSynced?.();
+          }
+          break;
         }
-        break;
-      }
 
-      default:
-        console.warn(`[SimpleSyncBridge] Unknown sync type: ${decoded.type}`);
+        default:
+          console.warn(`[SimpleSyncBridge] Unknown sync type: ${decoded.type}`);
+      }
     }
 
     // Log current state

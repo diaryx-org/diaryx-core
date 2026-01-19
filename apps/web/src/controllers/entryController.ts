@@ -21,11 +21,7 @@ import {
   updateCrdtFileMetadata,
   addFileToCrdt,
 } from '../models/services';
-import {
-  getCollaborativeDocument,
-  releaseDocument,
-  getCollaborationServer,
-} from '../lib/crdt/collaborationBridge';
+// Note: Collaboration sync now happens at workspace level via workspaceCrdtBridge
 
 /**
  * Helper to handle mixed frontmatter types (Map from WASM vs Object from JSON/Tauri).
@@ -92,7 +88,7 @@ export async function openEntry(
       );
       entryStore.setDisplayContent(displayContent);
 
-      // Calculate collaboration room path
+      // Calculate collaboration room path for tracking
       let workspaceDir = tree?.path || '';
       if (workspaceDir.endsWith('/')) {
         workspaceDir = workspaceDir.slice(0, -1);
@@ -108,48 +104,18 @@ export async function openEntry(
         newRelativePath = entry.path.substring(workspaceDir.length + 1);
       }
 
+      // Update collaboration path tracking (sync happens at workspace level via workspaceCrdtBridge)
       const currentCollaborationPath = collaborationStore.currentCollaborationPath;
-
-      // Only destroy previous session if switching to a different file
-      if (currentCollaborationPath && currentCollaborationPath !== newRelativePath) {
-        const pathToDestroy = currentCollaborationPath;
+      if (currentCollaborationPath !== newRelativePath) {
         collaborationStore.clearCollaborationSession();
         await tick();
-        // Delay destruction to avoid `ystate.doc` errors from TipTap
-        setTimeout(() => {
-          try {
-            releaseDocument(pathToDestroy);
-          } catch (e) {
-            console.warn('[EntryController] Failed to release collaboration session:', e);
-          }
-        }, 100);
       }
 
-      // Connect to collaboration for this entry only if enabled
+      // Set the collaboration path for tracking which file is being edited
+      // Note: Actual sync is handled by workspaceCrdtBridge, not per-document sessions
       if (collaborationEnabled) {
-        try {
-          console.log(
-            '[EntryController] Collaboration room:',
-            newRelativePath,
-            '(from',
-            entry.path,
-            ')'
-          );
-
-          // Only use initialContent if no server is configured (offline mode).
-          const serverConfigured = !!getCollaborationServer();
-          const { yDocProxy, bridge } = await getCollaborativeDocument(newRelativePath, {
-            initialContent: serverConfigured ? undefined : entry.content,
-          });
-          collaborationStore.setCollaborationSession(
-            yDocProxy.getYDoc(),
-            bridge as any,
-            newRelativePath
-          );
-        } catch (e) {
-          console.warn('[EntryController] Failed to setup collaboration:', e);
-          collaborationStore.clearCollaborationSession();
-        }
+        collaborationStore.setCollaborationPath(newRelativePath);
+        console.log('[EntryController] Collaboration path:', newRelativePath);
       }
     } else {
       entryStore.setDisplayContent('');

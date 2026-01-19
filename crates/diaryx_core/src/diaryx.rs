@@ -804,25 +804,43 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
     /// Handle an incoming sync message.
     ///
     /// Returns an optional response message to send back.
+    /// Handles combined messages (e.g., SyncStep2 + SyncStep1 from Hocuspocus).
     pub fn handle_sync_message(&self, doc_name: &str, message: &[u8]) -> Result<Option<Vec<u8>>> {
         log::debug!(
             "[Y-sync] handle_sync_message for doc: {}, {} bytes",
             doc_name,
             message.len()
         );
-        let sync_msg = match crate::crdt::SyncMessage::decode(message)? {
-            Some(msg) => msg,
-            None => {
-                log::debug!("[Y-sync] Could not decode message, returning None");
-                return Ok(None);
-            }
-        };
 
-        if doc_name == "workspace" {
-            self.handle_workspace_sync_message(sync_msg)
-        } else {
-            self.handle_body_sync_message(doc_name, sync_msg)
+        // Decode ALL sub-messages (Hocuspocus may send combined SyncStep2 + SyncStep1)
+        let messages = crate::crdt::SyncMessage::decode_all(message)?;
+        if messages.is_empty() {
+            log::debug!("[Y-sync] No messages decoded, returning None");
+            return Ok(None);
         }
+
+        log::debug!("[Y-sync] Decoded {} messages", messages.len());
+
+        let mut response: Option<Vec<u8>> = None;
+
+        for sync_msg in messages {
+            let msg_response = if doc_name == "workspace" {
+                self.handle_workspace_sync_message(sync_msg)?
+            } else {
+                self.handle_body_sync_message(doc_name, sync_msg)?
+            };
+
+            // Combine responses
+            if let Some(resp) = msg_response {
+                if let Some(ref mut existing) = response {
+                    existing.extend_from_slice(&resp);
+                } else {
+                    response = Some(resp);
+                }
+            }
+        }
+
+        Ok(response)
     }
 
     fn handle_workspace_sync_message(

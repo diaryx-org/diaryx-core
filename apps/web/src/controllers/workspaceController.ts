@@ -157,29 +157,11 @@ export async function validatePath(
 }
 
 /**
- * Generate a UUID for workspace identification.
- */
-function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-/**
- * Helper to handle mixed frontmatter types (Map from WASM vs Object from JSON/Tauri).
- */
-function normalizeFrontmatter(frontmatter: any): Record<string, any> {
-  if (!frontmatter) return {};
-  if (frontmatter instanceof Map) {
-    return Object.fromEntries(frontmatter.entries());
-  }
-  return frontmatter;
-}
-
-/**
  * Setup workspace CRDT for collaboration.
+ *
+ * Gets workspace ID from the auth store (server is source of truth).
+ * When authenticated, the server generates and stores the workspace UUID.
+ * For local-only mode (not signed in), we use null.
  */
 export async function setupWorkspaceCrdt(
   api: Api,
@@ -187,16 +169,17 @@ export async function setupWorkspaceCrdt(
   rustApi: RustCrdtApi,
   collaborationServerUrl: string | null,
   collaborationEnabled: boolean,
-  envWorkspaceId: string | null,
-  onConnectionChange: (connected: boolean) => void,
-  retryCount = 0
+  serverWorkspaceId: string | null,
+  onConnectionChange: (connected: boolean) => void
 ): Promise<{ workspaceId: string | null; initialized: boolean }> {
   try {
-    // Workspace ID priority:
-    // 1. Environment variable VITE_WORKSPACE_ID (best for multi-device, avoids bootstrap issue)
-    // 2. workspace_id from root index frontmatter (should persist in the workspace index)
-    // 3. null (no prefix - uses simple room names like "doc:path/to/file.md")
-    let sharedWorkspaceId: string | null = envWorkspaceId;
+    const sharedWorkspaceId = serverWorkspaceId;
+
+    if (sharedWorkspaceId) {
+      console.log('[WorkspaceController] Using workspace_id from server:', sharedWorkspaceId);
+    } else {
+      console.log('[WorkspaceController] No authenticated workspace, using local-only mode');
+    }
 
     // Get the workspace directory from the backend, then find the actual root index
     const workspaceDir = backend
@@ -211,119 +194,25 @@ export async function setupWorkspaceCrdt(
       console.log('[WorkspaceController] Found root index at:', workspacePath);
     } catch (e) {
       console.warn('[WorkspaceController] Could not find root index:', e);
-      // Fall back to default - will trigger workspace creation
       workspacePath = `${workspaceDir}/index.md`;
     }
 
-    if (sharedWorkspaceId) {
-      console.log(
-        '[WorkspaceController] Using workspace_id from environment:',
-        sharedWorkspaceId
-      );
-    } else {
-      // Try to get/create workspace_id from root index frontmatter
-      try {
-        const rootTree = await api.getWorkspaceTree(workspacePath);
-        console.log('[WorkspaceController] Workspace tree root path:', rootTree?.path);
-
-        if (rootTree?.path) {
-          const rootFrontmatter = await api.getFrontmatter(rootTree.path);
-
-          sharedWorkspaceId =
-            (rootFrontmatter.workspace_id as string) ?? null;
-
-          // If no workspace_id exists, generate one and save it
-          if (!sharedWorkspaceId) {
-            sharedWorkspaceId = generateUUID();
-            console.log(
-              '[WorkspaceController] workspace_id missing in index; generating:',
-              sharedWorkspaceId
-            );
-
-            await api.setFrontmatterProperty(
-              rootTree.path,
-              'workspace_id',
-              sharedWorkspaceId
-            );
-
-            console.log(
-              '[WorkspaceController] Wrote workspace_id to index, persisting...',
-              sharedWorkspaceId
-            );
-
-            // Re-read to confirm it actually persisted (especially important in WASM mode)
-            const verifyFrontmatter = await api.getFrontmatter(rootTree.path);
-            console.log(
-              '[WorkspaceController] Verified workspace_id after write:',
-              normalizeFrontmatter(verifyFrontmatter)?.workspace_id
-            );
-          } else {
-            console.log(
-              '[WorkspaceController] Using workspace_id from index:',
-              sharedWorkspaceId
-            );
-          }
+    // Ensure local workspace exists (creates index.md if needed)
+    try {
+      await api.getWorkspaceTree(workspacePath);
+    } catch (e) {
+      const errStr = e instanceof Error ? e.message : String(e);
+      if (
+        errStr.includes('No workspace found') ||
+        errStr.includes('NotFoundError') ||
+        errStr.includes('The object can not be found here')
+      ) {
+        console.log('[WorkspaceController] Default workspace missing, creating...');
+        try {
+          await api.createWorkspace('workspace', 'My Journal');
+        } catch (createErr) {
+          console.error('[WorkspaceController] Failed to create default workspace:', createErr);
         }
-      } catch (e) {
-        const errStr = e instanceof Error ? e.message : String(e);
-        if (
-          errStr.includes('No workspace found') ||
-          errStr.includes('NotFoundError') ||
-          errStr.includes('The object can not be found here')
-        ) {
-          console.log('[WorkspaceController] Default workspace missing, creating...');
-          try {
-            await api.createWorkspace('workspace', 'My Journal');
-            // Recursively try again to setup workspace_id and CRDT
-            return await setupWorkspaceCrdt(
-              api,
-              backend,
-              rustApi,
-              collaborationServerUrl,
-              collaborationEnabled,
-              envWorkspaceId,
-              onConnectionChange,
-              retryCount
-            );
-          } catch (createErr) {
-            const createErrStr = String(createErr);
-            if (createErrStr.includes('Workspace already exists')) {
-              if (retryCount >= 3) {
-                console.error(
-                  '[WorkspaceController] Max retries reached for workspace setup. Stopping to prevent infinite loop.'
-                );
-                return { workspaceId: null, initialized: false };
-              }
-              console.log(
-                `[WorkspaceController] Workspace existed but wasn't found initially. Retrying setup (attempt ${retryCount + 1})...`
-              );
-              await new Promise((resolve) => setTimeout(resolve, 500));
-              return await setupWorkspaceCrdt(
-                api,
-                backend,
-                rustApi,
-                collaborationServerUrl,
-                collaborationEnabled,
-                envWorkspaceId,
-                onConnectionChange,
-                retryCount + 1
-              );
-            }
-            console.error(
-              '[WorkspaceController] Failed to create default workspace:',
-              createErr
-            );
-          }
-        }
-
-        console.warn(
-          '[WorkspaceController] Could not get/set workspace_id from index:',
-          e
-        );
-        // Fall back to null - will use simple room names without workspace prefix
-        console.log(
-          '[WorkspaceController] Using no workspace_id prefix (simple room names)'
-        );
       }
     }
 

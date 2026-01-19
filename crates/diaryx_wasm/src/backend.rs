@@ -48,6 +48,7 @@ use wasm_bindgen_futures::future_to_promise;
 use crate::fsa_fs::FsaFileSystem;
 use crate::indexeddb_fs::IndexedDbFileSystem;
 use crate::opfs_fs::OpfsFileSystem;
+use crate::wasm_sqlite_storage::WasmSqliteStorage;
 
 // ============================================================================
 // Storage Backend Enum
@@ -251,20 +252,66 @@ impl DiaryxBackend {
     // ========================================================================
 
     /// Create a new DiaryxBackend with OPFS storage.
+    ///
+    /// This attempts to use persistent SQLite-based CRDT storage (via sql.js).
+    /// If SQLite storage is not available (JS bridge not initialized), falls back
+    /// to in-memory CRDT storage.
+    ///
+    /// For persistent CRDT storage, call `initializeSqliteStorage()` in JavaScript
+    /// before creating the backend:
+    ///
+    /// ```javascript
+    /// import { initializeSqliteStorage } from './lib/storage/sqliteStorageBridge.js';
+    /// await initializeSqliteStorage();
+    /// const backend = await DiaryxBackend.createOpfs();
+    /// ```
     #[wasm_bindgen(js_name = "createOpfs")]
     pub async fn create_opfs() -> std::result::Result<DiaryxBackend, JsValue> {
         let opfs = OpfsFileSystem::create().await?;
         let fs = Rc::new(StorageBackend::Opfs(opfs));
-        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+
+        // Try to use persistent SQLite storage, fall back to memory storage
+        let crdt_storage: Arc<dyn CrdtStorage> = match WasmSqliteStorage::new() {
+            Ok(storage) => {
+                log::info!("Using persistent SQLite CRDT storage");
+                Arc::new(storage)
+            }
+            Err(e) => {
+                log::warn!(
+                    "SQLite CRDT storage not available, using memory storage: {:?}",
+                    e
+                );
+                Arc::new(MemoryStorage::new())
+            }
+        };
+
         Ok(Self { fs, crdt_storage })
     }
 
     /// Create a new DiaryxBackend with IndexedDB storage.
+    ///
+    /// This attempts to use persistent SQLite-based CRDT storage (via sql.js).
+    /// If SQLite storage is not available, falls back to in-memory CRDT storage.
     #[wasm_bindgen(js_name = "createIndexedDb")]
     pub async fn create_indexed_db() -> std::result::Result<DiaryxBackend, JsValue> {
         let idb = IndexedDbFileSystem::create().await?;
         let fs = Rc::new(StorageBackend::IndexedDb(idb));
-        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+
+        // Try to use persistent SQLite storage, fall back to memory storage
+        let crdt_storage: Arc<dyn CrdtStorage> = match WasmSqliteStorage::new() {
+            Ok(storage) => {
+                log::info!("Using persistent SQLite CRDT storage");
+                Arc::new(storage)
+            }
+            Err(e) => {
+                log::warn!(
+                    "SQLite CRDT storage not available, using memory storage: {:?}",
+                    e
+                );
+                Arc::new(MemoryStorage::new())
+            }
+        };
+
         Ok(Self { fs, crdt_storage })
     }
 
@@ -328,7 +375,22 @@ impl DiaryxBackend {
     ) -> std::result::Result<DiaryxBackend, JsValue> {
         let fsa = FsaFileSystem::from_handle(handle);
         let fs = Rc::new(StorageBackend::Fsa(fsa));
-        let crdt_storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+
+        // Try to use persistent SQLite storage, fall back to memory storage
+        let crdt_storage: Arc<dyn CrdtStorage> = match WasmSqliteStorage::new() {
+            Ok(storage) => {
+                log::info!("Using persistent SQLite CRDT storage");
+                Arc::new(storage)
+            }
+            Err(e) => {
+                log::warn!(
+                    "SQLite CRDT storage not available, using memory storage: {:?}",
+                    e
+                );
+                Arc::new(MemoryStorage::new())
+            }
+        };
+
         Ok(Self { fs, crdt_storage })
     }
 

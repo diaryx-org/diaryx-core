@@ -38,6 +38,13 @@
   } from "$lib/auth";
   import { onMount } from "svelte";
 
+  interface Props {
+    /** Callback to open the sync setup wizard */
+    onOpenWizard?: () => void;
+  }
+
+  let { onOpenWizard }: Props = $props();
+
   // State
   let syncServerUrl = $state(
     typeof window !== "undefined"
@@ -197,6 +204,19 @@
     Sync your workspace across devices with our cloud server. Sign in with your
     email to get started.
   </p>
+
+  <!-- Quick Setup Button (when not authenticated) -->
+  {#if !authState.isAuthenticated && onOpenWizard}
+    <Button
+      variant="default"
+      size="sm"
+      class="w-full"
+      onclick={onOpenWizard}
+    >
+      <Server class="size-4 mr-2" />
+      Set Up Sync
+    </Button>
+  {/if}
 
   <!-- Error Message -->
   {#if error}

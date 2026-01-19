@@ -3,25 +3,26 @@
   import { getBackend, isTauri } from "./lib/backend";
   import { createApi, type Api } from "./lib/backend/api";
   import type { JsonValue } from "./lib/backend/generated/serde_json/JsonValue";
-  import type { FileMetadata } from "./lib/backend/generated";
+  import type { FileMetadata, TreeNode } from "./lib/backend/generated";
   // New Rust CRDT module imports
   import { RustCrdtApi } from "./lib/crdt/rustCrdtApi";
-  import {
-    initCollaboration,
-    getCollaborationServer,
-    getCollaborativeDocument,
-    releaseDocument,
-    cleanup as cleanupCollaboration,
-  } from "./lib/crdt/collaborationBridge";
   import {
     disconnectWorkspace,
     setWorkspaceId,
     setBackendApi,
     onSessionSync,
     onBodyChange,
+    onFileChange,
+    onSyncProgress,
+    onSyncStatus,
     getTreeFromCrdt,
     populateCrdtFromFiles,
     updateFileBodyInYDoc,
+    syncBodyContent,
+    isDeviceSyncActive,
+    renameFileInYDoc,
+    deleteFileInYDoc,
+    getFileMetadata,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -30,6 +31,7 @@
   import CommandPalette from "./lib/CommandPalette.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import ExportDialog from "./lib/ExportDialog.svelte";
+  import SyncSetupWizard from "./lib/SyncSetupWizard.svelte";
     import EditorHeader from "./views/editor/EditorHeader.svelte";
   import EditorEmptyState from "./views/editor/EditorEmptyState.svelte";
   import EditorContent from "./views/editor/EditorContent.svelte";
@@ -49,7 +51,7 @@
   } from "./models/stores";
 
   // Import auth
-  import { initAuth } from "./lib/auth";
+  import { initAuth, getDefaultWorkspace, verifyMagicLink } from "./lib/auth";
 
   // Initialize theme store immediately
   getThemeStore();
@@ -107,11 +109,13 @@
   let requestedSidebarTab: "properties" | "history" | "share" | null = $state(null);
   let triggerStartSession = $state(false);
 
+  // Sync setup wizard
+  let showSyncWizard = $state(false);
+
   // Workspace state - proxied from workspaceStore
   let tree = $derived(workspaceStore.tree);
   let expandedNodes = $derived(workspaceStore.expandedNodes);
   let validationResult = $derived(workspaceStore.validationResult);
-  let workspaceId = $derived(workspaceStore.workspaceId);
   let backend = $derived(workspaceStore.backend);
   let showUnlinkedFiles = $derived(workspaceStore.showUnlinkedFiles);
   let showHiddenFiles = $derived(workspaceStore.showHiddenFiles);
@@ -137,9 +141,7 @@
   let collaborationEnabled = $derived(collaborationStore.collaborationEnabled);
   let collaborationServerUrl = $derived(collaborationStore.collaborationServerUrl);
 
-  // Current YDocProxy for syncing local edits
-  import type { YDocProxy } from './lib/crdt/yDocProxy';
-  let currentYDocProxy: YDocProxy | null = $state(null);
+  // Note: Per-document YDocProxy removed - sync now happens at workspace level
 
   // ========================================================================
   // Non-store state (component-specific, not shared)
@@ -155,22 +157,6 @@
     typeof import.meta !== "undefined" &&
     (import.meta as any).env?.VITE_DISABLE_WORKSPACE_CRDT === "true";
 
-  // Workspace ID from environment (for multi-device sync without chicken-and-egg problem)
-  // Set VITE_WORKSPACE_ID to the same value on all devices to ensure they sync
-  const envWorkspaceId: string | null =
-    typeof import.meta !== "undefined" &&
-    (import.meta as any).env?.VITE_WORKSPACE_ID
-      ? (import.meta as any).env.VITE_WORKSPACE_ID
-      : null;
-
-  // Generate a UUID for workspace identification
-  function generateUUID(): string {
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === "x" ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
-  }
 
   // Helper to handle mixed frontmatter types (Map from WASM vs Object from JSON/Tauri)
   function normalizeFrontmatter(frontmatter: any): Record<string, any> {
@@ -179,6 +165,56 @@
       return Object.fromEntries(frontmatter.entries());
     }
     return frontmatter;
+  }
+
+  /**
+   * Calculate a relative path from one file to another.
+   * Used for CRDT part_of and contents fields which should store relative paths.
+   *
+   * @param fromPath - The file path we're calculating relative to (e.g., "workspace/folder/file.md")
+   * @param toPath - The target file path (e.g., "workspace/folder/child.md")
+   * @returns The relative path from fromPath's directory to toPath (e.g., "child.md")
+   *
+   * Examples:
+   *   calculateRelativePath("workspace/folder/file.md", "workspace/folder/child.md") => "child.md"
+   *   calculateRelativePath("workspace/folder/file.md", "workspace/other/file.md") => "../other/file.md"
+   *   calculateRelativePath("workspace/file.md", "workspace/folder/child.md") => "folder/child.md"
+   */
+  function calculateRelativePath(fromPath: string, toPath: string): string {
+    // Get directory of the fromPath (remove filename)
+    const fromParts = fromPath.split('/');
+    fromParts.pop(); // Remove the filename
+    const fromDir = fromParts;
+
+    const toParts = toPath.split('/');
+
+    // Find common prefix length
+    let commonLength = 0;
+    while (
+      commonLength < fromDir.length &&
+      commonLength < toParts.length &&
+      fromDir[commonLength] === toParts[commonLength]
+    ) {
+      commonLength++;
+    }
+
+    // Calculate how many levels we need to go up from fromDir
+    const upCount = fromDir.length - commonLength;
+
+    // Build the relative path
+    const relativeParts: string[] = [];
+
+    // Add ".." for each level we need to go up
+    for (let i = 0; i < upCount; i++) {
+      relativeParts.push('..');
+    }
+
+    // Add the remaining parts of toPath after the common prefix
+    for (let i = commonLength; i < toParts.length; i++) {
+      relativeParts.push(toParts[i]);
+    }
+
+    return relativeParts.join('/');
   }
 
   // Attachment state
@@ -224,6 +260,14 @@
       if (savedServerUrl) {
         collaborationStore.setServerUrl(savedServerUrl);
       }
+
+      // Check for magic link token in URL (auto-verify without wizard)
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      if (token) {
+        // Verify automatically - progress will show in SyncStatusIndicator
+        handleMagicLinkToken(token);
+      }
     }
 
     // Initialize auth state - if user was previously logged in,
@@ -246,9 +290,6 @@
       // Initialize Rust CRDT API
       rustApi = new RustCrdtApi(backendInstance);
 
-      // Initialize collaboration system with the Rust API
-      initCollaboration(rustApi);
-
       // Initialize workspace CRDT (unless disabled for debugging)
       if (!workspaceCrdtDisabled) {
         await setupWorkspaceCrdt();
@@ -262,32 +303,38 @@
 
       // Register callback to refresh tree when session data is received
       onSessionSync(async () => {
-        // Only build tree from CRDT when in guest mode
-        // Guests don't have files on disk, so they need the CRDT tree
-        // Hosts and local users should use the filesystem tree (already loaded)
-        if (!shareSessionStore.isGuest) {
-          console.log('[App] Session sync received, but not in guest mode - skipping CRDT tree');
-          return;
-        }
+        if (shareSessionStore.isGuest) {
+          // Guest mode: build tree from CRDT (guests don't have files on disk)
+          console.log('[App] Session sync received (guest mode), building tree from CRDT');
+          const crdtTree = await getTreeFromCrdt();
+          if (crdtTree) {
+            console.log('[App] Setting tree from CRDT:', crdtTree);
+            workspaceStore.setTree(crdtTree);
 
-        console.log('[App] Session sync received (guest mode), building tree from CRDT');
-        const crdtTree = await getTreeFromCrdt();
-        if (crdtTree) {
-          console.log('[App] Setting tree from CRDT:', crdtTree);
-          workspaceStore.setTree(crdtTree);
-
-          // Only open root entry on the first sync, not on every update
-          if (!guestInitialSyncDone) {
-            console.log('[App] Guest session - initial sync, opening root entry:', crdtTree.path);
-            workspaceStore.expandNode(crdtTree.path);
-            await openEntry(crdtTree.path);
-            guestInitialSyncDone = true;
+            // Only open root entry on the first sync, not on every update
+            if (!guestInitialSyncDone) {
+              console.log('[App] Guest session - initial sync, opening root entry:', crdtTree.path);
+              workspaceStore.expandNode(crdtTree.path);
+              await openEntry(crdtTree.path);
+              guestInitialSyncDone = true;
+            } else {
+              console.log('[App] Guest session - incremental sync, tree updated');
+            }
           } else {
-            console.log('[App] Guest session - incremental sync, tree updated');
+            console.log('[App] No CRDT tree available, falling back to filesystem refresh');
+            await refreshTree();
           }
         } else {
-          console.log('[App] No CRDT tree available, falling back to filesystem refresh');
+          // Device-to-device sync: files were written to disk, refresh tree from filesystem
+          console.log('[App] Session sync received (device sync), refreshing tree from filesystem');
           await refreshTree();
+
+          // If no entry is open yet, open the root
+          if (tree && !currentEntry) {
+            console.log('[App] Opening root entry after device sync:', tree.path);
+            workspaceStore.expandNode(tree.path);
+            await openEntry(tree.path);
+          }
         }
       });
 
@@ -300,6 +347,45 @@
           // Transform attachment paths to blob URLs for display
           const transformed = await transformAttachmentPaths(body, path, api);
           entryStore.setDisplayContent(transformed);
+        }
+      });
+
+      // Register callback to reload entry when remote metadata changes arrive
+      // This ensures the RightSidebar shows updated properties from sync
+      onFileChange(async (path, metadata) => {
+        // Only update if this is the currently open file and we have valid metadata
+        if (currentEntry && api && metadata && path === currentEntry.path) {
+          console.log('[App] Metadata change received for current entry:', path);
+          try {
+            // Reload the entry to get the updated frontmatter from disk
+            const entry = await api.getEntry(currentEntry.path);
+            entry.frontmatter = normalizeFrontmatter(entry.frontmatter);
+            // Update the current entry - this will trigger RightSidebar to re-render
+            entryStore.setCurrentEntry(entry);
+          } catch (e) {
+            console.warn('[App] Failed to reload entry after metadata change:', e);
+          }
+        }
+
+        // Also refresh tree when contents change (new files added)
+        // This ensures the tree shows newly synced files
+        if (metadata && metadata.contents) {
+          console.log('[App] Contents changed for:', path, '- refreshing tree');
+          await refreshTree();
+        }
+      });
+
+      // Register sync progress callback to update collaborationStore
+      onSyncProgress((completed, total) => {
+        collaborationStore.setSyncProgress({ completed, total });
+      });
+
+      // Register sync status callback to update collaborationStore
+      onSyncStatus((status, error) => {
+        if (error) {
+          collaborationStore.setSyncError(error);
+        } else {
+          collaborationStore.setSyncStatus(status);
         }
       });
 
@@ -342,22 +428,26 @@
   onDestroy(() => {
     // Cleanup blob URLs
     revokeBlobUrls();
-    // Cleanup collaboration sessions
-    cleanupCollaboration();
     // Disconnect workspace CRDT (keeps local state for quick reconnect)
     disconnectWorkspace();
   });
 
   // Initialize the workspace CRDT
-  async function setupWorkspaceCrdt(retryCount = 0) {
+  async function setupWorkspaceCrdt() {
     if (!api || !backend || !rustApi) return;
 
     try {
-      // Workspace ID priority:
-      // 1. Environment variable VITE_WORKSPACE_ID (best for multi-device, avoids bootstrap issue)
-      // 2. workspace_id from root index frontmatter (should persist in the workspace index)
-      // 3. null (no prefix - uses simple room names like "doc:path/to/file.md")
-      let sharedWorkspaceId: string | null = envWorkspaceId;
+      // Get workspace ID from auth store (server is source of truth)
+      // When authenticated, the server generates and stores the workspace UUID
+      // For local-only mode (not signed in), we use null
+      const defaultWorkspace = getDefaultWorkspace();
+      const sharedWorkspaceId = defaultWorkspace?.id ?? null;
+
+      if (sharedWorkspaceId) {
+        console.log("[App] Using workspace_id from server:", sharedWorkspaceId);
+      } else {
+        console.log("[App] No authenticated workspace, using local-only mode");
+      }
 
       // Get the workspace directory from the backend, then find the actual root index
       const workspaceDir = backend.getWorkspacePath().replace(/\/index\.md$/, '').replace(/\/README\.md$/, '');
@@ -373,118 +463,88 @@
         workspacePath = `${workspaceDir}/index.md`;
       }
 
-      if (sharedWorkspaceId) {
-        console.log(
-          "[App] Using workspace_id from environment:",
-          sharedWorkspaceId,
-        );
-      } else {
-        // Try to get/create workspace_id from root index frontmatter
-        try {
-          const rootTree = await api.getWorkspaceTree(workspacePath);
-          console.log("[App] Workspace tree root path:", rootTree?.path);
-
-          if (rootTree?.path) {
-            const rootFrontmatter = await api.getFrontmatter(rootTree.path);
-
-            sharedWorkspaceId =
-              (rootFrontmatter.workspace_id as string) ?? null;
-
-            // If no workspace_id exists, generate one and save it
-            if (!sharedWorkspaceId) {
-              sharedWorkspaceId = generateUUID();
-              console.log(
-                "[App] workspace_id missing in index; generating:",
-                sharedWorkspaceId,
-              );
-
-              await api.setFrontmatterProperty(
-                rootTree.path,
-                "workspace_id",
-                sharedWorkspaceId,
-              );
-
-              console.log(
-                "[App] Wrote workspace_id to index, persisting...",
-                sharedWorkspaceId,
-              );
-
-              // Re-read to confirm it actually persisted (especially important in WASM mode)
-              const verifyFrontmatter = await api.getFrontmatter(
-                rootTree.path,
-              );
-              console.log(
-                "[App] Verified workspace_id after write:",
-                normalizeFrontmatter(verifyFrontmatter)?.workspace_id,
-              );
-
-              // Also re-read raw content to confirm it actually wrote frontmatter into the file.
-              try {
-                const rootEntryAfter = await api.getEntry(rootTree.path);
-                const afterHead = (rootEntryAfter?.content ?? "").slice(0, 600);
-                console.log(
-                  "[App] Root entry content head after write (first 600 chars):",
-                  afterHead,
-                );
-              } catch (e) {
-                console.warn(
-                  "[App] Failed to read root entry content after write for debugging:",
-                  e,
-                );
-              }
-            } else {
-              console.log(
-                "[App] Using workspace_id from index:",
-                sharedWorkspaceId,
-              );
-            }
+      // Ensure local workspace exists (creates index.md if needed)
+      let localTree: TreeNode | null = null;
+      try {
+        localTree = await api.getWorkspaceTree(workspacePath);
+      } catch (e) {
+        const errStr = e instanceof Error ? e.message : String(e);
+        if (
+          errStr.includes("No workspace found") ||
+          errStr.includes("NotFoundError") ||
+          errStr.includes("The object can not be found here")
+        ) {
+          console.log("[App] Default workspace missing, creating...");
+          try {
+            await api.createWorkspace("workspace", "My Journal");
+            // Try loading tree again after creation
+            localTree = await api.getWorkspaceTree(workspacePath);
+          } catch (createErr) {
+            console.error("[App] Failed to create default workspace:", createErr);
           }
-        } catch (e) {
-          const errStr = e instanceof Error ? e.message : String(e);
-          if (
-            errStr.includes("No workspace found") ||
-            errStr.includes("NotFoundError") ||
-            errStr.includes("The object can not be found here")
-          ) {
-            console.log("[App] Default workspace missing, creating...");
-            try {
-              await api.createWorkspace("workspace", "My Journal");
-              // Recursively try again to setup workspace_id and CRDT
-              return await setupWorkspaceCrdt();
-            } catch (createErr) {
-              const createErrStr = String(createErr);
-              if (createErrStr.includes("Workspace already exists")) {
-                 if (retryCount >= 3) {
-                    console.error("[App] Max retries reached for workspace setup. Stopping to prevent infinite loop.");
-                    uiStore.setError("Failed to initialize workspace: Unrecoverable error.");
-                    return;
-                 }
-                 console.log(`[App] Workspace existed but wasn't found initially. Retrying setup (attempt ${retryCount + 1})...`);
-                 await new Promise((resolve) => setTimeout(resolve, 500));
-                 return await setupWorkspaceCrdt(retryCount + 1);
-              }
-              console.error(
-                "[App] Failed to create default workspace:",
-                createErr,
-              );
-            }
-          }
-
-          console.warn("[App] Could not get/set workspace_id from index:", e);
-          // Fall back to null - will use simple room names without workspace prefix
-          console.log("[App] Using no workspace_id prefix (simple room names)");
         }
       }
 
-      workspaceId = sharedWorkspaceId;
+      // IMPORTANT: Populate CRDT from filesystem BEFORE connecting to server
+      // This ensures our local files are available to sync to other devices
+      if (localTree && sharedWorkspaceId) {
+        console.log("[App] Populating CRDT from filesystem before sync...");
+        const files: Array<{ path: string; metadata: Partial<FileMetadata> }> = [];
+
+        async function collectFiles(node: TreeNode, parentPath: string | null) {
+          if (!node || !api) return;
+
+          try {
+            const entry = await api.getEntry(node.path);
+            const frontmatter = entry.frontmatter || {};
+            files.push({
+              path: node.path,
+              metadata: {
+                title: (frontmatter.title as string) || entry.title || node.name,
+                part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
+                contents: node.children.length > 0 ? node.children.map(c => calculateRelativePath(node.path, c.path)) : null,
+                extra: {
+                  _body: entry.content,
+                  ...Object.fromEntries(
+                    Object.entries(frontmatter).filter(([k]) =>
+                      !['title', 'part_of', 'contents', 'attachments', 'audience', 'description'].includes(k)
+                    )
+                  ),
+                } as FileMetadata['extra'],
+              },
+            });
+          } catch (e) {
+            console.warn('[App] Could not get entry for', node.path, e);
+            files.push({
+              path: node.path,
+              metadata: {
+                title: node.name,
+                part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
+                contents: node.children.length > 0 ? node.children.map(c => calculateRelativePath(node.path, c.path)) : null,
+              },
+            });
+          }
+
+          for (const child of node.children) {
+            await collectFiles(child, node.path);
+          }
+        }
+
+        await collectFiles(localTree, null);
+        console.log("[App] Collected", files.length, "files from filesystem");
+
+        // Populate CRDT with files (pass rustApi since CRDT not yet initialized)
+        await populateCrdtFromFiles(files, rustApi);
+        console.log("[App] CRDT populated with local files before connecting to server");
+      }
 
       // Set workspace ID for per-file document room naming
       // If null, rooms will be "doc:{path}" instead of "{id}:doc:{path}"
-      setWorkspaceId(workspaceId);
+      setWorkspaceId(sharedWorkspaceId);
 
       // Initialize workspace CRDT using service with Rust API
       const initialized = await initializeWorkspaceCrdt(
-        workspaceId,
+        sharedWorkspaceId,
         workspacePath,
         collaborationServerUrl,
         collaborationEnabled,
@@ -565,76 +625,21 @@
           );
         }
 
-        // Only destroy previous session if switching to a different file
+        // Update collaboration path tracking (sync happens at workspace level via workspaceCrdtBridge)
         if (currentCollaborationPath && currentCollaborationPath !== newRelativePath) {
-          const pathToDestroy = currentCollaborationPath;
           collaborationStore.clearCollaborationSession();
-          currentYDocProxy = null;
           await tick();
-          // Delay destruction to avoid `ystate.doc` errors from TipTap
-          setTimeout(() => {
-            try {
-              releaseDocument(pathToDestroy);
-            } catch (e) {
-              console.warn(
-                "[App] Failed to release collaboration session:",
-                e,
-              );
-            }
-          }, 100);
         }
 
-        // Connect to collaboration for this entry only if enabled.
-        // If not enabled, Editor will render the plain markdown `content` immediately.
+        // Track the collaboration path for this entry
+        // Note: Actual sync is handled by workspaceCrdtBridge, not per-document sessions
         if (collaborationEnabled) {
-          try {
-            console.log(
-              "[App] Collaboration room:",
-              newRelativePath,
-              "(from",
-              currentEntry.path,
-              ")",
-            );
-
-            // Use new CRDT module
-            // Only use initialContent if no server is configured (offline mode).
-            // When syncing with a server, the server's state is authoritative to avoid duplication.
-            const serverConfigured = !!getCollaborationServer();
-            const { yDocProxy, bridge } = await getCollaborativeDocument(newRelativePath, {
-              initialContent: serverConfigured ? undefined : currentEntry.content,
-              onRemoteContentChange: async (content: string) => {
-                // Remote content changed - update the editor
-                console.log('[App] Remote content changed, length:', content.length);
-                if (currentEntry && api) {
-                  // Transform attachment paths to blob URLs
-                  const transformed = await transformAttachmentPaths(
-                    content,
-                    currentEntry.path,
-                    api,
-                  );
-                  // Update display content - this will trigger editor re-render via editorKey
-                  entryStore.setDisplayContent(transformed);
-                }
-              },
-            });
-            // Store YDocProxy for syncing local edits
-            currentYDocProxy = yDocProxy;
-            // Get the underlying Y.Doc for TipTap, bridge implements HocuspocusProvider interface
-            collaborationStore.setCollaborationSession(
-              yDocProxy.getYDoc(),
-              bridge as any, // HocuspocusBridge is compatible with HocuspocusProvider
-              newRelativePath
-            );
-          } catch (e) {
-            console.warn("[App] Failed to setup collaboration:", e);
-            collaborationStore.clearCollaborationSession();
-            currentYDocProxy = null;
-          }
+          collaborationStore.setCollaborationPath(newRelativePath);
+          console.log("[App] Collaboration path:", newRelativePath);
         }
       } else {
         entryStore.setDisplayContent("");
         collaborationStore.clearCollaborationSession();
-        currentYDocProxy = null;
       }
 
       entryStore.markClean();
@@ -670,8 +675,10 @@
       await api.saveEntry(currentEntry.path, markdown);
       entryStore.markClean();
 
-      // Sync body content to workspace Y.Doc for live share sessions
-      // This allows other session participants to see the updated content
+      // Sync body content through Rust CRDT for device-to-device sync (reliable path)
+      await syncBodyContent(currentEntry.path, markdown);
+
+      // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
       if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
         updateFileBodyInYDoc(currentEntry.path, markdown);
       }
@@ -701,17 +708,11 @@
     }, AUTO_SAVE_DELAY_MS);
   }
 
-  // Handle content changes - triggers debounced auto-save and CRDT sync
-  function handleContentChange(markdown: string) {
+  // Handle content changes - triggers debounced auto-save
+  // Note: CRDT sync happens at save time via workspaceCrdtBridge, not on each keystroke
+  function handleContentChange(_markdown: string) {
     entryStore.markDirty();
     scheduleAutoSave();
-
-    // Sync to CRDT for real-time collaboration (if enabled)
-    if (collaborationEnabled && currentYDocProxy) {
-      // Reverse-transform blob URLs back to attachment paths before syncing
-      const markdownForSync = reverseBlobUrlsToAttachmentPaths(markdown);
-      currentYDocProxy.setContent(markdownForSync);
-    }
   }
 
   // Handle editor blur - save immediately if dirty
@@ -779,6 +780,41 @@
     }
   }
 
+  /**
+   * Handle magic link token verification from URL.
+   * Verifies the token automatically and shows sync progress in SyncStatusIndicator.
+   */
+  async function handleMagicLinkToken(token: string) {
+    // Show connecting status
+    collaborationStore.setSyncStatus('connecting');
+
+    try {
+      // Verify the magic link token
+      await verifyMagicLink(token);
+
+      // Clear the token from URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("token");
+      window.history.replaceState({}, "", url.toString());
+
+      // Show success toast - sync progress will be shown in SyncStatusIndicator
+      toast.success("Signed in successfully", {
+        description: "Your workspace is now syncing.",
+      });
+
+      // Refresh the tree after sync completes (handled by onSessionSync callback)
+    } catch (error) {
+      console.error("[App] Magic link verification failed:", error);
+      collaborationStore.setSyncStatus('error');
+      collaborationStore.setSyncError(
+        error instanceof Error ? error.message : "Verification failed"
+      );
+      toast.error("Sign in failed", {
+        description: error instanceof Error ? error.message : "Could not verify magic link",
+      });
+    }
+  }
+
   async function handleCreateChildEntry(parentPath: string) {
     if (!api) return;
     try {
@@ -787,6 +823,14 @@
       // Update CRDT with new file
       const entry = await api.getEntry(newPath);
       addFileToCrdt(newPath, entry.frontmatter, parentPath);
+
+      // Sync body content through Rust CRDT for device-to-device sync (reliable path)
+      await syncBodyContent(newPath, entry.content);
+
+      // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
+      if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
+        updateFileBodyInYDoc(newPath, entry.content);
+      }
 
       await refreshTree();
       // Also refresh the parent node directly to ensure deep nodes update correctly
@@ -813,6 +857,14 @@
       // Update CRDT with new file
       const entry = await api.getEntry(newPath);
       addFileToCrdt(newPath, entry.frontmatter, null);
+
+      // Sync body content through Rust CRDT for device-to-device sync (reliable path)
+      await syncBodyContent(newPath, entry.content);
+
+      // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
+      if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
+        updateFileBodyInYDoc(newPath, entry.content);
+      }
 
       await refreshTree();
       await openEntry(newPath);
@@ -892,6 +944,16 @@
     // Find parent before rename (in case tree structure helps locate it)
     const parentPath = workspaceStore.getParentNodePath(path);
     const newPath = await api.renameEntry(path, newFilename);
+
+    // Sync rename to Y.Doc for device-to-device sync
+    // Note: Get metadata from NEW path since file has already been renamed
+    if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
+      const metadata = await getFileMetadata(newPath);
+      if (metadata) {
+        renameFileInYDoc(path, newPath, metadata);
+      }
+    }
+
     await refreshTree();
     // Refresh parent to ensure deep nodes update correctly
     if (parentPath) {
@@ -910,6 +972,14 @@
     // Update CRDT with new file
     const entry = await api.getEntry(newPath);
     addFileToCrdt(newPath, entry.frontmatter, parentPath || null);
+
+    // Sync body content through Rust CRDT for device-to-device sync (reliable path)
+    await syncBodyContent(newPath, entry.content);
+
+    // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
+    if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
+      updateFileBodyInYDoc(newPath, entry.content);
+    }
 
     await refreshTree();
     // Refresh parent to ensure deep nodes update correctly
@@ -933,8 +1003,10 @@
     try {
       await api.deleteEntry(path);
 
-      // CRDT is now automatically updated via backend event subscription
-      // (file:deleted event triggers crdtDeleteFile and removeFromContents)
+      // Sync delete to Y.Doc for device-to-device sync
+      if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
+        deleteFileInYDoc(path);
+      }
 
       // If we deleted the currently open entry, clear it
       if (currentEntry?.path === path) {
@@ -1342,8 +1414,8 @@
           path: node.path,
           metadata: {
             title: (frontmatter.title as string) || entry.title || node.name,
-            part_of: parentPath,
-            contents: filteredChildren.length > 0 ? filteredChildren.map(c => c.path) : null,
+            part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
+            contents: filteredChildren.length > 0 ? filteredChildren.map(c => calculateRelativePath(node.path, c.path)) : null,
             // Store file content in extra field for syncing
             extra: {
               _body: entry.content,
@@ -1362,8 +1434,8 @@
           path: node.path,
           metadata: {
             title: node.name,
-            part_of: parentPath,
-            contents: filteredChildren.length > 0 ? filteredChildren.map(c => c.path) : null,
+            part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
+            contents: filteredChildren.length > 0 ? filteredChildren.map(c => calculateRelativePath(node.path, c.path)) : null,
           },
         });
       }
@@ -1669,6 +1741,23 @@
             // CRDT is now automatically updated via backend event subscription
             // (file:renamed event triggers CRDT updates)
 
+            // Also sync rename to Y.Doc for device-to-device sync
+            if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
+              const updatedFrontmatter: Record<string, unknown> = { ...currentEntry.frontmatter, [key]: value };
+              const metadata: FileMetadata = {
+                title: (updatedFrontmatter.title as string | null) ?? null,
+                part_of: (updatedFrontmatter.part_of as string | null) ?? null,
+                contents: Array.isArray(updatedFrontmatter.contents) ? updatedFrontmatter.contents as string[] : null,
+                attachments: Array.isArray(updatedFrontmatter.attachments) ? updatedFrontmatter.attachments : [],
+                deleted: false,
+                audience: Array.isArray(updatedFrontmatter.audience) ? updatedFrontmatter.audience as string[] : null,
+                description: (updatedFrontmatter.description as string | null) ?? null,
+                extra: {},
+                modified_at: BigInt(Date.now()),
+              };
+              renameFileInYDoc(oldPath, newPath, metadata);
+            }
+
             // Update current entry path and refresh tree
             currentEntry = {
               ...currentEntry,
@@ -1917,6 +2006,10 @@
   bind:readableLineLength
   bind:focusMode
   workspacePath={tree?.path}
+  onOpenSyncWizard={() => {
+    showSettingsDialog = false;
+    showSyncWizard = true;
+  }}
 />
 
 <!-- Export Dialog -->
@@ -1925,6 +2018,17 @@
   rootPath={exportPath}
   {api}
   onOpenChange={(open) => (showExportDialog = open)}
+/>
+
+<!-- Sync Setup Wizard -->
+<SyncSetupWizard
+  bind:open={showSyncWizard}
+  onOpenChange={(open) => showSyncWizard = open}
+  onComplete={() => {
+    showSyncWizard = false;
+    // Refresh tree after sync setup
+    refreshTree();
+  }}
 />
 
 <!-- Toast Notifications -->
@@ -2005,6 +2109,7 @@
         onOpenCommandPalette={uiStore.openCommandPalette}
         onPrevDay={handlePrevDay}
         onNextDay={handleNextDay}
+        onOpenSettings={() => (showSettingsDialog = true)}
       />
 
       <EditorContent

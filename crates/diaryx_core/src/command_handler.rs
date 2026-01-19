@@ -233,6 +233,36 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 Ok(Response::Ok)
             }
 
+            Command::WriteFileWithMetadata {
+                path,
+                metadata,
+                body,
+            } => {
+                crate::metadata_writer::write_file_with_metadata(
+                    self.fs(),
+                    Path::new(&path),
+                    &metadata,
+                    &body,
+                )
+                .await?;
+                Ok(Response::Ok)
+            }
+
+            Command::UpdateFileMetadata {
+                path,
+                metadata,
+                body,
+            } => {
+                crate::metadata_writer::update_file_metadata(
+                    self.fs(),
+                    Path::new(&path),
+                    &metadata,
+                    body.as_deref(),
+                )
+                .await?;
+                Ok(Response::Ok)
+            }
+
             // === Attachment Operations ===
             Command::GetAttachments { path } => {
                 let attachments = self.entry().get_attachments(&path).await?;

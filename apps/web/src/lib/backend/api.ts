@@ -543,6 +543,28 @@ export function createApi(backend: Backend) {
       await backend.execute({ type: 'DeleteFile', params: { path } });
     },
 
+    /**
+     * Write a file with metadata as YAML frontmatter + body content.
+     * Generates the YAML frontmatter from the metadata and writes it to the file.
+     */
+    async writeFileWithMetadata(path: string, metadata: JsonValue, body: string): Promise<void> {
+      await backend.execute({
+        type: 'WriteFileWithMetadata',
+        params: { path, metadata, body },
+      });
+    },
+
+    /**
+     * Update file's frontmatter metadata, preserving or replacing the body.
+     * If body is provided, it replaces the existing body.
+     */
+    async updateFileMetadata(path: string, metadata: JsonValue, body?: string): Promise<void> {
+      await backend.execute({
+        type: 'UpdateFileMetadata',
+        params: { path, metadata, body: body ?? null },
+      });
+    },
+
     /** Read a binary file's content. */
     async readBinary(path: string): Promise<Uint8Array> {
       return backend.readBinary(path);

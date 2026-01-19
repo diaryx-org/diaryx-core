@@ -32,6 +32,8 @@
     readableLineLength?: boolean;
     focusMode?: boolean;
     workspacePath?: string | null;
+    /** Callback to open the sync setup wizard */
+    onOpenSyncWizard?: () => void;
   }
 
   let {
@@ -43,6 +45,7 @@
     readableLineLength = $bindable(true),
     focusMode = $bindable(true),
     workspacePath = null,
+    onOpenSyncWizard,
   }: Props = $props();
 
   const mobileState = getMobileState();
@@ -107,7 +110,7 @@
 
     <Tabs.Content value="sync">
       <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
-        <SyncSettings />
+        <SyncSettings onOpenWizard={onOpenSyncWizard} />
         <StorageSettings />
       </div>
     </Tabs.Content>

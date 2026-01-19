@@ -52,11 +52,11 @@ async function initCredentialStoreInternal(): Promise<boolean> {
  */
 async function ensureInitialized(): Promise<void> {
   if (strongholdInstance && clientInstance) return;
-  
+
   if (!initPromise) {
     initPromise = initCredentialStoreInternal();
   }
-  
+
   const success = await initPromise;
   if (!success) {
     throw new Error('Failed to initialize credential store');
@@ -71,15 +71,15 @@ export async function initCredentialStore(password: string): Promise<boolean> {
   try {
     const dataDir = await appDataDir();
     const vaultPath = `${dataDir}/${VAULT_FILE}`;
-    
+
     strongholdInstance = await Stronghold.load(vaultPath, password);
-    
+
     try {
       clientInstance = await strongholdInstance.loadClient(CLIENT_NAME);
     } catch {
       clientInstance = await strongholdInstance.createClient(CLIENT_NAME);
     }
-    
+
     return true;
   } catch (e) {
     console.error('Failed to init credential store:', e);
@@ -102,7 +102,7 @@ export async function storeCredential(key: string, value: string): Promise<void>
   if (!clientInstance || !strongholdInstance) {
     throw new Error('Credential store not initialized.');
   }
-  
+
   const store = clientInstance.getStore();
   const data = Array.from(new TextEncoder().encode(value));
   await store.insert(key, data);
@@ -117,7 +117,7 @@ export async function getCredential(key: string): Promise<string | null> {
   if (!clientInstance) {
     throw new Error('Credential store not initialized.');
   }
-  
+
   const store = clientInstance.getStore();
   try {
     const data = await store.get(key);
@@ -136,7 +136,7 @@ export async function removeCredential(key: string): Promise<void> {
   if (!clientInstance || !strongholdInstance) {
     throw new Error('Credential store not initialized.');
   }
-  
+
   const store = clientInstance.getStore();
   await store.remove(key);
   await strongholdInstance.save();
@@ -294,12 +294,10 @@ export async function removeGoogleDriveCredentials(): Promise<void> {
 
 // Live Sync specific helpers - using localStorage for reliability
 const SYNC_SERVER_URL = 'diaryx_sync_server_url';
-const SYNC_WORKSPACE_ID = 'diaryx_sync_workspace_id';
 const SYNC_ENABLED = 'diaryx_sync_enabled';
 
 export interface SyncConfig {
   serverUrl: string;
-  workspaceId: string;
   enabled: boolean;
 }
 
@@ -308,7 +306,6 @@ export interface SyncConfig {
  */
 export async function storeSyncConfig(config: SyncConfig): Promise<void> {
   localStorage.setItem(SYNC_SERVER_URL, config.serverUrl);
-  localStorage.setItem(SYNC_WORKSPACE_ID, config.workspaceId);
   localStorage.setItem(SYNC_ENABLED, config.enabled ? 'true' : 'false');
 }
 
@@ -318,14 +315,12 @@ export async function storeSyncConfig(config: SyncConfig): Promise<void> {
 export async function getSyncConfig(): Promise<SyncConfig | null> {
   try {
     const serverUrl = localStorage.getItem(SYNC_SERVER_URL);
-    const workspaceId = localStorage.getItem(SYNC_WORKSPACE_ID);
     const enabled = localStorage.getItem(SYNC_ENABLED);
 
-    if (!serverUrl && !workspaceId) return null;
+    if (!serverUrl) return null;
 
     return {
       serverUrl: serverUrl || '',
-      workspaceId: workspaceId || '',
       enabled: enabled === 'true',
     };
   } catch {
@@ -338,6 +333,5 @@ export async function getSyncConfig(): Promise<SyncConfig | null> {
  */
 export async function removeSyncConfig(): Promise<void> {
   localStorage.removeItem(SYNC_SERVER_URL);
-  localStorage.removeItem(SYNC_WORKSPACE_ID);
   localStorage.removeItem(SYNC_ENABLED);
 }

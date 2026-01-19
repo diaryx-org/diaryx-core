@@ -15,15 +15,21 @@ part_of: README.md
 
 ### Template support for web frontend
 
+Almost implemented
+
 ### Export different file types
 
 Possibly embed pandoc?
 
 ### Improved Sync/Backup
 
+Working on sync. Backup works, just needs scheduling/automation
+
 ### Cross-platform import
 
 Import from Obsidian (add all part_of/contents properties + index files)
+
+Perhaps is already possible for Obsidian with validation fixes. The hard part is handling Wikilinks, which needs design decisions
 
 ## Other considerations
 

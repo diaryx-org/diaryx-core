@@ -35,6 +35,10 @@ mod indexeddb_fs;
 mod js_async_fs;
 mod opfs_fs;
 mod utils;
+mod wasm_sqlite_storage;
+
+// Re-export WASM SQLite storage for external use
+pub use wasm_sqlite_storage::WasmSqliteStorage;
 
 // Re-export the main backend class
 pub use backend::DiaryxBackend;

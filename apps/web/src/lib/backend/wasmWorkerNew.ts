@@ -67,6 +67,19 @@ async function executeAndExtract<T>(
  * Initialize the backend and set up event forwarding.
  */
 async function init(_port: MessagePort, storageType: StorageType, directoryHandle?: FileSystemDirectoryHandle): Promise<void> {
+  // Initialize CRDT storage bridge BEFORE importing WASM
+  // This sets up the global bridge that Rust will use for persistent CRDT storage
+  // Skip for memory storage (guest mode) since CRDT doesn't need persistence there
+  if (storageType !== 'memory') {
+    try {
+      const { setupCrdtStorageBridge } = await import('../storage/index.js');
+      await setupCrdtStorageBridge();
+      console.log('[WasmWorker] CRDT storage bridge initialized');
+    } catch (e) {
+      console.warn('[WasmWorker] Failed to initialize CRDT storage bridge, using memory storage:', e);
+    }
+  }
+
   // Import WASM module
   const wasm = await import('../wasm/diaryx_wasm.js');
   await wasm.default();

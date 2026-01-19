@@ -1,11 +1,13 @@
 use diaryx_core::crdt::{SqliteStorage, SyncMessage, UpdateOrigin, WorkspaceCrdt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{RwLock, broadcast};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Control messages for session management
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +207,9 @@ pub struct SyncRoom {
     guest_connections: RwLock<HashMap<String, ()>>,
     /// Whether the session is read-only
     is_read_only: AtomicBool,
+    /// Last response sent per connection, used to detect and break ping-pong loops
+    /// Key is a hash of the incoming message, value is the response sent
+    last_responses: RwLock<HashMap<u64, Vec<u8>>>,
 }
 
 impl SyncRoom {
@@ -234,6 +239,7 @@ impl SyncRoom {
             session_context: RwLock::new(None),
             guest_connections: RwLock::new(HashMap::new()),
             is_read_only: AtomicBool::new(false),
+            last_responses: RwLock::new(HashMap::new()),
         })
     }
 
@@ -256,6 +262,7 @@ impl SyncRoom {
             session_context: RwLock::new(None),
             guest_connections: RwLock::new(HashMap::new()),
             is_read_only: AtomicBool::new(false),
+            last_responses: RwLock::new(HashMap::new()),
         }
     }
 
@@ -414,6 +421,32 @@ impl SyncRoom {
         if responses.is_empty() {
             None
         } else {
+            // Detect ping-pong loops: hash the incoming message and check if we'd send the same response
+            let msg_hash = {
+                let mut hasher = DefaultHasher::new();
+                msg.hash(&mut hasher);
+                hasher.finish()
+            };
+
+            let mut last_responses = self.last_responses.write().await;
+
+            if let Some(last_response) = last_responses.get(&msg_hash) {
+                if last_response == &responses {
+                    debug!("Skipping duplicate response to break sync loop");
+                    return None;
+                }
+            }
+
+            // Store this response for loop detection
+            last_responses.insert(msg_hash, responses.clone());
+
+            // Limit the cache size to prevent memory leaks
+            if last_responses.len() > 100 {
+                // Clear old entries (simple approach - just clear all)
+                last_responses.clear();
+                last_responses.insert(msg_hash, responses.clone());
+            }
+
             Some(responses)
         }
     }

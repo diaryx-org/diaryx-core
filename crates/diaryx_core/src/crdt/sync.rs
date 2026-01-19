@@ -267,45 +267,52 @@ impl SyncMessage {
         Ok((msg, total_consumed))
     }
 
-    /// Decode ALL sub-messages from a combined Sync message.
-    /// Hocuspocus can send multiple sub-messages (e.g., SyncStep2 + SyncStep1) in one message.
+    /// Decode ALL messages from combined/concatenated data.
+    ///
+    /// Handles two scenarios:
+    /// 1. Single sync message with multiple sub-messages (Hocuspocus style):
+    ///    `[msgType=0] [subMsg1] [subMsg2] ...`
+    /// 2. Multiple complete messages concatenated:
+    ///    `[msgType=0] [subMsg1] [msgType=0] [subMsg2] ...`
     pub fn decode_all(data: &[u8]) -> StorageResult<Vec<Self>> {
         let mut messages = Vec::new();
+        let mut offset = 0;
 
-        if data.is_empty() {
-            return Ok(messages);
-        }
-
-        // Read message type
-        let Some((msg_type_val, msg_type_bytes)) = read_var_uint(data) else {
-            return Ok(messages);
-        };
-
-        if msg_type_val != msg_type::SYNC as u64 {
-            log::debug!(
-                "[Y-sync] Non-sync message type: {} (expected 0)",
-                msg_type_val
-            );
-            return Ok(messages);
-        }
-
-        let mut offset = msg_type_bytes;
-
-        // Process all sub-messages
         while offset < data.len() {
-            let (msg, consumed) = Self::decode_sub_message(&data[offset..])?;
-            if consumed == 0 {
-                break; // No more valid messages
+            // Read message type
+            let Some((msg_type_val, msg_type_bytes)) = read_var_uint(&data[offset..]) else {
+                break;
+            };
+
+            if msg_type_val != msg_type::SYNC as u64 {
+                log::debug!(
+                    "[Y-sync] Non-sync message type: {} (expected 0), skipping",
+                    msg_type_val
+                );
+                // Skip this byte and try next
+                offset += 1;
+                continue;
             }
-            if let Some(m) = msg {
-                messages.push(m);
+
+            offset += msg_type_bytes;
+
+            // Decode one sub-message after the message type
+            if offset < data.len() {
+                let (msg, consumed) = Self::decode_sub_message(&data[offset..])?;
+                if consumed == 0 {
+                    break; // No valid message
+                }
+                if let Some(m) = msg {
+                    messages.push(m);
+                }
+                offset += consumed;
             }
-            offset += consumed;
         }
 
         log::debug!(
-            "[Y-sync] Decoded {} sub-messages from combined message",
-            messages.len()
+            "[Y-sync] Decoded {} messages from combined data ({} bytes)",
+            messages.len(),
+            data.len()
         );
         Ok(messages)
     }

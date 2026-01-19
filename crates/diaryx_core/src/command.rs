@@ -461,6 +461,28 @@ pub enum Command {
         path: String,
     },
 
+    /// Write a file with metadata as YAML frontmatter + body content.
+    /// This generates the YAML frontmatter from the metadata and writes it to the file.
+    WriteFileWithMetadata {
+        /// Path to the file to write.
+        path: String,
+        /// File metadata to write as frontmatter.
+        metadata: serde_json::Value,
+        /// Body content (markdown after frontmatter).
+        body: String,
+    },
+
+    /// Update file's frontmatter metadata, preserving existing body.
+    /// If body is provided, it replaces the existing body.
+    UpdateFileMetadata {
+        /// Path to the file to update.
+        path: String,
+        /// File metadata to write as frontmatter.
+        metadata: serde_json::Value,
+        /// Optional new body content. If not provided, existing body is preserved.
+        body: Option<String>,
+    },
+
     // === Storage ===
     /// Get storage usage information.
     GetStorageUsage,
