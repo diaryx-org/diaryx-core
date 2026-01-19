@@ -797,7 +797,11 @@
   async function createNewEntry(path: string, title: string) {
     if (!api) return;
     try {
-      const newPath = await api.createEntry(path, { title });
+      // Get default template from settings
+      const defaultTemplate = typeof window !== "undefined"
+        ? localStorage.getItem("diaryx-default-template") || "note"
+        : "note";
+      const newPath = await api.createEntry(path, { title, template: defaultTemplate });
 
       // Persist to IndexedDB immediately so file survives refresh
 
@@ -823,9 +827,14 @@
         ? localStorage.getItem("diaryx-daily-entry-folder") || undefined
         : undefined;
 
-      // Pass the workspace path and daily_entry_folder to EnsureDailyEntry
+      // Get daily template from settings
+      const dailyTemplate = typeof window !== "undefined"
+        ? localStorage.getItem("diaryx-daily-template") || "daily"
+        : "daily";
+
+      // Pass the workspace path, daily_entry_folder, and template to EnsureDailyEntry
       // The workspace path is the root index file path (e.g., "workspace/README.md")
-      const path = await api.ensureDailyEntry(tree.path, dailyEntryFolder);
+      const path = await api.ensureDailyEntry(tree.path, dailyEntryFolder, dailyTemplate);
       await refreshTree();
       await openEntry(path);
     } catch (e) {

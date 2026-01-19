@@ -9,7 +9,7 @@
   import * as Drawer from "$lib/components/ui/drawer";
   import * as Tabs from "$lib/components/ui/tabs";
   import { Button } from "$lib/components/ui/button";
-  import { Settings, Eye, FolderOpen, RefreshCw, Database, Bug } from "@lucide/svelte";
+  import { Settings, Eye, FolderOpen, FileText, RefreshCw, Database, Bug } from "@lucide/svelte";
   import { getMobileState } from "./hooks/useMobile.svelte";
 
   // Import modular settings components
@@ -21,6 +21,7 @@
   import ImportSettings from "./settings/ImportSettings.svelte";
   import CloudBackupSettings from "./settings/CloudBackupSettings.svelte";
   import DebugInfo from "./settings/DebugInfo.svelte";
+  import TemplateSettings from "./settings/TemplateSettings.svelte";
 
   interface Props {
     open?: boolean;
@@ -61,6 +62,10 @@
         <FolderOpen class="size-4 mr-1.5 hidden sm:inline" />
         Workspace
       </Tabs.Trigger>
+      <Tabs.Trigger value="templates" class="shrink-0">
+        <FileText class="size-4 mr-1.5 hidden sm:inline" />
+        Templates
+      </Tabs.Trigger>
       <Tabs.Trigger value="sync" class="shrink-0">
         <RefreshCw class="size-4 mr-1.5 hidden sm:inline" />
         Sync
@@ -91,6 +96,12 @@
     <Tabs.Content value="workspace">
       <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
         <WorkspaceSettings />
+      </div>
+    </Tabs.Content>
+
+    <Tabs.Content value="templates">
+      <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
+        <TemplateSettings />
       </div>
     </Tabs.Content>
 

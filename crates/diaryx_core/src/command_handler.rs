@@ -409,7 +409,6 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 template,
             } => {
                 use crate::config::Config;
-                use crate::date::date_to_path;
                 use chrono::Local;
 
                 // workspace_path is the root index file (e.g., "workspace/README.md")
@@ -429,27 +428,28 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                 // Get today's date
                 let today = Local::now().date_naive();
-                let daily_dir = config.daily_entry_dir();
-                let entry_path = date_to_path(&daily_dir, &today);
+
+                // Ensure index hierarchy exists FIRST - this finds/creates the correct month_dir
+                // which may be named "01", "january", etc. depending on existing structure
+                let (month_dir, month_index_path) = self
+                    .ensure_daily_index_hierarchy(
+                        &today,
+                        &config,
+                        &workspace_root_path,
+                        daily_entry_folder.as_deref(),
+                    )
+                    .await?;
+
+                // Construct entry path using the actual month_dir found/created
+                let date_str = today.format("%Y-%m-%d").to_string();
+                let entry_filename = format!("{}.md", date_str);
+                let entry_path = month_dir.join(&entry_filename);
 
                 // Check if the entry already exists
                 if self.fs().exists(&entry_path).await {
                     return Ok(Response::String(entry_path.to_string_lossy().to_string()));
                 }
-
-                // Create parent directories
-                if let Some(parent) = entry_path.parent() {
-                    self.fs().create_dir_all(parent).await?;
-                }
-
-                // Ensure index hierarchy exists
-                self.ensure_daily_index_hierarchy(
-                    &today,
-                    &config,
-                    &workspace_root_path,
-                    daily_entry_folder.as_deref(),
-                )
-                .await?;
+                // No need to create_dir_all - month_dir already exists from ensure_daily_index_hierarchy
 
                 // Get template content
                 let templates_dir = workspace_dir.join("_templates");
@@ -464,12 +464,12 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                 // Build context for template variables
                 let title = today.format("%B %d, %Y").to_string(); // e.g., "January 15, 2026"
-                let date_str = today.format("%Y-%m-%d").to_string();
-                let month_index_filename = format!(
-                    "{}_{}.md",
-                    today.format("%Y"),
-                    today.format("%B").to_string().to_lowercase()
-                );
+                // Extract the actual month index filename from the path found/created by ensure_daily_index_hierarchy
+                let month_index_filename = month_index_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("month_index.md")
+                    .to_string();
 
                 // Render content (substitute template variables)
                 let content = if let Some(tmpl) = template_content {
@@ -493,9 +493,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         source: e,
                     })?;
 
-                // Add entry to month index contents
-                let month_index_path = entry_path.parent().unwrap().join(&month_index_filename);
-                let entry_filename = format!("{}.md", date_str);
+                // Add entry to month index contents (use the month_index_path from ensure_daily_index_hierarchy)
                 self.add_to_index_contents(&month_index_path, &entry_filename)
                     .await?;
 
@@ -1562,7 +1560,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
         config: &crate::config::Config,
         workspace_root_path: &Path,
         daily_entry_folder: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<(PathBuf, PathBuf)> {
         let daily_dir = config.daily_entry_dir();
         let year = date.format("%Y").to_string();
 
@@ -1583,10 +1581,8 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
         // Ensure the month directory exists
         self.fs().create_dir_all(&month_dir).await?;
 
-        // The paths are used by the caller to create the daily entry
-        let _ = month_index_path;
-
-        Ok(())
+        // Return the paths for the caller to use when creating the daily entry
+        Ok((month_dir, month_index_path))
     }
 
     /// Find an existing year index or create one.
@@ -1658,7 +1654,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
     /// Find an existing month directory and index, or create them.
     /// Checks for common directory naming patterns: 01, january, 01-january
-    /// Checks for common index naming patterns: YYYY_month.md, month.md
+    /// Checks for common index naming patterns: YYYY_month.md, month.md, 01.md
     /// Only considers files that are actual indexes (have `contents` property).
     /// Returns (month_dir, month_index_path).
     async fn find_or_create_month_dir_and_index(
@@ -1671,24 +1667,24 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
         let month_name = date.format("%B").to_string().to_lowercase();
         let month_num = date.format("%m").to_string();
 
-        // Check for existing month directories (in order of preference)
+        // Check for existing month directories with valid indices
+        // Only use a directory if it has a valid index file inside
         let dir_candidates = [
             month_num.clone(),                       // 01
             month_name.clone(),                      // january
             format!("{}-{}", month_num, month_name), // 01-january
         ];
 
-        // For each potential directory, check if it exists and has an index file
+        let index_candidates = [
+            format!("{}_{}.md", year, month_name), // 2026_january.md
+            format!("{}.md", month_name),          // january.md
+            format!("{}.md", month_num),           // 01.md
+        ];
+
+        // Check directories AND their indices together
         for dir_name in &dir_candidates {
             let month_dir = year_dir.join(dir_name);
             if self.fs().exists(&month_dir).await {
-                // Check for index files within this directory
-                let index_candidates = [
-                    format!("{}_{}.md", year, month_name), // 2026_january.md
-                    format!("{}.md", month_name),          // january.md
-                    format!("{}.md", dir_name),            // 01.md or january.md
-                ];
-
                 for index_name in &index_candidates {
                     let index_path = month_dir.join(index_name);
                     if self.is_index_file(&index_path).await {
@@ -1698,28 +1694,22 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
         }
 
-        // Also check for month index directly in year_dir (no subdirectory)
-        // e.g., 2026/january.md instead of 2026/01/january.md
-        let flat_index_candidates = [
-            format!("{}_{}.md", year, month_name), // 2026_january.md
-            format!("{}.md", month_name),          // january.md
-        ];
-
-        for index_name in &flat_index_candidates {
+        // Check for month index directly in year_dir (flat structure)
+        // e.g., 2026/january.md instead of 2026/january/january.md
+        for index_name in &index_candidates {
             let index_path = year_dir.join(index_name);
             if self.is_index_file(&index_path).await {
-                // Index exists at year level - use a subdirectory for daily entries
-                // but the index stays where it is
+                // Flat index found - use numeric month dir for entries
                 let month_dir = year_dir.join(&month_num);
                 return Ok((month_dir, index_path));
             }
         }
 
-        // No existing directory/index found - create with preferred naming
+        // No existing index found - create with numeric naming (consistent with date_to_path)
         let month_dir = year_dir.join(&month_num);
         let month_index_path = month_dir.join(format!("{}_{}.md", year, month_name));
 
-        // Create the directory
+        // Create the directory if it doesn't exist
         self.fs().create_dir_all(&month_dir).await?;
 
         // Create the index file
