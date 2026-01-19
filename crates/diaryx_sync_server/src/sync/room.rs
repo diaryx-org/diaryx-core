@@ -1,9 +1,29 @@
 use diaryx_core::crdt::{SqliteStorage, SyncMessage, UpdateOrigin, WorkspaceCrdt};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{RwLock, broadcast};
 use tracing::{error, info, warn};
+
+/// Control messages for session management
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ControlMessage {
+    PeerJoined { guest_id: String, peer_count: usize },
+    PeerLeft { guest_id: String, peer_count: usize },
+    ReadOnlyChanged { read_only: bool },
+    SessionEnded,
+}
+
+/// Session context for a share session
+#[derive(Debug, Clone)]
+pub struct SessionContext {
+    pub code: String,
+    pub owner_user_id: String,
+    pub read_only: bool,
+}
 
 /// Statistics about the sync state
 #[derive(Debug, Clone, Default)]
@@ -16,6 +36,8 @@ pub struct SyncStats {
 pub struct SyncState {
     /// Map of workspace_id to SyncRoom
     rooms: RwLock<HashMap<String, Arc<SyncRoom>>>,
+    /// Map of session_code to workspace_id (for session lookups)
+    session_to_workspace: RwLock<HashMap<String, String>>,
     /// Base path for workspace databases
     data_dir: PathBuf,
 }
@@ -25,6 +47,7 @@ impl SyncState {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             rooms: RwLock::new(HashMap::new()),
+            session_to_workspace: RwLock::new(HashMap::new()),
             data_dir,
         }
     }
@@ -93,6 +116,72 @@ impl SyncState {
             active_rooms: rooms.len(),
         }
     }
+
+    /// Get or create a room for a session, with session context
+    pub async fn get_or_create_session_room(
+        &self,
+        workspace_id: &str,
+        session_context: SessionContext,
+    ) -> Arc<SyncRoom> {
+        // Track session -> workspace mapping
+        {
+            let mut mapping = self.session_to_workspace.write().await;
+            mapping.insert(session_context.code.clone(), workspace_id.to_string());
+        }
+
+        // Get or create the room
+        let room = self.get_or_create_room(workspace_id).await;
+
+        // Set session context on the room
+        room.set_session_context(session_context).await;
+
+        room
+    }
+
+    /// Get peer count for a session
+    pub async fn get_session_peer_count(&self, session_code: &str) -> Option<usize> {
+        let mapping = self.session_to_workspace.read().await;
+        let workspace_id = mapping.get(session_code)?;
+
+        let rooms = self.rooms.read().await;
+        let room = rooms.get(workspace_id)?;
+
+        Some(room.connection_count())
+    }
+
+    /// End a session (notify all connected clients)
+    pub async fn end_session(&self, session_code: &str) {
+        // Get workspace ID for this session
+        let workspace_id = {
+            let mapping = self.session_to_workspace.read().await;
+            mapping.get(session_code).cloned()
+        };
+
+        if let Some(workspace_id) = workspace_id {
+            // Get the room and send session ended message
+            let rooms = self.rooms.read().await;
+            if let Some(room) = rooms.get(&workspace_id) {
+                room.broadcast_control_message(ControlMessage::SessionEnded)
+                    .await;
+                room.clear_session_context().await;
+            }
+
+            // Remove session mapping
+            let mut mapping = self.session_to_workspace.write().await;
+            mapping.remove(session_code);
+
+            info!("Ended session: {}", session_code);
+        }
+    }
+
+    /// Get room for a session code (for guests joining)
+    pub async fn get_room_for_session(&self, session_code: &str) -> Option<Arc<SyncRoom>> {
+        let mapping = self.session_to_workspace.read().await;
+        let workspace_id = mapping.get(session_code)?;
+
+        let rooms = self.rooms.read().await;
+        rooms.get(workspace_id).cloned()
+    }
 }
 
 /// A sync room for a single workspace
@@ -101,13 +190,21 @@ pub struct SyncRoom {
     workspace_id: String,
     /// The CRDT workspace document
     workspace: RwLock<WorkspaceCrdt>,
-    /// Broadcast channel for updates
+    /// Broadcast channel for updates (binary Y-sync messages)
     broadcast_tx: broadcast::Sender<Vec<u8>>,
+    /// Broadcast channel for control messages (JSON)
+    control_tx: broadcast::Sender<ControlMessage>,
     /// Number of active connections
-    connection_count: std::sync::atomic::AtomicUsize,
+    connection_count: AtomicUsize,
     /// Storage backend (kept for potential future use)
     #[allow(dead_code)]
     storage: Arc<SqliteStorage>,
+    /// Session context (if this room is hosting a share session)
+    session_context: RwLock<Option<SessionContext>>,
+    /// Guest connections (guest_id -> connection tracking)
+    guest_connections: RwLock<HashMap<String, ()>>,
+    /// Whether the session is read-only
+    is_read_only: AtomicBool,
 }
 
 impl SyncRoom {
@@ -125,13 +222,18 @@ impl SyncRoom {
         let workspace = WorkspaceCrdt::load_with_name(storage.clone(), workspace_id.to_string())?;
 
         let (broadcast_tx, _) = broadcast::channel(1024);
+        let (control_tx, _) = broadcast::channel(256);
 
         Ok(Self {
             workspace_id: workspace_id.to_string(),
             workspace: RwLock::new(workspace),
             broadcast_tx,
-            connection_count: std::sync::atomic::AtomicUsize::new(0),
+            control_tx,
+            connection_count: AtomicUsize::new(0),
             storage,
+            session_context: RwLock::new(None),
+            guest_connections: RwLock::new(HashMap::new()),
+            is_read_only: AtomicBool::new(false),
         })
     }
 
@@ -142,33 +244,114 @@ impl SyncRoom {
         let workspace = WorkspaceCrdt::with_name(storage.clone(), workspace_id.to_string());
 
         let (broadcast_tx, _) = broadcast::channel(1024);
+        let (control_tx, _) = broadcast::channel(256);
 
         Self {
             workspace_id: workspace_id.to_string(),
             workspace: RwLock::new(workspace),
             broadcast_tx,
-            connection_count: std::sync::atomic::AtomicUsize::new(0),
+            control_tx,
+            connection_count: AtomicUsize::new(0),
             storage,
+            session_context: RwLock::new(None),
+            guest_connections: RwLock::new(HashMap::new()),
+            is_read_only: AtomicBool::new(false),
         }
     }
 
     /// Subscribe to room updates
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
-        self.connection_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.connection_count.fetch_add(1, Ordering::SeqCst);
         self.broadcast_tx.subscribe()
+    }
+
+    /// Subscribe to control messages
+    pub fn subscribe_control(&self) -> broadcast::Receiver<ControlMessage> {
+        self.control_tx.subscribe()
     }
 
     /// Unsubscribe from room updates
     pub fn unsubscribe(&self) {
-        self.connection_count
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.connection_count.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// Get the number of active connections
     pub fn connection_count(&self) -> usize {
-        self.connection_count
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.connection_count.load(Ordering::SeqCst)
+    }
+
+    /// Check if room is in read-only mode
+    pub fn is_read_only(&self) -> bool {
+        self.is_read_only.load(Ordering::SeqCst)
+    }
+
+    /// Set session context for this room
+    pub async fn set_session_context(&self, context: SessionContext) {
+        self.is_read_only.store(context.read_only, Ordering::SeqCst);
+        let mut session = self.session_context.write().await;
+        *session = Some(context);
+    }
+
+    /// Clear session context
+    pub async fn clear_session_context(&self) {
+        let mut session = self.session_context.write().await;
+        *session = None;
+        self.is_read_only.store(false, Ordering::SeqCst);
+
+        // Clear guest connections
+        let mut guests = self.guest_connections.write().await;
+        guests.clear();
+    }
+
+    /// Get session context
+    pub async fn get_session_context(&self) -> Option<SessionContext> {
+        let session = self.session_context.read().await;
+        session.clone()
+    }
+
+    /// Add a guest connection
+    pub async fn add_guest(&self, guest_id: &str) {
+        let mut guests = self.guest_connections.write().await;
+        guests.insert(guest_id.to_string(), ());
+
+        let peer_count = self.connection_count();
+        self.broadcast_control_message(ControlMessage::PeerJoined {
+            guest_id: guest_id.to_string(),
+            peer_count,
+        })
+        .await;
+    }
+
+    /// Remove a guest connection
+    pub async fn remove_guest(&self, guest_id: &str) {
+        let mut guests = self.guest_connections.write().await;
+        guests.remove(guest_id);
+
+        let peer_count = self.connection_count();
+        self.broadcast_control_message(ControlMessage::PeerLeft {
+            guest_id: guest_id.to_string(),
+            peer_count,
+        })
+        .await;
+    }
+
+    /// Set read-only mode and broadcast to all clients
+    pub async fn set_read_only(&self, read_only: bool) {
+        self.is_read_only.store(read_only, Ordering::SeqCst);
+
+        // Update session context if present
+        if let Some(mut context) = self.get_session_context().await {
+            context.read_only = read_only;
+            self.set_session_context(context).await;
+        }
+
+        self.broadcast_control_message(ControlMessage::ReadOnlyChanged { read_only })
+            .await;
+    }
+
+    /// Broadcast a control message to all connected clients
+    pub async fn broadcast_control_message(&self, msg: ControlMessage) {
+        let _ = self.control_tx.send(msg);
     }
 
     /// Handle an incoming Y-sync message and return response if any

@@ -10,6 +10,7 @@
 
 import { AuthService, createAuthService, type User, type Workspace, type Device, AuthError } from './authService';
 import { setAuthToken, setCollaborationServer, setCollaborationWorkspaceId } from '../crdt/collaborationBridge';
+import { collaborationStore } from '@/models/stores/collaborationStore.svelte';
 
 // ============================================================================
 // Types
@@ -97,7 +98,8 @@ export async function initAuth(): Promise<void> {
   if (serverUrl) {
     state.serverUrl = serverUrl;
     authService = createAuthService(serverUrl);
-    setCollaborationServer(serverUrl);
+    // Convert HTTP URL to WebSocket URL for collaboration
+    setCollaborationServer(toWebSocketUrl(serverUrl));
   }
 
   if (token && serverUrl) {
@@ -129,6 +131,9 @@ export async function initAuth(): Promise<void> {
         setCollaborationWorkspaceId(defaultWorkspace.id);
       }
 
+      // Enable collaboration for returning authenticated users
+      collaborationStore.setEnabled(true);
+
       // Save user for faster restore next time
       localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(me.user));
     } catch (err) {
@@ -157,7 +162,8 @@ export function setServerUrl(url: string | null): void {
   if (url) {
     localStorage.setItem(STORAGE_KEYS.SERVER_URL, url);
     authService = createAuthService(url);
-    setCollaborationServer(url);
+    // Convert HTTP URL to WebSocket URL for collaboration
+    setCollaborationServer(toWebSocketUrl(url));
   } else {
     localStorage.removeItem(STORAGE_KEYS.SERVER_URL);
     authService = null;
@@ -216,6 +222,9 @@ export async function verifyMagicLink(token: string): Promise<void> {
     // Update collaboration settings
     setAuthToken(response.token);
 
+    // Enable collaboration now that we're authenticated
+    collaborationStore.setEnabled(true);
+
     // Fetch full user info (workspaces, devices)
     await refreshUserInfo();
   } catch (err) {
@@ -269,6 +278,7 @@ export async function logout(): Promise<void> {
   // Clear collaboration settings
   setAuthToken(undefined);
   setCollaborationWorkspaceId(null);
+  collaborationStore.setEnabled(false);
 
   // Try to logout on server (don't wait for it)
   if (authService && token) {
@@ -292,6 +302,16 @@ export async function deleteDevice(deviceId: string): Promise<void> {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Convert HTTP URL to WebSocket URL with /sync endpoint.
+ */
+function toWebSocketUrl(httpUrl: string): string {
+  return httpUrl
+    .replace(/^https:\/\//, 'wss://')
+    .replace(/^http:\/\//, 'ws://')
+    + '/sync';
+}
 
 function getDeviceName(): string {
   if (typeof navigator === 'undefined') return 'Unknown';

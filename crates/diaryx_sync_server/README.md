@@ -4,7 +4,7 @@ author: adammharris
 audience:
   - public
   - developers
-part_of: ../../README.md
+part_of: ../README.md
 ---
 
 # Diaryx Sync Server
@@ -16,6 +16,7 @@ A Rust-based multi-device sync server for Diaryx with magic link authentication.
 - **Magic link authentication**: Passwordless login via email
 - **Real-time sync**: WebSocket-based Y-sync protocol using diaryx_core's CRDT infrastructure
 - **Multi-device support**: Track and manage connected devices
+- **Live share sessions**: Real-time collaboration with guests via shareable codes
 - **Persistent storage**: SQLite-based storage for user data and CRDT state
 
 ## Quick Start
@@ -134,13 +135,71 @@ GET /api/workspaces
 Authorization: Bearer <session_token>
 ```
 
+### Share Sessions (Live Collaboration)
+
+Share sessions allow real-time collaboration with guests who don't need accounts.
+
+#### Create Session
+```
+POST /api/sessions
+Authorization: Bearer <session_token>
+Content-Type: application/json
+
+{ "workspace_id": "uuid", "read_only": false }
+```
+
+Response:
+```json
+{
+  "code": "XXXXXXXX-XXXXXXXX",
+  "workspace_id": "uuid",
+  "read_only": false
+}
+```
+
+#### Get Session Info
+```
+GET /api/sessions/{code}
+```
+
+Response:
+```json
+{
+  "code": "XXXXXXXX-XXXXXXXX",
+  "workspace_id": "uuid",
+  "read_only": false,
+  "peer_count": 2
+}
+```
+
+#### Update Session (toggle read-only)
+```
+PATCH /api/sessions/{code}
+Authorization: Bearer <session_token>
+Content-Type: application/json
+
+{ "read_only": true }
+```
+
+#### End Session
+```
+DELETE /api/sessions/{code}
+Authorization: Bearer <session_token>
+```
+
 ### WebSocket Sync
 
+#### Authenticated Sync (multi-device)
 ```
 GET /sync?doc=workspace_id&token=session_token
 ```
 
-The WebSocket connection uses the Y-sync protocol (compatible with y-protocols). Messages are binary Y.js updates.
+#### Session Sync (guest joining via code)
+```
+GET /sync?session=XXXXXXXX-XXXXXXXX&guest_id=guest-123
+```
+
+The WebSocket connection uses the Y-sync protocol (compatible with y-protocols). Binary messages are Y.js updates, text messages are control messages (peer_joined, peer_left, read_only_changed, session_ended).
 
 ## Architecture
 

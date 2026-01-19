@@ -48,6 +48,9 @@
     shareSessionStore
   } from "./models/stores";
 
+  // Import auth
+  import { initAuth } from "./lib/auth";
+
   // Initialize theme store immediately
   getThemeStore();
 
@@ -220,10 +223,12 @@
       const savedServerUrl = localStorage.getItem("diaryx-sync-server");
       if (savedServerUrl) {
         collaborationStore.setServerUrl(savedServerUrl);
-        // Auto-enable collaboration if we have a saved server
-        // collaborationStore.setEnabled(true); // DISABLED BY DEFAULT per user request
       }
     }
+
+    // Initialize auth state - if user was previously logged in,
+    // this will validate their token and enable collaboration automatically
+    await initAuth();
 
     try {
       // Dynamically import the Editor component

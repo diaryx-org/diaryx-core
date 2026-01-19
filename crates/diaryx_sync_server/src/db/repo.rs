@@ -41,6 +41,17 @@ pub struct WorkspaceInfo {
     pub created_at: DateTime<Utc>,
 }
 
+/// Share session information
+#[derive(Debug, Clone)]
+pub struct ShareSessionInfo {
+    pub code: String,
+    pub workspace_id: String,
+    pub owner_user_id: String,
+    pub read_only: bool,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
 /// Authentication repository for database operations
 #[derive(Clone)]
 pub struct AuthRepo {
@@ -404,6 +415,119 @@ impl AuthRepo {
         )
         .optional()
     }
+
+    // ===== Share session operations =====
+
+    /// Create a new share session
+    pub fn create_share_session(
+        &self,
+        workspace_id: &str,
+        owner_user_id: &str,
+        read_only: bool,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let code = generate_session_code();
+        let now = Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT INTO share_sessions (code, workspace_id, owner_user_id, read_only, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            params![code, workspace_id, owner_user_id, read_only as i32, now, expires_at.map(|e| e.timestamp())],
+        )?;
+
+        Ok(code)
+    }
+
+    /// Get a share session by code
+    pub fn get_share_session(
+        &self,
+        code: &str,
+    ) -> Result<Option<ShareSessionInfo>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+
+        conn.query_row(
+            "SELECT code, workspace_id, owner_user_id, read_only, created_at, expires_at
+             FROM share_sessions
+             WHERE code = ? AND (expires_at IS NULL OR expires_at > ?)",
+            params![code, now],
+            |row| {
+                Ok(ShareSessionInfo {
+                    code: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    owner_user_id: row.get(2)?,
+                    read_only: row.get::<_, i32>(3)? != 0,
+                    created_at: timestamp_to_datetime(row.get(4)?),
+                    expires_at: row.get::<_, Option<i64>>(5)?.map(timestamp_to_datetime),
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// Get all share sessions for a user
+    pub fn get_user_share_sessions(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ShareSessionInfo>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+
+        let mut stmt = conn.prepare(
+            "SELECT code, workspace_id, owner_user_id, read_only, created_at, expires_at
+             FROM share_sessions
+             WHERE owner_user_id = ? AND (expires_at IS NULL OR expires_at > ?)
+             ORDER BY created_at DESC",
+        )?;
+
+        let sessions = stmt
+            .query_map(params![user_id, now], |row| {
+                Ok(ShareSessionInfo {
+                    code: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    owner_user_id: row.get(2)?,
+                    read_only: row.get::<_, i32>(3)? != 0,
+                    created_at: timestamp_to_datetime(row.get(4)?),
+                    expires_at: row.get::<_, Option<i64>>(5)?.map(timestamp_to_datetime),
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(sessions)
+    }
+
+    /// Update read-only status for a share session
+    pub fn update_share_session_read_only(
+        &self,
+        code: &str,
+        read_only: bool,
+    ) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE share_sessions SET read_only = ? WHERE code = ?",
+            params![read_only as i32, code],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Delete a share session
+    pub fn delete_share_session(&self, code: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute("DELETE FROM share_sessions WHERE code = ?", [code])?;
+        Ok(deleted > 0)
+    }
+
+    /// Clean up expired share sessions
+    pub fn cleanup_expired_share_sessions(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+        let deleted = conn.execute(
+            "DELETE FROM share_sessions WHERE expires_at IS NOT NULL AND expires_at < ?",
+            [now],
+        )?;
+        Ok(deleted)
+    }
 }
 
 // ===== Helper functions =====
@@ -414,6 +538,29 @@ fn generate_secure_token() -> String {
     let mut rng = rand::thread_rng();
     let bytes: Vec<u8> = (0..32).map(|_| rng.r#gen()).collect();
     base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes)
+}
+
+/// Generate a session code in XXXXXXXX-XXXXXXXX format
+fn generate_session_code() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut rng = rand::thread_rng();
+
+    let part1: String = (0..8)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+
+    let part2: String = (0..8)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+
+    format!("{}-{}", part1, part2)
 }
 
 /// Convert Unix timestamp to DateTime<Utc>

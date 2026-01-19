@@ -9,7 +9,7 @@ use diaryx_sync_server::{
     config::Config,
     db::{AuthRepo, init_database},
     email::EmailService,
-    handlers::{api_routes, auth_routes, ws_handler},
+    handlers::{api_routes, auth_routes, session_routes, ws_handler},
     sync::SyncState,
 };
 use rusqlite::Connection;
@@ -96,9 +96,20 @@ async fn main() {
         sync_state: sync_state.clone(),
     };
 
+    let sessions_state = diaryx_sync_server::handlers::sessions::SessionsState {
+        repo: repo.clone(),
+        sync_state: sync_state.clone(),
+    };
+
     // Build CORS layer
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
         .allow_origin(Any); // In production, use specific origins from config
 
@@ -113,6 +124,8 @@ async fn main() {
         .nest("/auth", auth_routes(auth_state))
         // API routes
         .nest("/api", api_routes(api_state))
+        // Session routes (for live share)
+        .nest("/api/sessions", session_routes(sessions_state))
         // Add layers
         .layer(Extension(auth_extractor))
         .layer(cors)
@@ -138,7 +151,8 @@ async fn main() {
             interval.tick().await;
             let _ = cleanup_repo.cleanup_expired_magic_tokens();
             let _ = cleanup_repo.cleanup_expired_sessions();
-            info!("Cleaned up expired tokens and sessions");
+            let _ = cleanup_repo.cleanup_expired_share_sessions();
+            info!("Cleaned up expired tokens, sessions, and share sessions");
         }
     });
 

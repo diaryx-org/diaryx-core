@@ -22,6 +22,7 @@ import type { WebrtcProvider } from 'y-webrtc';
 import type { Api } from '../backend/api';
 import { shareSessionStore } from '@/models/stores/shareSessionStore.svelte';
 import { getClientOwnerId } from '@/models/services/shareService';
+import { getToken } from '$lib/auth/authStore.svelte';
 
 // State
 let rustApi: RustCrdtApi | null = null;
@@ -40,6 +41,12 @@ let _initializing = false;
 
 // Track last state vector for incremental sync
 let lastStateVector: Uint8Array | null = null;
+
+// Track the current update handler to prevent duplicate listeners
+let currentUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+
+// Track the current map observer to prevent duplicate listeners
+let currentMapObserver: ((event: Y.YMapEvent<unknown>, transaction: Y.Transaction) => void) | null = null;
 
 // Per-file mutex to prevent race conditions on concurrent updates
 // Map of path -> Promise that resolves when the lock is released
@@ -99,6 +106,125 @@ const sessionSyncCallbacks = new Set<SessionSyncCallback>();
 type BodyChangeCallback = (path: string, body: string) => void;
 const bodyChangeCallbacks = new Set<BodyChangeCallback>();
 
+/**
+ * Set up the update handler for remote updates.
+ * Uses Y.Map observation to only process changed files, not all files.
+ * Removes any existing handler to prevent duplicate listeners.
+ */
+function setupRemoteUpdateHandler(): void {
+  if (!workspaceYDoc) return;
+
+  const filesMap = workspaceYDoc.getMap('files');
+
+  // Remove existing handlers if any
+  if (currentUpdateHandler) {
+    workspaceYDoc.off('update', currentUpdateHandler);
+    currentUpdateHandler = null;
+  }
+  if (currentMapObserver) {
+    filesMap.unobserve(currentMapObserver);
+    currentMapObserver = null;
+  }
+
+  // Create map observer to handle file changes efficiently
+  // This only fires for files that actually changed, not all files
+  currentMapObserver = (event: Y.YMapEvent<unknown>, transaction: Y.Transaction) => {
+    // Only process remote changes (from server)
+    if (transaction.origin !== 'server') return;
+
+    console.log('[WorkspaceCrdtBridge] Map changes from server:', event.changes.keys.size, 'keys');
+
+    // Process only the changed keys
+    event.changes.keys.forEach(async (change, path) => {
+      if (change.action === 'delete') {
+        console.log('[WorkspaceCrdtBridge] File deleted:', path);
+        notifyFileChange(path, null);
+        return;
+      }
+
+      // Get the updated value
+      const value = filesMap.get(path);
+      if (!value) return;
+
+      await processFileChange(path, value as Record<string, unknown>);
+    });
+  };
+
+  filesMap.observe(currentMapObserver);
+
+  // Keep update handler for triggering onSynced and other purposes
+  currentUpdateHandler = async (_update: Uint8Array, origin: unknown) => {
+    if (origin === 'server') {
+      // Notify session sync (for UI refresh after initial sync)
+      notifySessionSync();
+    }
+  };
+
+  workspaceYDoc.on('update', currentUpdateHandler);
+}
+
+/**
+ * Process a single file change from the Y.Doc.
+ * Called by the map observer for each changed file.
+ */
+async function processFileChange(path: string, metadataObj: Record<string, unknown>): Promise<void> {
+  const skipCrdt = shouldSkipCrdtOperations();
+  if (!skipCrdt && !rustApi) return;
+
+  const extraObj = metadataObj.extra as Record<string, unknown> | undefined;
+
+  // Extract _body from extra (if present) before creating metadata
+  const body = extraObj?._body as string | undefined;
+
+  // Create clean extra without _body (we don't store body in metadata)
+  const cleanExtra: Record<string, unknown> = {};
+  if (extraObj) {
+    for (const [key, val] of Object.entries(extraObj)) {
+      if (key !== '_body') {
+        cleanExtra[key] = val;
+      }
+    }
+  }
+
+  const metadata: FileMetadata = {
+    title: (metadataObj.title as string | null) ?? null,
+    part_of: (metadataObj.part_of as string | null) ?? null,
+    contents: Array.isArray(metadataObj.contents) ? metadataObj.contents as string[] : null,
+    attachments: Array.isArray(metadataObj.attachments) ? metadataObj.attachments as BinaryRef[] : [],
+    deleted: (metadataObj.deleted as boolean) ?? false,
+    audience: Array.isArray(metadataObj.audience) ? metadataObj.audience as string[] : null,
+    description: (metadataObj.description as string | null) ?? null,
+    extra: cleanExtra as FileMetadata['extra'],
+    modified_at: metadataObj.modified_at ? BigInt(metadataObj.modified_at as number) : BigInt(Date.now()),
+  };
+
+  // Skip CRDT operations for guests
+  if (!skipCrdt && rustApi) {
+    await rustApi.setFile(path, metadata);
+  }
+
+  // If we have body content and API is available, write file to disk
+  if (body !== undefined && backendApi) {
+    const storagePath = getGuestStoragePath(path);
+    try {
+      const exists = await backendApi.fileExists(storagePath);
+      if (!exists) {
+        console.log('[WorkspaceCrdtBridge] Creating file on disk:', storagePath);
+        await writeFileWithFrontmatter(storagePath, metadata, body);
+      } else {
+        console.log('[WorkspaceCrdtBridge] Updating file content on disk:', storagePath);
+        await backendApi.saveEntry(storagePath, body);
+      }
+    } catch (e) {
+      console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
+    }
+
+    notifyBodyChange(storagePath, body);
+  }
+
+  notifyFileChange(path, metadata);
+}
+
 // ===========================================================================
 // Configuration
 // ===========================================================================
@@ -149,6 +275,7 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
       serverUrl: url,
       docName: workspaceDocName,
       doc: workspaceYDoc,
+      authToken: getToken() ?? undefined, // Pass auth token for authenticated sync
       onStatusChange: (connected) => {
         console.log('[WorkspaceCrdtBridge] Connection status:', connected);
       },
@@ -159,14 +286,8 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
       },
     });
 
-    // Set up listener for remote updates - apply incremental updates only
-    workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
-      if (origin === 'server') {
-        console.log('[WorkspaceCrdtBridge] Remote update received:', update.length, 'bytes');
-        // Apply the incremental update directly to Rust CRDT (not full state)
-        await applyIncrementalUpdateToRust(update);
-      }
-    });
+    // Set up listener for remote updates (removes any existing handler first)
+    setupRemoteUpdateHandler();
 
     syncBridge.connect();
   }
@@ -205,94 +326,6 @@ async function ensureWorkspaceYDoc(): Promise<void> {
     console.log('[WorkspaceCrdtBridge] Initial state vector stored, bytes:', lastStateVector.length);
   } catch (error) {
     console.warn('[WorkspaceCrdtBridge] Failed to load workspace state:', error);
-  }
-}
-
-/**
- * Apply an incremental update to Rust CRDT and notify file changes.
- * Reads the updated files from the Y.Doc and syncs them to Rust.
- * Also writes file content to disk if _body is present (for guests receiving synced files).
- *
- * Note: For Tauri guests, CRDT operations are skipped and files are written directly.
- */
-async function applyIncrementalUpdateToRust(_update: Uint8Array): Promise<void> {
-  if (!workspaceYDoc) return;
-
-  const skipCrdt = shouldSkipCrdtOperations();
-  if (!skipCrdt && !rustApi) return;
-
-  try {
-    // Read files from the Y.Doc (which has already had the update applied)
-    // and sync to Rust CRDT (or write directly for Tauri guests)
-    const filesMap = workspaceYDoc.getMap('files');
-    console.log('[WorkspaceCrdtBridge] Applying incremental update, files in Y.Doc:', filesMap.size, 'skipCrdt:', skipCrdt);
-
-    for (const [path, value] of filesMap.entries()) {
-      const metadataObj = value as Record<string, unknown>;
-      const extraObj = metadataObj.extra as Record<string, unknown> | undefined;
-
-      // Extract _body from extra (if present) before creating metadata
-      const body = extraObj?._body as string | undefined;
-
-      // Create clean extra without _body (we don't store body in metadata)
-      const cleanExtra: Record<string, unknown> = {};
-      if (extraObj) {
-        for (const [key, val] of Object.entries(extraObj)) {
-          if (key !== '_body') {
-            cleanExtra[key] = val;
-          }
-        }
-      }
-
-      const metadata: FileMetadata = {
-        title: (metadataObj.title as string | null) ?? null,
-        part_of: (metadataObj.part_of as string | null) ?? null,
-        contents: Array.isArray(metadataObj.contents) ? metadataObj.contents as string[] : null,
-        attachments: Array.isArray(metadataObj.attachments) ? metadataObj.attachments as BinaryRef[] : [],
-        deleted: (metadataObj.deleted as boolean) ?? false,
-        audience: Array.isArray(metadataObj.audience) ? metadataObj.audience as string[] : null,
-        description: (metadataObj.description as string | null) ?? null,
-        extra: cleanExtra as FileMetadata['extra'],
-        modified_at: metadataObj.modified_at ? BigInt(metadataObj.modified_at as number) : BigInt(Date.now()),
-      };
-
-      // Skip CRDT operations for Tauri guests - files are written directly below
-      if (!skipCrdt && rustApi) {
-        await rustApi.setFile(path, metadata);
-      }
-
-      // If we have body content and API is available, write file to disk
-      // This is needed for guests who receive synced files but don't have them on disk
-      if (body !== undefined && backendApi) {
-        // For guests, use isolated storage path to avoid overwriting their workspace
-        const storagePath = getGuestStoragePath(path);
-        try {
-          const exists = await backendApi.fileExists(storagePath);
-          if (!exists) {
-            // File doesn't exist - create it with the synced content
-            console.log('[WorkspaceCrdtBridge] Creating file on disk (incremental):', storagePath);
-            await writeFileWithFrontmatter(storagePath, metadata, body);
-          } else {
-            // File exists - update just the body content
-            console.log('[WorkspaceCrdtBridge] Updating file content on disk (incremental):', storagePath);
-            await backendApi.saveEntry(storagePath, body);
-          }
-        } catch (e) {
-          console.warn('[WorkspaceCrdtBridge] Failed to write file to disk:', storagePath, e);
-        }
-
-        // Notify about body change so the editor can reload if this is the current file
-        // Pass storage path so the listener can match directly against currentEntry.path
-        notifyBodyChange(storagePath, body);
-      }
-
-      notifyFileChange(path, metadata);
-    }
-
-    // Also notify session sync for incremental updates
-    notifySessionSync();
-  } catch (error) {
-    console.error('[WorkspaceCrdtBridge] Failed to apply incremental update to Rust:', error);
   }
 }
 
@@ -649,13 +682,8 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
     },
   });
 
-  // Set up listener for remote updates
-  workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
-    if (origin === 'server') {
-      console.log('[WorkspaceCrdtBridge] Session remote update received:', update.length, 'bytes');
-      await applyIncrementalUpdateToRust(update);
-    }
-  });
+  // Set up listener for remote updates (removes any existing handler first)
+  setupRemoteUpdateHandler();
 
   syncBridge.connect();
 }
@@ -667,6 +695,19 @@ export function stopSessionSync(): void {
   console.log('[WorkspaceCrdtBridge] Stopping session sync');
 
   _sessionCode = null;
+
+  // Remove handlers
+  if (workspaceYDoc) {
+    if (currentUpdateHandler) {
+      workspaceYDoc.off('update', currentUpdateHandler);
+      currentUpdateHandler = null;
+    }
+    if (currentMapObserver) {
+      const filesMap = workspaceYDoc.getMap('files');
+      filesMap.unobserve(currentMapObserver);
+      currentMapObserver = null;
+    }
+  }
 
   if (syncBridge) {
     syncBridge.destroy();
@@ -753,6 +794,7 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
             serverUrl,
             docName: workspaceDocName,
             doc: workspaceYDoc,
+            authToken: getToken() ?? undefined, // Pass auth token for authenticated sync
             onStatusChange: (connected) => {
               console.log('[WorkspaceCrdtBridge] Connection status:', connected);
             },
@@ -763,14 +805,8 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
             },
           });
 
-          // Set up listener for remote updates - apply incremental updates only
-          workspaceYDoc.on('update', async (update: Uint8Array, origin: unknown) => {
-            if (origin === 'server') {
-              console.log('[WorkspaceCrdtBridge] Remote update received:', update.length, 'bytes');
-              // Apply the incremental update directly to Rust CRDT (not full state)
-              await applyIncrementalUpdateToRust(update);
-            }
-          });
+          // Set up listener for remote updates (removes any existing handler first)
+          setupRemoteUpdateHandler();
 
           syncBridge.connect();
         }
@@ -886,6 +922,19 @@ export function reconnectWorkspace(): void {
 export async function destroyWorkspace(): Promise<void> {
   syncBridge?.destroy();
   syncBridge = null;
+
+  // Clean up handlers
+  if (workspaceYDoc) {
+    if (currentUpdateHandler) {
+      workspaceYDoc.off('update', currentUpdateHandler);
+    }
+    if (currentMapObserver) {
+      const filesMap = workspaceYDoc.getMap('files');
+      filesMap.unobserve(currentMapObserver);
+    }
+  }
+  currentUpdateHandler = null;
+  currentMapObserver = null;
 
   // Cleanup P2P
   if (p2pProvider) {

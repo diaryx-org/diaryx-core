@@ -55,6 +55,20 @@ CREATE TABLE IF NOT EXISTS user_workspaces (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_workspace_name ON user_workspaces(user_id, name);
+
+-- Share sessions (for live collaboration)
+CREATE TABLE IF NOT EXISTS share_sessions (
+    code TEXT PRIMARY KEY,              -- XXXX-XXXX format
+    workspace_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    read_only INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,                 -- NULL = no expiry
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_share_sessions_owner ON share_sessions(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_share_sessions_workspace ON share_sessions(workspace_id);
 "#;
 
 /// Initialize the database with the auth schema
@@ -86,5 +100,6 @@ mod tests {
         assert!(tables.contains(&"magic_tokens".to_string()));
         assert!(tables.contains(&"auth_sessions".to_string()));
         assert!(tables.contains(&"user_workspaces".to_string()));
+        assert!(tables.contains(&"share_sessions".to_string()));
     }
 }

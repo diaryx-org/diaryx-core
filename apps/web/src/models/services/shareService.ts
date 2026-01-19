@@ -17,6 +17,7 @@ import { createGuestBackend, type WorkerBackendNew } from '$lib/backend/workerBa
 import { createApi, type Api } from '$lib/backend/api';
 import { isTauri, type Backend } from '$lib/backend/interface';
 import type { TauriBackend } from '$lib/backend/tauri';
+import { getToken } from '$lib/auth/authStore.svelte';
 
 // ============================================================================
 // Types
@@ -58,7 +59,11 @@ export interface ErrorResponse {
   message: string;
 }
 
-type ServerMessage = SessionCreatedResponse | SessionJoinedResponse | PeerJoinedMessage | PeerLeftMessage | ReadOnlyChangedMessage | ErrorResponse;
+export interface SessionEndedMessage {
+  type: 'session_ended';
+}
+
+type ServerMessage = SessionCreatedResponse | SessionJoinedResponse | PeerJoinedMessage | PeerLeftMessage | ReadOnlyChangedMessage | SessionEndedMessage | ErrorResponse;
 
 // ============================================================================
 // Constants
@@ -84,15 +89,38 @@ let originalBackend: Backend | null = null;
 // Helpers
 // ============================================================================
 
-function getServerUrl(): string {
-  // Use collaboration server URL from store, or default
+/**
+ * Get the base URL for the Rust sync server (for REST API calls).
+ * Strips /sync suffix if present and ensures HTTP(S) protocol.
+ */
+function getBaseServerUrl(): string {
   const storeUrl = collaborationStore.collaborationServerUrl;
   if (storeUrl) {
-    // Convert http(s) to ws(s)
-    return storeUrl.replace(/^http/, 'ws');
+    // Strip /sync suffix and convert ws(s) to http(s)
+    return storeUrl
+      .replace(/\/sync$/, '')
+      .replace(/^wss:/, 'https:')
+      .replace(/^ws:/, 'http:');
   }
-  // Default to localhost for development
-  return 'wss://sync.diaryx.org';
+  return 'https://sync.diaryx.org';
+}
+
+/**
+ * Get the WebSocket URL for the sync server (with /sync path).
+ */
+function getWsServerUrl(): string {
+  const baseUrl = getBaseServerUrl();
+  // Convert http(s) to ws(s) and add /sync path
+  return baseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:') + '/sync';
+}
+
+/**
+ * Get the auth token from authStore if available.
+ */
+function getAuthToken(): string | null {
+  const token = getToken();
+  console.log('[ShareService] getAuthToken:', token ? 'found' : 'not found');
+  return token;
 }
 
 function validateJoinCode(code: string): boolean {
@@ -113,83 +141,124 @@ const clientOwnerId = `owner-${Date.now()}-${Math.random().toString(36).slice(2,
 /**
  * Create a new share session for the current workspace.
  * Returns the join code that others can use to join.
+ *
+ * This now uses the Rust sync server's REST API to create sessions,
+ * then connects via WebSocket for real-time sync.
  */
 export async function createShareSession(workspaceId: string, readOnly: boolean = false, audience: string | null = null): Promise<string> {
-  // Store audience for later reference (set before startHosting)
   const selectedAudience = audience;
-  const serverUrl = getServerUrl();
-  currentServerUrl = serverUrl;
+  const baseUrl = getBaseServerUrl();
+  const wsUrl = getWsServerUrl();
+  currentServerUrl = wsUrl;
 
   shareSessionStore.setConnecting(true);
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.close();
-      shareSessionStore.setError('Connection timeout');
-      reject(new Error('Connection timeout'));
-    }, CONNECTION_TIMEOUT);
+  try {
+    // Step 1: Create session via REST API
+    const token = getAuthToken();
+    if (!token) {
+      shareSessionStore.setError('Authentication required to create a session');
+      throw new Error('Authentication required to create a session');
+    }
 
-    const wsUrl = `${serverUrl}?action=create&workspaceId=${encodeURIComponent(workspaceId)}&ownerId=${encodeURIComponent(clientOwnerId)}&readOnly=${readOnly}`;
-    const ws = new WebSocket(wsUrl);
+    const response = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        workspace_id: workspaceId,
+        read_only: readOnly,
+      }),
+    });
 
-    ws.onopen = () => {
-      console.log('[ShareService] Connected to server for session creation');
-    };
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to create session' }));
+      shareSessionStore.setError(error.error || 'Failed to create session');
+      throw new Error(error.error || 'Failed to create session');
+    }
 
-    ws.onmessage = (event) => {
-      try {
-        const msg: ServerMessage = JSON.parse(event.data);
+    const sessionData = await response.json();
+    const joinCode = sessionData.code;
 
-        if (msg.type === 'session_created') {
-          clearTimeout(timeout);
-          shareSessionStore.startHosting(msg.joinCode, msg.workspaceId, msg.readOnly, selectedAudience);
-          shareSessionStore.setSessionWs(ws);
-          console.log('[ShareService] Session created:', msg.joinCode, 'readOnly:', msg.readOnly, 'audience:', selectedAudience);
+    console.log('[ShareService] Session created via REST API:', joinCode);
 
-          // Start document sync for this session (isHost=true to send initial state)
-          const syncServerUrl = currentServerUrl!;
-          startSessionSync(syncServerUrl, msg.joinCode, true);
+    // Step 2: Update store with session info
+    shareSessionStore.startHosting(joinCode, workspaceId, readOnly, selectedAudience);
 
-          // Set active session code for per-document sync (real-time editing)
-          setActiveSessionCode(msg.joinCode);
+    // Step 3: Start document sync for this session (isHost=true to send initial state)
+    startSessionSync(wsUrl, joinCode, true);
 
-          resolve(msg.joinCode);
-        } else if (msg.type === 'peer_joined') {
-          shareSessionStore.addPeer(msg.guestId);
-          console.log('[ShareService] Peer joined:', msg.guestId);
-        } else if (msg.type === 'peer_left') {
-          shareSessionStore.removePeer(msg.guestId);
-          console.log('[ShareService] Peer left:', msg.guestId);
-        } else if (msg.type === 'read_only_changed') {
-          shareSessionStore.setReadOnly(msg.readOnly);
-          console.log('[ShareService] Read-only changed:', msg.readOnly);
-        } else if (msg.type === 'error') {
-          clearTimeout(timeout);
-          shareSessionStore.setError(msg.message);
-          ws.close();
-          reject(new Error(msg.message));
+    // Set active session code for per-document sync (real-time editing)
+    setActiveSessionCode(joinCode);
+
+    // Step 4: Connect WebSocket to receive peer notifications
+    // For hosts, we connect to the sync endpoint with doc+token (not session param)
+    // This allows us to receive control messages about peers joining/leaving
+    // Note: wsUrl already includes /sync path
+    const syncWsUrl = `${wsUrl}?doc=${encodeURIComponent(workspaceId)}&token=${encodeURIComponent(token)}`;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close();
+        shareSessionStore.setError('Connection timeout');
+        reject(new Error('Connection timeout'));
+      }, CONNECTION_TIMEOUT);
+
+      const ws = new WebSocket(syncWsUrl);
+
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        console.log('[ShareService] Host connected to sync server');
+        shareSessionStore.setSessionWs(ws);
+        resolve(joinCode);
+      };
+
+      ws.onmessage = (event) => {
+        // Handle text messages (control messages)
+        if (typeof event.data === 'string') {
+          try {
+            const msg: ServerMessage = JSON.parse(event.data);
+
+            if (msg.type === 'peer_joined') {
+              shareSessionStore.addPeer(msg.guestId);
+              console.log('[ShareService] Peer joined:', msg.guestId);
+            } else if (msg.type === 'peer_left') {
+              shareSessionStore.removePeer(msg.guestId);
+              console.log('[ShareService] Peer left:', msg.guestId);
+            } else if (msg.type === 'read_only_changed') {
+              shareSessionStore.setReadOnly(msg.readOnly);
+              console.log('[ShareService] Read-only changed:', msg.readOnly);
+            } else if (msg.type === 'error') {
+              shareSessionStore.setError(msg.message);
+              console.error('[ShareService] Error:', msg.message);
+            }
+          } catch (e) {
+            console.error('[ShareService] Failed to parse message:', e);
+          }
         }
-      } catch (e) {
-        console.error('[ShareService] Failed to parse message:', e);
-      }
-    };
+        // Binary messages are Y-sync protocol, handled by the CRDT bridge
+      };
 
-    ws.onerror = (event) => {
-      clearTimeout(timeout);
-      console.error('[ShareService] WebSocket error:', event);
-      shareSessionStore.setError('Connection failed');
-      reject(new Error('Connection failed'));
-    };
+      ws.onerror = (event) => {
+        clearTimeout(timeout);
+        console.error('[ShareService] WebSocket error:', event);
+        shareSessionStore.setError('Connection failed');
+        reject(new Error('Connection failed'));
+      };
 
-    ws.onclose = () => {
-      clearTimeout(timeout);
-      if (shareSessionStore.mode === 'hosting' && shareSessionStore.connected) {
-        // Unexpected disconnect while hosting
-        shareSessionStore.setConnected(false);
-        shareSessionStore.setError('Disconnected from server');
-      }
-    };
-  });
+      ws.onclose = () => {
+        if (shareSessionStore.mode === 'hosting' && shareSessionStore.connected) {
+          shareSessionStore.setConnected(false);
+          shareSessionStore.setError('Disconnected from server');
+        }
+      };
+    });
+  } catch (e) {
+    shareSessionStore.setConnecting(false);
+    throw e;
+  }
 }
 
 // ============================================================================
@@ -201,7 +270,9 @@ export async function createShareSession(workspaceId: string, readOnly: boolean 
  * Returns the workspace ID of the session.
  *
  * For web guests: Creates an in-memory backend (files stored in memory only).
- * For Tauri guests: Uses OPFS with path prefixing (deferred to future PR).
+ * For Tauri guests: Uses Rust-side in-memory filesystem.
+ *
+ * This now uses the Rust sync server's WebSocket endpoint with session param.
  */
 export async function joinShareSession(joinCode: string): Promise<string> {
   const normalizedCode = normalizeJoinCode(joinCode);
@@ -210,8 +281,8 @@ export async function joinShareSession(joinCode: string): Promise<string> {
     throw new Error('Invalid join code format');
   }
 
-  const serverUrl = getServerUrl();
-  currentServerUrl = serverUrl;
+  const wsUrl = getWsServerUrl();
+  currentServerUrl = wsUrl;
 
   shareSessionStore.setConnecting(true);
 
@@ -272,45 +343,54 @@ export async function joinShareSession(joinCode: string): Promise<string> {
     }, CONNECTION_TIMEOUT);
 
     const guestId = `guest-${Date.now()}`;
-    const wsUrl = `${serverUrl}?action=join&code=${encodeURIComponent(normalizedCode)}&guestId=${encodeURIComponent(guestId)}`;
-    const ws = new WebSocket(wsUrl);
+    // Connect with session param (Rust server handles lookup)
+    // Note: wsUrl already includes /sync path
+    const sessionWsUrl = `${wsUrl}?session=${encodeURIComponent(normalizedCode)}&guest_id=${encodeURIComponent(guestId)}`;
+    const ws = new WebSocket(sessionWsUrl);
 
     ws.onopen = () => {
       console.log('[ShareService] Connected to server for session join');
     };
 
     ws.onmessage = (event) => {
-      try {
-        const msg: ServerMessage = JSON.parse(event.data);
+      // Handle text messages (control messages and session_joined)
+      if (typeof event.data === 'string') {
+        try {
+          const msg: ServerMessage = JSON.parse(event.data);
 
-        if (msg.type === 'session_joined') {
-          clearTimeout(timeout);
-          // Both Tauri and web now use in-memory storage for guest sessions
-          const backendType = 'memory';
-          shareSessionStore.startGuest(msg.joinCode, msg.workspaceId, undefined, backendType, msg.readOnly);
-          shareSessionStore.setSessionWs(ws);
-          console.log('[ShareService] Joined session:', msg.joinCode, 'backendType:', backendType, 'readOnly:', msg.readOnly);
+          if (msg.type === 'session_joined') {
+            clearTimeout(timeout);
+            // Both Tauri and web now use in-memory storage for guest sessions
+            const backendType = 'memory';
+            shareSessionStore.startGuest(msg.joinCode, msg.workspaceId, undefined, backendType, msg.readOnly);
+            shareSessionStore.setSessionWs(ws);
+            console.log('[ShareService] Joined session:', msg.joinCode, 'backendType:', backendType, 'readOnly:', msg.readOnly);
 
-          // Start document sync for this session (isHost=false, receive state from server)
-          const syncServerUrl = currentServerUrl!;
-          startSessionSync(syncServerUrl, msg.joinCode, false);
+            // Start document sync for this session (isHost=false, receive state from server)
+            startSessionSync(wsUrl, msg.joinCode, false);
 
-          // Set active session code for per-document sync (real-time editing)
-          setActiveSessionCode(msg.joinCode);
+            // Set active session code for per-document sync (real-time editing)
+            setActiveSessionCode(msg.joinCode);
 
-          resolve(msg.workspaceId);
-        } else if (msg.type === 'read_only_changed') {
-          shareSessionStore.setReadOnly(msg.readOnly);
-          console.log('[ShareService] Read-only changed:', msg.readOnly);
-        } else if (msg.type === 'error') {
-          clearTimeout(timeout);
-          shareSessionStore.setError(msg.message);
-          ws.close();
-          reject(new Error(msg.message));
+            resolve(msg.workspaceId);
+          } else if (msg.type === 'read_only_changed') {
+            shareSessionStore.setReadOnly(msg.readOnly);
+            console.log('[ShareService] Read-only changed:', msg.readOnly);
+          } else if (msg.type === 'session_ended') {
+            console.log('[ShareService] Session ended by host');
+            shareSessionStore.setError('Session ended by host');
+            ws.close();
+          } else if (msg.type === 'error') {
+            clearTimeout(timeout);
+            shareSessionStore.setError(msg.message);
+            ws.close();
+            reject(new Error(msg.message));
+          }
+        } catch (e) {
+          console.error('[ShareService] Failed to parse message:', e);
         }
-      } catch (e) {
-        console.error('[ShareService] Failed to parse message:', e);
       }
+      // Binary messages are Y-sync protocol, handled by the CRDT bridge
     };
 
     ws.onerror = (event) => {
@@ -344,7 +424,28 @@ export async function endShareSession(): Promise<void> {
   // Capture state before endSession() clears it
   const joinCode = shareSessionStore.joinCode;
   const wasGuest = shareSessionStore.isGuest;
+  const wasHost = shareSessionStore.isHosting;
   const usedInMemory = shareSessionStore.usesInMemoryStorage;
+
+  // If we're the host, delete the session via REST API
+  if (wasHost && joinCode) {
+    const token = getAuthToken();
+    if (token) {
+      const baseUrl = getBaseServerUrl();
+      try {
+        await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(joinCode)}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+        console.log('[ShareService] Session deleted via REST API');
+      } catch (e) {
+        console.error('[ShareService] Failed to delete session via REST API:', e);
+        // Continue with cleanup anyway
+      }
+    }
+  }
 
   // Stop document sync
   stopSessionSync();
@@ -404,27 +505,50 @@ export async function endShareSession(): Promise<void> {
 
 /**
  * Toggle read-only mode for the current session (host only).
+ * Uses REST API to update the session, which broadcasts to all connected clients.
  * @param readOnly - Whether the session should be read-only
  */
-export function setSessionReadOnly(readOnly: boolean): void {
+export async function setSessionReadOnly(readOnly: boolean): Promise<void> {
   if (!shareSessionStore.isHosting) {
     console.warn('[ShareService] setSessionReadOnly called but not hosting');
     return;
   }
 
-  const ws = shareSessionStore.sessionWs;
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.warn('[ShareService] setSessionReadOnly called but WebSocket not open');
+  const joinCode = shareSessionStore.joinCode;
+  if (!joinCode) {
+    console.warn('[ShareService] setSessionReadOnly called but no join code');
     return;
   }
 
-  // Send message to server to toggle read-only
-  ws.send(JSON.stringify({
-    type: 'set_read_only',
-    readOnly,
-  }));
+  const token = getAuthToken();
+  if (!token) {
+    console.warn('[ShareService] setSessionReadOnly called but no auth token');
+    return;
+  }
 
-  console.log('[ShareService] Requested read-only change:', readOnly);
+  const baseUrl = getBaseServerUrl();
+  try {
+    const response = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(joinCode)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ read_only: readOnly }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to update session' }));
+      console.error('[ShareService] Failed to update read-only:', error.error);
+      return;
+    }
+
+    // Update local state (server will broadcast to other clients)
+    shareSessionStore.setReadOnly(readOnly);
+    console.log('[ShareService] Read-only updated:', readOnly);
+  } catch (e) {
+    console.error('[ShareService] Failed to update read-only:', e);
+  }
 }
 
 /**
