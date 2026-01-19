@@ -20,7 +20,8 @@ Here is your "table of contents" for this repository. You should always read the
 | Tauri app | apps/tauri/README.md |
 | CLI | crates/diaryx/README.md |
 | WASM build (backend for web app) | crates/diaryx_wasm/README.md |
-| Sync server for web app/Tauri | packages/sync-server/README.md |
+| Sync server (Rust, new) | crates/diaryx_sync_server/README.md |
+| Sync server (Node.js, legacy) | packages/sync-server/README.md |
 
 Not documented:
 - CI/workflows (read .yml files in .github/workflows if necessary)

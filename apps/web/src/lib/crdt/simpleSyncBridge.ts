@@ -20,6 +20,8 @@ export interface SimpleSyncBridgeOptions {
   sendInitialState?: boolean;
   /** Owner ID for read-only enforcement (required for hosts) */
   ownerId?: string;
+  /** Auth token for authenticated sync */
+  authToken?: string;
   /** Callback when connection status changes */
   onStatusChange?: (connected: boolean) => void;
   /** Callback when synced with server */
@@ -34,6 +36,7 @@ export class SimpleSyncBridge {
   private sessionCode?: string;
   private sendInitialState: boolean;
   private ownerId?: string;
+  private authToken?: string;
   private onStatusChange?: (connected: boolean) => void;
   private onSynced?: () => void;
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
@@ -49,6 +52,7 @@ export class SimpleSyncBridge {
     this.sessionCode = options.sessionCode;
     this.sendInitialState = options.sendInitialState ?? false;
     this.ownerId = options.ownerId;
+    this.authToken = options.authToken;
     this.onStatusChange = options.onStatusChange;
     this.onSynced = options.onSynced;
   }
@@ -60,7 +64,7 @@ export class SimpleSyncBridge {
     if (this.destroyed) return;
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
-    // Build URL with doc name, optional session code, and ownerId
+    // Build URL with doc name, optional session code, ownerId, and auth token
     const url = new URL(this.serverUrl);
     url.searchParams.set('doc', this.docName);
     if (this.sessionCode) {
@@ -68,6 +72,9 @@ export class SimpleSyncBridge {
     }
     if (this.ownerId) {
       url.searchParams.set('ownerId', this.ownerId);
+    }
+    if (this.authToken) {
+      url.searchParams.set('token', this.authToken);
     }
 
     console.log(`[SimpleSyncBridge] Connecting to: ${url.toString()}`);

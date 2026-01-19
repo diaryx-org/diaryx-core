@@ -1,49 +1,35 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, EditorHelper, waitForAppReady } from './fixtures'
 
 test.describe('Editor', () => {
+  let editor: EditorHelper
+
   test.beforeEach(async ({ page }) => {
     await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await waitForAppReady(page)
+    editor = new EditorHelper(page)
+    await editor.waitForReady()
   })
 
-  test('should display editor when entry is loaded', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+  test('should display editor when entry is loaded', async () => {
+    await expect(editor.editor).toBeVisible()
   })
 
   test('should allow typing in the editor', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
-
-    await editor.click()
-    await page.keyboard.type('Test content')
-
-    await expect(editor).toContainText('Test content')
+    await editor.focus()
+    await editor.type('Test content')
+    await expect(editor.editor).toContainText('Test content')
   })
 
   test('should apply bold formatting with keyboard shortcut', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.focus()
+    await editor.type('Bold text')
+    await editor.selectAll()
+    await editor.applyBold()
 
-    await editor.click()
-    await page.keyboard.type('Bold text')
-
-    // Select all and apply bold (Meta works on macOS for both browsers)
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Meta+b')
-
-    // Wait a moment for formatting to apply
-    await page.waitForTimeout(200)
-
-    // Check that text still exists and has been styled
-    // TipTap uses <strong> but we can also check by evaluating computed style
-    await expect(editor).toContainText('Bold text')
-
-    // Verify bold was applied by checking for the strong element OR font-weight
-    const hasBold = await editor.evaluate((el) => {
+    // Wait for formatting to apply by checking for the styled element
+    const hasBold = await editor.editor.evaluate((el) => {
       const strong = el.querySelector('strong')
       if (strong) return true
-      // Fallback: check computed font-weight
       const p = el.querySelector('p')
       if (p) {
         const weight = window.getComputedStyle(p).fontWeight
@@ -55,25 +41,14 @@ test.describe('Editor', () => {
   })
 
   test('should apply italic formatting with keyboard shortcut', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.focus()
+    await editor.type('Italic text')
+    await editor.selectAll()
+    await editor.applyItalic()
 
-    await editor.click()
-    await page.keyboard.type('Italic text')
-
-    // Select all and apply italic
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Meta+i')
-
-    await page.waitForTimeout(200)
-
-    await expect(editor).toContainText('Italic text')
-
-    // Verify italic was applied
-    const hasItalic = await editor.evaluate((el) => {
+    const hasItalic = await editor.editor.evaluate((el) => {
       const em = el.querySelector('em')
       if (em) return true
-      // Fallback: check computed font-style
       const p = el.querySelector('p')
       if (p) {
         const style = window.getComputedStyle(p).fontStyle
@@ -85,320 +60,182 @@ test.describe('Editor', () => {
   })
 
   test('should create a heading via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
-
-    // Click editor, type something, then select all and delete to trigger floating menu
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Wait for floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
+    await editor.expandFloatingMenu()
 
     // Select H1 from heading dropdown
     const headingSelect = page.locator('.heading-section select, [data-slot="native-select"]').first()
     await headingSelect.selectOption('1')
 
-    // Type heading text
     await page.keyboard.type('My Heading')
 
-    // Verify heading was created
-    const heading = editor.locator('h1')
+    const heading = editor.editor.locator('h1')
     await expect(heading).toContainText('My Heading')
   })
 
   test('should create a bulleted list via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.expandFloatingMenu()
 
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Select bullet list from list dropdown
     const listSelect = page.locator('.list-section select, [data-slot="native-select"]').last()
     await listSelect.selectOption('bullet')
 
-    // Type list items
     await page.keyboard.type('Item 1')
     await page.keyboard.press('Enter')
     await page.keyboard.type('Item 2')
 
-    // Verify list was created
-    const list = editor.locator('ul')
+    const list = editor.editor.locator('ul')
     await expect(list).toBeVisible()
-    const items = editor.locator('li')
+    const items = editor.editor.locator('li')
     await expect(items).toHaveCount(2)
   })
 
   test('should create a numbered list via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.expandFloatingMenu()
 
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Select ordered list
     const listSelect = page.locator('.list-section select, [data-slot="native-select"]').last()
     await listSelect.selectOption('ordered')
 
-    // Type list items
     await page.keyboard.type('First')
     await page.keyboard.press('Enter')
     await page.keyboard.type('Second')
 
-    // Verify ordered list
-    const orderedList = editor.locator('ol')
+    const orderedList = editor.editor.locator('ol')
     await expect(orderedList).toBeVisible()
   })
 
   test('should create a task list via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.expandFloatingMenu()
 
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Select task list
     const listSelect = page.locator('.list-section select, [data-slot="native-select"]').last()
     await listSelect.selectOption('task')
 
-    // Type task item
     await page.keyboard.type('My task')
 
-    // Verify task list exists - TipTap uses ul[data-type="taskList"]
-    const taskList = editor.locator('ul[data-type="taskList"]')
+    const taskList = editor.editor.locator('ul[data-type="taskList"]')
     await expect(taskList).toBeVisible()
   })
 
   test('should create a code block via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.expandFloatingMenu()
 
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Click code block button
     const codeBlockButton = page.locator('.menu-item[title="Code Block"]')
     await codeBlockButton.click()
 
-    // Type code
     await page.keyboard.type('const x = 1;')
 
-    // Verify code block
-    const codeBlock = editor.locator('pre')
+    const codeBlock = editor.editor.locator('pre')
     await expect(codeBlock).toBeVisible()
     await expect(codeBlock).toContainText('const x = 1')
   })
 
   test('should create a blockquote via floating menu', async ({ page }) => {
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editor.expandFloatingMenu()
 
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open floating menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Click blockquote button
     const quoteButton = page.locator('.menu-item[title="Quote"]')
     await quoteButton.click()
 
-    // Type quote
     await page.keyboard.type('A famous quote')
 
-    // Verify blockquote
-    const blockquote = editor.locator('blockquote')
+    const blockquote = editor.editor.locator('blockquote')
     await expect(blockquote).toBeVisible()
     await expect(blockquote).toContainText('A famous quote')
   })
 })
 
 test.describe('Editor Keyboard Navigation', () => {
-  test('should support undo with Cmd+Z', async ({ page }) => {
+  test('should support undo', async ({ page, editorHelper }) => {
     await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await waitForAppReady(page)
+    await editorHelper.waitForReady()
 
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    const initialLength = (await editorHelper.editor.textContent())?.length || 0
 
-    // Get initial content length (editor may have default content)
-    const initialLength = (await editor.textContent())?.length || 0
+    await editorHelper.focus()
+    await editorHelper.type('Hello')
+    await expect(editorHelper.editor).toContainText('Hello')
 
-    // Type content
-    await editor.click()
-    await page.keyboard.type('Hello')
-    await expect(editor).toContainText('Hello')
-
-    // Get length after typing
-    const afterTypingLength = (await editor.textContent())?.length || 0
+    const afterTypingLength = (await editorHelper.editor.textContent())?.length || 0
     expect(afterTypingLength).toBeGreaterThan(initialLength)
 
-    // Undo using programmatic API (more reliable than keyboard shortcuts in tests)
-    await editor.evaluate(() => {
-      if ((window as unknown as { tiptapEditor?: { commands?: { undo: () => void } } }).tiptapEditor?.commands?.undo) {
-        (window as unknown as { tiptapEditor: { commands: { undo: () => void } } }).tiptapEditor.commands.undo()
-      } else {
-        document.execCommand('undo')
-      }
-    })
-    await page.waitForTimeout(100)
+    await editorHelper.undo()
 
-    // Content should be shorter after undo
-    const afterUndoLength = (await editor.textContent())?.length || 0
-    expect(afterUndoLength).toBeLessThan(afterTypingLength)
+    // Wait for undo to take effect
+    await expect(async () => {
+      const afterUndoLength = (await editorHelper.editor.textContent())?.length || 0
+      expect(afterUndoLength).toBeLessThan(afterTypingLength)
+    }).toPass({ timeout: 3000 })
   })
 
-  test('should support redo with Cmd+Shift+Z', async ({ page }) => {
+  test('should support redo', async ({ page, editorHelper }) => {
     await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await waitForAppReady(page)
+    await editorHelper.waitForReady()
 
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    const initialLength = (await editorHelper.editor.textContent())?.length || 0
 
-    // Get initial content length (editor may have default content)
-    const initialLength = (await editor.textContent())?.length || 0
+    await editorHelper.focus()
+    await editorHelper.type('Test')
 
-    // Type content
-    await editor.click()
-    await page.keyboard.type('Test')
-
-    // Get length after typing
-    const afterTypingLength = (await editor.textContent())?.length || 0
+    const afterTypingLength = (await editorHelper.editor.textContent())?.length || 0
     expect(afterTypingLength).toBeGreaterThan(initialLength)
 
-    // Undo using programmatic API
-    await editor.evaluate(() => {
-      if ((window as unknown as { tiptapEditor?: { commands?: { undo: () => void } } }).tiptapEditor?.commands?.undo) {
-        (window as unknown as { tiptapEditor: { commands: { undo: () => void } } }).tiptapEditor.commands.undo()
-      } else {
-        document.execCommand('undo')
-      }
-    })
+    await editorHelper.undo()
 
-    await page.waitForTimeout(100)
-    const afterUndoLength = (await editor.textContent())?.length || 0
-    expect(afterUndoLength).toBeLessThan(afterTypingLength)
+    // Wait for undo
+    await expect(async () => {
+      const len = (await editorHelper.editor.textContent())?.length || 0
+      expect(len).toBeLessThan(afterTypingLength)
+    }).toPass({ timeout: 3000 })
 
-    // Redo using programmatic API
-    await editor.evaluate(() => {
-      if ((window as unknown as { tiptapEditor?: { commands?: { redo: () => void } } }).tiptapEditor?.commands?.redo) {
-        (window as unknown as { tiptapEditor: { commands: { redo: () => void } } }).tiptapEditor.commands.redo()
-      } else {
-        document.execCommand('redo')
-      }
-    })
+    await editorHelper.redo()
 
-    await page.waitForTimeout(100)
-    const afterRedoLength = (await editor.textContent())?.length || 0
-
-    // Redo should restore content to after-typing state
-    expect(afterRedoLength).toBeGreaterThan(afterUndoLength)
-    expect(afterRedoLength).toBe(afterTypingLength)
+    // Wait for redo
+    await expect(async () => {
+      const afterRedoLength = (await editorHelper.editor.textContent())?.length || 0
+      expect(afterRedoLength).toBe(afterTypingLength)
+    }).toPass({ timeout: 3000 })
   })
 })
 
 test.describe('Editor Floating Menu', () => {
-  test('should show floating menu on empty line', async ({ page }) => {
+  test('should show floating menu on empty line', async ({ page, editorHelper }) => {
     await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await waitForAppReady(page)
+    await editorHelper.waitForReady()
 
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
+    await editorHelper.focus()
+    await editorHelper.type('temp text')
+    await editorHelper.clearContent()
 
-    // Type something first, then select all and delete to properly clear
-    await editor.click()
-    await page.keyboard.type('temp text')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Floating menu should appear
     const floatingMenu = page.locator('.floating-menu')
-    await expect(floatingMenu).toBeVisible({ timeout: 5000 })
+    await expect(floatingMenu).toBeVisible()
   })
 
-  test('should expand menu when clicking plus button', async ({ page }) => {
+  test('should expand menu when clicking plus button', async ({ page, editorHelper }) => {
     await page.goto('/')
-    await page.waitForLoadState('networkidle')
+    await waitForAppReady(page)
+    await editorHelper.waitForReady()
 
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
-
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Click plus button
-    const plusButton = page.locator('.floating-menu .trigger-button')
-    await expect(plusButton).toBeVisible({ timeout: 5000 })
-    await plusButton.click()
-
-    // Expanded menu should show
-    const expandedMenu = page.locator('.menu-expanded')
-    await expect(expandedMenu).toBeVisible()
-  })
-
-  test('should close expanded menu with Escape', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForLoadState('networkidle')
-
-    const editor = page.locator('.ProseMirror, [contenteditable="true"]').first()
-    await expect(editor).toBeVisible({ timeout: 10000 })
-
-    await editor.click()
-    await page.keyboard.type('temp')
-    await page.keyboard.press('Meta+a')
-    await page.keyboard.press('Backspace')
-
-    // Open menu
-    const plusButton = page.locator('.floating-menu .trigger-button')
+    const plusButton = await editorHelper.openFloatingMenu()
     await plusButton.click()
 
     const expandedMenu = page.locator('.menu-expanded')
     await expect(expandedMenu).toBeVisible()
+  })
 
-    // Press Escape to close
+  test('should close expanded menu with Escape', async ({ page, editorHelper }) => {
+    await page.goto('/')
+    await waitForAppReady(page)
+    await editorHelper.waitForReady()
+
+    await editorHelper.expandFloatingMenu()
+
+    const expandedMenu = page.locator('.menu-expanded')
+    await expect(expandedMenu).toBeVisible()
+
     await page.keyboard.press('Escape')
 
-    // Menu should collapse back to plus button
     await expect(expandedMenu).not.toBeVisible()
+    const plusButton = page.locator('.floating-menu .trigger-button')
     await expect(plusButton).toBeVisible()
   })
 })

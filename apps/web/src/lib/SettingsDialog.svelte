@@ -165,7 +165,7 @@
           Configure your workspace and preferences.
         </Dialog.Description>
       </Dialog.Header>
-      <div class="py-4">
+      <div class="py-4 overflow-hidden">
         {@render settingsContent()}
       </div>
     </Dialog.Content>

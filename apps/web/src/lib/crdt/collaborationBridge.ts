@@ -100,7 +100,7 @@ export function setCollaborationServer(url: string | null): void {
  */
 export function refreshP2PProviders(): void {
   console.log('[CollaborationBridge] Refreshing P2P providers...');
-  
+
   for (const [path, session] of sessions.entries()) {
     // Destroy existing P2P provider
     if (session.p2pProvider) {
@@ -412,6 +412,7 @@ function createBridge(
     docName,
     doc: yDocProxy.getYDoc(),
     sessionCode, // Pass session code for session-scoped sync
+    authToken: config.authToken, // Pass auth token for authenticated sync
     onStatusChange: (connected) => {
       connectionStatusCallback?.(connected);
     },
@@ -456,7 +457,7 @@ export function cleanup(): void {
   }
   sessions.clear();
   rustApi = null;
-  
+
   // Cleanup P2P status subscription
   if (p2pStatusUnsubscribe) {
     p2pStatusUnsubscribe();

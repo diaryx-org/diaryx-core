@@ -4,6 +4,7 @@ members = [
     "crates/diaryx_core",
     "crates/diaryx",
     "crates/diaryx_wasm",
+    "crates/diaryx_sync_server",
     "apps/tauri/src-tauri"
 ]
 
