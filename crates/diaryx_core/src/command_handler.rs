@@ -1273,6 +1273,233 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 }))
             }
 
+            // === CRDT Initialization ===
+            #[cfg(feature = "crdt")]
+            Command::InitializeWorkspaceCrdt {
+                workspace_path,
+                audience,
+            } => {
+                use std::collections::HashSet;
+
+                // Check CRDT is enabled first
+                if self.crdt().is_none() {
+                    return Err(DiaryxError::Unsupported(
+                        "CRDT not enabled for this instance".to_string(),
+                    ));
+                }
+
+                let ws = self.workspace().inner();
+
+                // Find root index file
+                let root_path = PathBuf::from(&workspace_path);
+                let root_index = if root_path.extension().is_some_and(|ext| ext == "md") {
+                    root_path.clone()
+                } else {
+                    ws.find_root_index_in_dir(&root_path)
+                        .await?
+                        .ok_or_else(|| DiaryxError::WorkspaceNotFound(root_path.clone()))?
+                };
+
+                // If audience is specified, use plan_export to get filtered file list
+                let allowed_paths: Option<HashSet<PathBuf>> = if let Some(ref aud) = audience {
+                    let plan = self
+                        .export()
+                        .plan_export(
+                            &root_index,
+                            aud,
+                            Path::new("/tmp"), // Dummy destination, we just need included paths
+                        )
+                        .await?;
+                    Some(
+                        plan.included
+                            .iter()
+                            .map(|f| f.source_path.clone())
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
+                // Build tree
+                let tree = ws
+                    .build_tree_with_depth(&root_index, None, &mut HashSet::new())
+                    .await?;
+
+                // Collect all files with their metadata using iterative tree walk
+                let mut files_to_add: Vec<(String, crate::crdt::FileMetadata)> = Vec::new();
+
+                // Use a stack for iterative tree traversal
+                let mut stack: Vec<(&crate::workspace::TreeNode, Option<String>)> =
+                    vec![(&tree, None)];
+
+                while let Some((node, parent_path)) = stack.pop() {
+                    let path_str = node.path.to_string_lossy().to_string();
+
+                    // Skip files not in allowed set (if audience filtering is active)
+                    if let Some(ref allowed) = allowed_paths {
+                        if !allowed.contains(&node.path) {
+                            log::debug!(
+                                "[InitializeWorkspaceCrdt] Skipping {} (not in audience)",
+                                path_str
+                            );
+                            continue;
+                        }
+                    }
+
+                    // Read file content
+                    let content = match self.entry().read_raw(&path_str).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::warn!(
+                                "[InitializeWorkspaceCrdt] Could not read {}: {:?}",
+                                path_str,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Parse frontmatter
+                    let parsed = match crate::frontmatter::parse_or_empty(&content) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::warn!(
+                                "[InitializeWorkspaceCrdt] Parse error for {}: {:?}",
+                                path_str,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Build FileMetadata
+                    let title = parsed
+                        .frontmatter
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let contents: Option<Vec<String>> = parsed
+                        .frontmatter
+                        .get("contents")
+                        .and_then(|v| v.as_sequence())
+                        .map(|seq| {
+                            seq.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        });
+
+                    let file_audience: Option<Vec<String>> = parsed
+                        .frontmatter
+                        .get("audience")
+                        .and_then(|v| v.as_sequence())
+                        .map(|seq| {
+                            seq.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        });
+
+                    let description = parsed
+                        .frontmatter
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    let attachments_list: Vec<String> = parsed
+                        .frontmatter
+                        .get("attachments")
+                        .and_then(|v| v.as_sequence())
+                        .map(|seq| {
+                            seq.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let attachments: Vec<crate::crdt::BinaryRef> = attachments_list
+                        .into_iter()
+                        .map(|path| crate::crdt::BinaryRef {
+                            path,
+                            source: "local".to_string(),
+                            hash: String::new(),
+                            mime_type: String::new(),
+                            size: 0,
+                            uploaded_at: None,
+                            deleted: false,
+                        })
+                        .collect();
+
+                    // Build extra fields (everything not in core frontmatter + _body)
+                    let mut extra: std::collections::HashMap<String, serde_json::Value> =
+                        std::collections::HashMap::new();
+                    for (key, value) in &parsed.frontmatter {
+                        if ![
+                            "title",
+                            "part_of",
+                            "contents",
+                            "attachments",
+                            "audience",
+                            "description",
+                        ]
+                        .contains(&key.as_str())
+                        {
+                            if let Ok(json) = serde_json::to_value(value) {
+                                extra.insert(key.clone(), json);
+                            }
+                        }
+                    }
+                    // Include body content in extra._body
+                    if !parsed.body.is_empty() {
+                        extra.insert("_body".to_string(), serde_json::Value::String(parsed.body));
+                    }
+
+                    let metadata = crate::crdt::FileMetadata {
+                        title,
+                        part_of: parent_path.clone(),
+                        contents,
+                        attachments,
+                        deleted: false,
+                        audience: file_audience,
+                        description,
+                        extra,
+                        modified_at: chrono::Utc::now().timestamp_millis(),
+                    };
+
+                    files_to_add.push((path_str.clone(), metadata));
+
+                    // Add children to stack (in reverse order to process in correct order)
+                    for child in node.children.iter().rev() {
+                        stack.push((child, Some(path_str.clone())));
+                    }
+                }
+
+                // Now populate CRDT using the CrdtOps wrapper
+                let crdt = self.crdt().unwrap(); // Safe - checked above
+                let file_count = files_to_add.len();
+
+                for (path, metadata) in files_to_add {
+                    if let Err(e) = crdt.set_file(&path, metadata) {
+                        log::warn!(
+                            "[InitializeWorkspaceCrdt] Failed to set file {}: {:?}",
+                            path,
+                            e
+                        );
+                    }
+                }
+
+                // Save CRDT state
+                crdt.save()?;
+
+                let msg = if audience.is_some() {
+                    format!("{} files populated (audience filtered)", file_count)
+                } else {
+                    format!("{} files populated", file_count)
+                };
+                log::info!("[InitializeWorkspaceCrdt] {}", msg);
+
+                Ok(Response::String(msg))
+            }
+
             // === CRDT Operations ===
             #[cfg(feature = "crdt")]
             Command::GetSyncState { doc_name: _ } => {

@@ -584,6 +584,33 @@ export function createApi(backend: Backend) {
       const response = await backend.execute({ type: 'GetStorageUsage' });
       return expectResponse(response, 'StorageInfo').data;
     },
+
+    // =========================================================================
+    // CRDT Initialization
+    // =========================================================================
+
+    /**
+     * Initialize workspace CRDT by scanning filesystem and populating state.
+     *
+     * This replaces the frontend's `setupWorkspaceCrdt()` logic by:
+     * 1. Finding the root index file
+     * 2. Recursively scanning all files in the workspace tree
+     * 3. Populating the CRDT with file metadata and body content
+     *
+     * If `audience` is provided, only files visible to that audience are included
+     * (uses the same filtering logic as `planExport`).
+     *
+     * @param workspacePath - Path to workspace root (directory or root index file)
+     * @param audience - Optional audience filter (e.g., "family", "public", or "*" for all non-private)
+     * @returns Status message with number of files populated
+     */
+    async initializeWorkspaceCrdt(workspacePath: string, audience?: string): Promise<string> {
+      const response = await backend.execute({
+        type: 'InitializeWorkspaceCrdt',
+        params: { workspace_path: workspacePath, audience: audience ?? null },
+      });
+      return expectResponse(response, 'String').data;
+    },
   };
 }
 

@@ -415,7 +415,16 @@ metadata: JsonValue,
 /**
  * Optional new body content. If not provided, existing body is preserved.
  */
-body: string | null, } } | { "type": "GetStorageUsage" } | { "type": "GetSyncState", "params": {
+body: string | null, } } | { "type": "GetStorageUsage" } | { "type": "InitializeWorkspaceCrdt", "params": {
+/**
+ * Path to workspace root (directory or root index file).
+ */
+workspace_path: string,
+/**
+ * Optional audience filter. If provided, only files visible to this audience
+ * are included in CRDT (e.g., "family", "public", or "*" for all non-private).
+ */
+audience: string | null, } } | { "type": "GetSyncState", "params": {
 /**
  * Document name (e.g., "workspace").
  */

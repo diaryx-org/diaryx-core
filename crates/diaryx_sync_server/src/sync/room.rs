@@ -1,7 +1,7 @@
-use diaryx_core::crdt::{SqliteStorage, SyncMessage, UpdateOrigin, WorkspaceCrdt};
+use diaryx_core::crdt::{BodyDocManager, SqliteStorage, SyncMessage, UpdateOrigin, WorkspaceCrdt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,16 +190,19 @@ impl SyncState {
 pub struct SyncRoom {
     #[allow(dead_code)]
     workspace_id: String,
-    /// The CRDT workspace document
+    /// The CRDT workspace document (metadata only)
     workspace: RwLock<WorkspaceCrdt>,
-    /// Broadcast channel for updates (binary Y-sync messages)
+    /// Manager for per-file body documents
+    body_docs: RwLock<BodyDocManager>,
+    /// Broadcast channel for workspace updates (binary Y-sync messages)
     broadcast_tx: broadcast::Sender<Vec<u8>>,
+    /// Broadcast channel for body updates (file_path, update)
+    body_broadcast_tx: broadcast::Sender<(String, Vec<u8>)>,
     /// Broadcast channel for control messages (JSON)
     control_tx: broadcast::Sender<ControlMessage>,
     /// Number of active connections
     connection_count: AtomicUsize,
-    /// Storage backend (kept for potential future use)
-    #[allow(dead_code)]
+    /// Storage backend
     storage: Arc<SqliteStorage>,
     /// Session context (if this room is hosting a share session)
     session_context: RwLock<Option<SessionContext>>,
@@ -210,6 +213,8 @@ pub struct SyncRoom {
     /// Last response sent per connection, used to detect and break ping-pong loops
     /// Key is a hash of the incoming message, value is the response sent
     last_responses: RwLock<HashMap<u64, Vec<u8>>>,
+    /// Clients subscribed to specific body docs (file_path -> connection_ids)
+    body_subscriptions: RwLock<HashMap<String, HashSet<String>>>,
 }
 
 impl SyncRoom {
@@ -225,14 +230,18 @@ impl SyncRoom {
 
         let storage = Arc::new(SqliteStorage::open(&db_path)?);
         let workspace = WorkspaceCrdt::load_with_name(storage.clone(), workspace_id.to_string())?;
+        let body_docs = BodyDocManager::new(storage.clone());
 
         let (broadcast_tx, _) = broadcast::channel(1024);
+        let (body_broadcast_tx, _) = broadcast::channel(1024);
         let (control_tx, _) = broadcast::channel(256);
 
         Ok(Self {
             workspace_id: workspace_id.to_string(),
             workspace: RwLock::new(workspace),
+            body_docs: RwLock::new(body_docs),
             broadcast_tx,
+            body_broadcast_tx,
             control_tx,
             connection_count: AtomicUsize::new(0),
             storage,
@@ -240,6 +249,7 @@ impl SyncRoom {
             guest_connections: RwLock::new(HashMap::new()),
             is_read_only: AtomicBool::new(false),
             last_responses: RwLock::new(HashMap::new()),
+            body_subscriptions: RwLock::new(HashMap::new()),
         })
     }
 
@@ -248,14 +258,18 @@ impl SyncRoom {
         let storage =
             Arc::new(SqliteStorage::in_memory().expect("Failed to create in-memory storage"));
         let workspace = WorkspaceCrdt::with_name(storage.clone(), workspace_id.to_string());
+        let body_docs = BodyDocManager::new(storage.clone());
 
         let (broadcast_tx, _) = broadcast::channel(1024);
+        let (body_broadcast_tx, _) = broadcast::channel(1024);
         let (control_tx, _) = broadcast::channel(256);
 
         Self {
             workspace_id: workspace_id.to_string(),
             workspace: RwLock::new(workspace),
+            body_docs: RwLock::new(body_docs),
             broadcast_tx,
+            body_broadcast_tx,
             control_tx,
             connection_count: AtomicUsize::new(0),
             storage,
@@ -263,6 +277,7 @@ impl SyncRoom {
             guest_connections: RwLock::new(HashMap::new()),
             is_read_only: AtomicBool::new(false),
             last_responses: RwLock::new(HashMap::new()),
+            body_subscriptions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -378,8 +393,17 @@ impl SyncRoom {
             match sync_msg {
                 SyncMessage::SyncStep1(state_vector) => {
                     // Client is initiating sync, respond with our diff
+                    // Handle empty/invalid state vectors by sending full state
                     let workspace = self.workspace.read().await;
-                    match workspace.encode_diff(&state_vector) {
+                    let diff_result = if state_vector.is_empty() {
+                        // Empty state vector - client has no state, send full state
+                        debug!("Received empty state vector for workspace, sending full state");
+                        Ok(workspace.encode_state_as_update())
+                    } else {
+                        workspace.encode_diff(&state_vector)
+                    };
+
+                    match diff_result {
                         Ok(diff) => {
                             let response = SyncMessage::SyncStep2(diff).encode();
                             responses.extend(response);
@@ -390,7 +414,18 @@ impl SyncRoom {
                             responses.extend(sv_msg);
                         }
                         Err(e) => {
-                            warn!("Failed to encode diff: {}", e);
+                            // Fallback: try sending full state on any decode error
+                            warn!(
+                                "Failed to encode workspace diff: {}, falling back to full state",
+                                e
+                            );
+                            let full_state = workspace.encode_state_as_update();
+                            let response = SyncMessage::SyncStep2(full_state).encode();
+                            responses.extend(response);
+
+                            let our_sv = workspace.encode_state_vector();
+                            let sv_msg = SyncMessage::SyncStep1(our_sv).encode();
+                            responses.extend(sv_msg);
                         }
                     }
                 }
@@ -470,5 +505,166 @@ impl SyncRoom {
         // The workspace auto-saves on updates, but we can force a save here
         // For SQLite storage, updates are persisted immediately
         Ok(())
+    }
+
+    // ==================== Body Document Operations ====================
+
+    /// Subscribe to body document updates for a specific file
+    pub fn subscribe_body(
+        &self,
+        file_path: &str,
+        client_id: &str,
+    ) -> broadcast::Receiver<(String, Vec<u8>)> {
+        // Track subscription
+        let mut subs = futures::executor::block_on(self.body_subscriptions.write());
+        subs.entry(file_path.to_string())
+            .or_default()
+            .insert(client_id.to_string());
+
+        self.body_broadcast_tx.subscribe()
+    }
+
+    /// Unsubscribe from body document updates for a specific file
+    pub async fn unsubscribe_body(&self, file_path: &str, client_id: &str) {
+        let mut subs = self.body_subscriptions.write().await;
+        if let Some(clients) = subs.get_mut(file_path) {
+            clients.remove(client_id);
+            if clients.is_empty() {
+                subs.remove(file_path);
+            }
+        }
+    }
+
+    /// Handle an incoming Y-sync message for a body document
+    pub async fn handle_body_message(&self, file_path: &str, msg: &[u8]) -> Option<Vec<u8>> {
+        // Decode the message
+        let sync_messages = match SyncMessage::decode_all(msg) {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                warn!(
+                    "Failed to decode body sync message for {}: {}",
+                    file_path, e
+                );
+                return None;
+            }
+        };
+
+        let mut responses = Vec::new();
+        let body_docs = self.body_docs.write().await;
+        let doc = body_docs.get_or_create(file_path);
+
+        for sync_msg in sync_messages {
+            match sync_msg {
+                SyncMessage::SyncStep1(state_vector) => {
+                    // Client is initiating sync, respond with our diff
+                    // Handle empty/invalid state vectors by sending full state
+                    let diff_result = if state_vector.is_empty() {
+                        // Empty state vector - client has no state, send full state
+                        debug!(
+                            "Received empty state vector for {}, sending full state",
+                            file_path
+                        );
+                        Ok(doc.encode_state_as_update())
+                    } else {
+                        doc.encode_diff(&state_vector)
+                    };
+
+                    match diff_result {
+                        Ok(diff) => {
+                            let response = SyncMessage::SyncStep2(diff).encode();
+                            responses.extend(response);
+
+                            // Also send our state vector so client can send us their diff
+                            let our_sv = doc.encode_state_vector();
+                            let sv_msg = SyncMessage::SyncStep1(our_sv).encode();
+                            responses.extend(sv_msg);
+                        }
+                        Err(e) => {
+                            // Fallback: try sending full state on any decode error
+                            warn!(
+                                "Failed to encode body diff for {}: {}, falling back to full state",
+                                file_path, e
+                            );
+                            let full_state = doc.encode_state_as_update();
+                            let response = SyncMessage::SyncStep2(full_state).encode();
+                            responses.extend(response);
+
+                            let our_sv = doc.encode_state_vector();
+                            let sv_msg = SyncMessage::SyncStep1(our_sv).encode();
+                            responses.extend(sv_msg);
+                        }
+                    }
+                }
+                SyncMessage::SyncStep2(diff) => {
+                    // Client sent us their diff, apply it
+                    if let Err(e) = doc.apply_update(&diff, UpdateOrigin::Remote) {
+                        warn!("Failed to apply body sync step 2 for {}: {}", file_path, e);
+                    }
+                }
+                SyncMessage::Update(update) => {
+                    // Apply the update
+                    if let Err(e) = doc.apply_update(&update, UpdateOrigin::Remote) {
+                        warn!("Failed to apply body update for {}: {}", file_path, e);
+                        continue;
+                    }
+
+                    // Broadcast to other clients subscribed to this file
+                    let broadcast_msg = SyncMessage::Update(update).encode();
+                    let _ = self
+                        .body_broadcast_tx
+                        .send((file_path.to_string(), broadcast_msg));
+                }
+            }
+        }
+
+        if responses.is_empty() {
+            None
+        } else {
+            Some(responses)
+        }
+    }
+
+    /// Get the full body state for a new client
+    pub async fn get_body_full_state(&self, file_path: &str) -> Vec<u8> {
+        let body_docs = self.body_docs.write().await;
+        let doc = body_docs.get_or_create(file_path);
+        let state = doc.encode_state_as_update();
+        SyncMessage::SyncStep2(state).encode()
+    }
+
+    /// Get body state vector for sync initiation
+    pub async fn get_body_state_vector(&self, file_path: &str) -> Vec<u8> {
+        let body_docs = self.body_docs.write().await;
+        let doc = body_docs.get_or_create(file_path);
+        let sv = doc.encode_state_vector();
+        SyncMessage::SyncStep1(sv).encode()
+    }
+
+    /// Check if a client is subscribed to a specific body document
+    pub async fn is_subscribed_to_body(&self, file_path: &str, client_id: &str) -> bool {
+        let subs = self.body_subscriptions.read().await;
+        subs.get(file_path)
+            .map(|clients| clients.contains(client_id))
+            .unwrap_or(false)
+    }
+
+    /// Get list of files a client is subscribed to
+    pub async fn get_client_body_subscriptions(&self, client_id: &str) -> Vec<String> {
+        let subs = self.body_subscriptions.read().await;
+        subs.iter()
+            .filter_map(|(path, clients)| {
+                if clients.contains(client_id) {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get body document content (for debugging/inspection)
+    pub async fn get_body_content(&self, file_path: &str) -> Option<String> {
+        let body_docs = self.body_docs.read().await;
+        body_docs.get(file_path).map(|doc| doc.get_body())
     }
 }

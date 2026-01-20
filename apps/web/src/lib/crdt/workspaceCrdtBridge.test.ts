@@ -31,12 +31,6 @@ vi.mock('./simpleSyncBridge', () => ({
   }),
 }))
 
-vi.mock('./p2pSyncBridge', () => ({
-  isP2PEnabled: vi.fn().mockReturnValue(false),
-  createP2PProvider: vi.fn().mockReturnValue(null),
-  destroyP2PProvider: vi.fn(),
-}))
-
 vi.mock('@/models/stores/shareSessionStore.svelte', () => ({
   shareSessionStore: {
     isGuest: false,

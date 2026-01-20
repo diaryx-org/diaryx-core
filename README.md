@@ -10,7 +10,6 @@ contents:
   - LICENSE.md
   - ROADMAP.md
   - AGENTS.md
-  - packages/sync-server/README.md
 audience:
   - public
   - developers

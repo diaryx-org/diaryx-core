@@ -3,7 +3,7 @@
   import { getBackend, isTauri } from "./lib/backend";
   import { createApi, type Api } from "./lib/backend/api";
   import type { JsonValue } from "./lib/backend/generated/serde_json/JsonValue";
-  import type { FileMetadata, TreeNode } from "./lib/backend/generated";
+  import type { FileMetadata } from "./lib/backend/generated";
   // New Rust CRDT module imports
   import { RustCrdtApi } from "./lib/crdt/rustCrdtApi";
   import {
@@ -16,13 +16,14 @@
     onSyncProgress,
     onSyncStatus,
     getTreeFromCrdt,
-    populateCrdtFromFiles,
     updateFileBodyInYDoc,
     syncBodyContent,
     isDeviceSyncActive,
     renameFileInYDoc,
     deleteFileInYDoc,
     getFileMetadata,
+    renameFile,
+    deleteFile,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -51,7 +52,7 @@
   } from "./models/stores";
 
   // Import auth
-  import { initAuth, getDefaultWorkspace, verifyMagicLink } from "./lib/auth";
+  import { initAuth, getDefaultWorkspace, verifyMagicLink, setServerUrl } from "./lib/auth";
 
   // Initialize theme store immediately
   getThemeStore();
@@ -167,56 +168,6 @@
     return frontmatter;
   }
 
-  /**
-   * Calculate a relative path from one file to another.
-   * Used for CRDT part_of and contents fields which should store relative paths.
-   *
-   * @param fromPath - The file path we're calculating relative to (e.g., "workspace/folder/file.md")
-   * @param toPath - The target file path (e.g., "workspace/folder/child.md")
-   * @returns The relative path from fromPath's directory to toPath (e.g., "child.md")
-   *
-   * Examples:
-   *   calculateRelativePath("workspace/folder/file.md", "workspace/folder/child.md") => "child.md"
-   *   calculateRelativePath("workspace/folder/file.md", "workspace/other/file.md") => "../other/file.md"
-   *   calculateRelativePath("workspace/file.md", "workspace/folder/child.md") => "folder/child.md"
-   */
-  function calculateRelativePath(fromPath: string, toPath: string): string {
-    // Get directory of the fromPath (remove filename)
-    const fromParts = fromPath.split('/');
-    fromParts.pop(); // Remove the filename
-    const fromDir = fromParts;
-
-    const toParts = toPath.split('/');
-
-    // Find common prefix length
-    let commonLength = 0;
-    while (
-      commonLength < fromDir.length &&
-      commonLength < toParts.length &&
-      fromDir[commonLength] === toParts[commonLength]
-    ) {
-      commonLength++;
-    }
-
-    // Calculate how many levels we need to go up from fromDir
-    const upCount = fromDir.length - commonLength;
-
-    // Build the relative path
-    const relativeParts: string[] = [];
-
-    // Add ".." for each level we need to go up
-    for (let i = 0; i < upCount; i++) {
-      relativeParts.push('..');
-    }
-
-    // Add the remaining parts of toPath after the common prefix
-    for (let i = commonLength; i < toParts.length; i++) {
-      relativeParts.push(toParts[i]);
-    }
-
-    return relativeParts.join('/');
-  }
-
   // Attachment state
   let pendingAttachmentPath = $state("");
   let attachmentError: string | null = $state(null);
@@ -260,19 +211,35 @@
       if (savedServerUrl) {
         collaborationStore.setServerUrl(savedServerUrl);
       }
-
-      // Check for magic link token in URL (auto-verify without wizard)
-      const params = new URLSearchParams(window.location.search);
-      const token = params.get("token");
-      if (token) {
-        // Verify automatically - progress will show in SyncStatusIndicator
-        handleMagicLinkToken(token);
-      }
     }
 
     // Initialize auth state - if user was previously logged in,
     // this will validate their token and enable collaboration automatically
     await initAuth();
+
+    // Check for magic link token in URL (auto-verify without wizard)
+    // This must happen AFTER initAuth() so the auth service is initialized
+    // and BEFORE setupWorkspaceCrdt() so the CRDT initializes with auth
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      if (token) {
+        // Clear the token from URL immediately to prevent double verification
+        const url = new URL(window.location.href);
+        url.searchParams.delete("token");
+        window.history.replaceState({}, "", url.toString());
+
+        // If no server URL is configured, set the default before verifying
+        // This handles the case where user clicks magic link in a new browser/tab
+        const serverUrl = localStorage.getItem("diaryx_sync_server_url");
+        if (!serverUrl) {
+          setServerUrl("https://sync.diaryx.org");
+        }
+        // Verify automatically and wait for completion before continuing
+        // This ensures workspace CRDT is initialized with auth credentials
+        await handleMagicLinkToken(token);
+      }
+    }
 
     try {
       // Dynamically import the Editor component
@@ -367,10 +334,11 @@
           }
         }
 
-        // Also refresh tree when contents change (new files added)
-        // This ensures the tree shows newly synced files
-        if (metadata && metadata.contents) {
-          console.log('[App] Contents changed for:', path, '- refreshing tree');
+        // Refresh tree when:
+        // 1. contents changed (local file added to parent)
+        // 2. path is null (remote sync completed - we don't know what changed)
+        if ((metadata && metadata.contents) || path === null) {
+          console.log('[App] File change detected - refreshing tree');
           await refreshTree();
         }
       });
@@ -464,9 +432,8 @@
       }
 
       // Ensure local workspace exists (creates index.md if needed)
-      let localTree: TreeNode | null = null;
       try {
-        localTree = await api.getWorkspaceTree(workspacePath);
+        await api.getWorkspaceTree(workspacePath);
       } catch (e) {
         const errStr = e instanceof Error ? e.message : String(e);
         if (
@@ -477,8 +444,6 @@
           console.log("[App] Default workspace missing, creating...");
           try {
             await api.createWorkspace("workspace", "My Journal");
-            // Try loading tree again after creation
-            localTree = await api.getWorkspaceTree(workspacePath);
           } catch (createErr) {
             console.error("[App] Failed to create default workspace:", createErr);
           }
@@ -487,55 +452,15 @@
 
       // IMPORTANT: Populate CRDT from filesystem BEFORE connecting to server
       // This ensures our local files are available to sync to other devices
-      if (localTree && sharedWorkspaceId) {
-        console.log("[App] Populating CRDT from filesystem before sync...");
-        const files: Array<{ path: string; metadata: Partial<FileMetadata> }> = [];
-
-        async function collectFiles(node: TreeNode, parentPath: string | null) {
-          if (!node || !api) return;
-
-          try {
-            const entry = await api.getEntry(node.path);
-            const frontmatter = entry.frontmatter || {};
-            files.push({
-              path: node.path,
-              metadata: {
-                title: (frontmatter.title as string) || entry.title || node.name,
-                part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
-                contents: node.children.length > 0 ? node.children.map(c => calculateRelativePath(node.path, c.path)) : null,
-                extra: {
-                  _body: entry.content,
-                  ...Object.fromEntries(
-                    Object.entries(frontmatter).filter(([k]) =>
-                      !['title', 'part_of', 'contents', 'attachments', 'audience', 'description'].includes(k)
-                    )
-                  ),
-                } as FileMetadata['extra'],
-              },
-            });
-          } catch (e) {
-            console.warn('[App] Could not get entry for', node.path, e);
-            files.push({
-              path: node.path,
-              metadata: {
-                title: node.name,
-                part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
-                contents: node.children.length > 0 ? node.children.map(c => calculateRelativePath(node.path, c.path)) : null,
-              },
-            });
-          }
-
-          for (const child of node.children) {
-            await collectFiles(child, node.path);
-          }
+      if (sharedWorkspaceId) {
+        console.log("[App] Initializing CRDT from filesystem via Rust command...");
+        try {
+          const result = await api.initializeWorkspaceCrdt(workspacePath);
+          console.log("[App] CRDT initialized:", result);
+        } catch (e) {
+          console.warn("[App] Failed to initialize CRDT from filesystem:", e);
+          // Continue anyway - server sync may bring in data
         }
-
-        await collectFiles(localTree, null);
-        console.log("[App] Collected", files.length, "files from filesystem");
-
-        // Populate CRDT with files (pass rustApi since CRDT not yet initialized)
-        await populateCrdtFromFiles(files, rustApi);
-        console.log("[App] CRDT populated with local files before connecting to server");
       }
 
       // Set workspace ID for per-file document room naming
@@ -785,17 +710,16 @@
    * Verifies the token automatically and shows sync progress in SyncStatusIndicator.
    */
   async function handleMagicLinkToken(token: string) {
-    // Show connecting status
+    // Show connecting status while verifying
     collaborationStore.setSyncStatus('connecting');
 
     try {
       // Verify the magic link token
+      // Note: URL token is cleared before this function is called to prevent double verification
       await verifyMagicLink(token);
 
-      // Clear the token from URL
-      const url = new URL(window.location.href);
-      url.searchParams.delete("token");
-      window.history.replaceState({}, "", url.toString());
+      // Set status to idle - workspace CRDT will update to 'synced' when connected
+      collaborationStore.setSyncStatus('idle');
 
       // Show success toast - sync progress will be shown in SyncStatusIndicator
       toast.success("Signed in successfully", {
@@ -945,12 +869,13 @@
     const parentPath = workspaceStore.getParentNodePath(path);
     const newPath = await api.renameEntry(path, newFilename);
 
-    // Sync rename to Y.Doc for device-to-device sync
+    // Sync rename to Rust CRDT for device-to-device sync
     // Note: Get metadata from NEW path since file has already been renamed
     if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
+      await renameFile(path, newPath);  // Rust CRDT for device sync
       const metadata = await getFileMetadata(newPath);
       if (metadata) {
-        renameFileInYDoc(path, newPath, metadata);
+        renameFileInYDoc(path, newPath, metadata);  // Y.js for live share
       }
     }
 
@@ -1003,9 +928,10 @@
     try {
       await api.deleteEntry(path);
 
-      // Sync delete to Y.Doc for device-to-device sync
+      // Sync delete to Rust CRDT for device-to-device sync
       if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
-        deleteFileInYDoc(path);
+        await deleteFile(path);  // Rust CRDT for device sync
+        deleteFileInYDoc(path);  // Y.js for live share
       }
 
       // If we deleted the currently open entry, clear it
@@ -1377,81 +1303,13 @@
 
     console.log('[App] Populating CRDT from filesystem before hosting, audience:', audience);
 
-    // Get filtered file set if audience is specified
-    let allowedPaths: Set<string> | null = null;
-    if (audience) {
-      try {
-        const exportPlan = await api.planExport(tree.path, audience);
-        allowedPaths = new Set(exportPlan.included.map(f => f.source_path));
-        console.log('[App] Filtered to', allowedPaths.size, 'files for audience:', audience);
-      } catch (e) {
-        console.warn('[App] Failed to get export plan, sharing all files:', e);
-      }
+    try {
+      // Use Rust command which handles audience filtering internally
+      const result = await api.initializeWorkspaceCrdt(tree.path, audience ?? undefined);
+      console.log('[App] CRDT populated:', result);
+    } catch (e) {
+      console.error('[App] Failed to populate CRDT:', e);
     }
-
-    // Collect all files from the tree recursively
-    const files: Array<{ path: string; metadata: Partial<FileMetadata> }> = [];
-
-    async function collectFiles(node: typeof tree, parentPath: string | null) {
-      if (!node || !api) return;
-
-      // Skip files not in allowed paths (if filtering)
-      if (allowedPaths && !allowedPaths.has(node.path)) {
-        console.log('[App] Skipping file not in audience:', node.path);
-        return;
-      }
-
-      // Filter children to only include allowed paths
-      const filteredChildren = allowedPaths
-        ? node.children.filter(c => allowedPaths!.has(c.path))
-        : node.children;
-
-      // Get entry data including content
-      try {
-        const entry = await api.getEntry(node.path);
-        const frontmatter = entry.frontmatter || {};
-        files.push({
-          path: node.path,
-          metadata: {
-            title: (frontmatter.title as string) || entry.title || node.name,
-            part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
-            contents: filteredChildren.length > 0 ? filteredChildren.map(c => calculateRelativePath(node.path, c.path)) : null,
-            // Store file content in extra field for syncing
-            extra: {
-              _body: entry.content,
-              ...Object.fromEntries(
-                Object.entries(frontmatter).filter(([k]) =>
-                  !['title', 'part_of', 'contents', 'attachments', 'audience', 'description'].includes(k)
-                )
-              ),
-            } as FileMetadata['extra'],
-          },
-        });
-      } catch (e) {
-        console.warn('[App] Could not get entry for', node.path, e);
-        // Still add the file with basic metadata
-        files.push({
-          path: node.path,
-          metadata: {
-            title: node.name,
-            part_of: parentPath ? calculateRelativePath(node.path, parentPath) : null,
-            contents: filteredChildren.length > 0 ? filteredChildren.map(c => calculateRelativePath(node.path, c.path)) : null,
-          },
-        });
-      }
-
-      // Recurse into children (only filtered ones if audience specified)
-      for (const child of filteredChildren) {
-        await collectFiles(child, node.path);
-      }
-    }
-
-    await collectFiles(tree, null);
-    console.log('[App] Collected', files.length, 'files with content from filesystem');
-
-    // Populate CRDT
-    await populateCrdtFromFiles(files);
-    console.log('[App] CRDT populated successfully');
   }
 
   // Handle add attachment from context menu
@@ -2109,7 +1967,7 @@
         onOpenCommandPalette={uiStore.openCommandPalette}
         onPrevDay={handlePrevDay}
         onNextDay={handleNextDay}
-        onOpenSettings={() => (showSettingsDialog = true)}
+        onOpenWizard={() => (showSyncWizard = true)}
       />
 
       <EditorContent

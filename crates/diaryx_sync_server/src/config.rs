@@ -81,7 +81,7 @@ impl Config {
             .unwrap_or(15);
 
         let cors_origins = env::var("CORS_ORIGINS")
-            .unwrap_or_else(|_| "http://localhost:5174,http://localhost:1420".to_string())
+            .unwrap_or_else(|_| "http://localhost:5174,http://localhost:5175".to_string())
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())

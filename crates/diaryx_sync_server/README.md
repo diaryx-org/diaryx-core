@@ -189,14 +189,35 @@ Authorization: Bearer <session_token>
 
 ### WebSocket Sync
 
-#### Authenticated Sync (multi-device)
+The server supports two types of document sync:
+
+1. **Workspace sync** - Syncs file metadata (title, part_of, contents, etc.)
+2. **Body doc sync** - Syncs file body content (per-file documents)
+
+This separation prevents large file bodies from bloating the workspace CRDT.
+
+#### Workspace Sync (metadata only)
+
+##### Authenticated (multi-device)
 ```
 GET /sync?doc=workspace_id&token=session_token
 ```
 
-#### Session Sync (guest joining via code)
+##### Session Guest
 ```
 GET /sync?session=XXXXXXXX-XXXXXXXX&guest_id=guest-123
+```
+
+#### Body Doc Sync (per-file body content)
+
+##### Authenticated (multi-device)
+```
+GET /sync?doc=workspace_id&file=path/to/file.md&token=session_token
+```
+
+##### Session Guest
+```
+GET /sync?session=XXXXXXXX-XXXXXXXX&file=path/to/file.md&guest_id=guest-123
 ```
 
 The WebSocket connection uses the Y-sync protocol (compatible with y-protocols). Binary messages are Y.js updates, text messages are control messages (peer_joined, peer_left, read_only_changed, session_ended).
@@ -204,14 +225,14 @@ The WebSocket connection uses the Y-sync protocol (compatible with y-protocols).
 ## Architecture
 
 ```
-┌─────────────────┐     WebSocket      ┌─────────────────────────┐
-│   Web/Tauri     │◄──────────────────►│  diaryx_sync_server     │
-│   Client        │     (Y-sync)       │  (Rust + axum)          │
-└─────────────────┘                    │                         │
-                                       │  ┌─────────────────┐    │
-                                       │  │  diaryx_core    │    │
-                                       │  │  - WorkspaceCrdt│    │
-                                       │  │  - SyncProtocol │    │
+┌─────────────────┐                    ┌─────────────────────────┐
+│   Web/Tauri     │◄──── WS (metadata) │  diaryx_sync_server     │
+│   Client        │◄──── WS (body 1)   │  (Rust + axum)          │
+│                 │◄──── WS (body 2)   │                         │
+└─────────────────┘◄──── WS (body N)   │  ┌─────────────────┐    │
+                                       │  │  SyncRoom       │    │
+                                       │  │  - WorkspaceCrdt│ metadata
+                                       │  │  - BodyDocMgr   │ per-file
                                        │  │  - SqliteStorage│    │
                                        │  └─────────────────┘    │
                                        │           │             │
@@ -221,6 +242,9 @@ The WebSocket connection uses the Y-sync protocol (compatible with y-protocols).
                                        │  └─────────────────┘    │
                                        └─────────────────────────┘
 ```
+
+Each file being edited has its own WebSocket connection for body content sync.
+Workspace metadata (titles, hierarchy) syncs via a single shared connection.
 
 ## Development
 

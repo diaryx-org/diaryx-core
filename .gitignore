@@ -5,3 +5,4 @@ result
 **/node_modules
 **/dist
 **/.env
+workspaces

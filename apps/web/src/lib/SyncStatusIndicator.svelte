@@ -24,10 +24,10 @@
   } from "@lucide/svelte";
 
   interface Props {
-    onOpenSettings?: () => void;
+    onOpenWizard?: () => void;
   }
 
-  let { onOpenSettings }: Props = $props();
+  let { onOpenWizard }: Props = $props();
 
   // Reactive state from stores
   let syncStatus = $derived(collaborationStore.syncStatus);
@@ -113,8 +113,7 @@
       </span>
 
       <!-- Icon -->
-      <svelte:component
-        this={StatusIcon}
+      <StatusIcon
         class="size-4 {config.animate ? 'animate-spin' : ''}"
       />
 
@@ -135,8 +134,7 @@
     <div class="space-y-3">
       <!-- Status header -->
       <div class="flex items-center gap-2">
-        <svelte:component
-          this={StatusIcon}
+        <StatusIcon
           class="size-5 {config.color} {config.animate ? 'animate-spin' : ''}"
         />
         <span class="font-medium text-sm">{config.label}</span>
@@ -176,10 +174,10 @@
         variant="outline"
         size="sm"
         class="w-full text-xs"
-        onclick={onOpenSettings}
+        onclick={onOpenWizard}
       >
         {#if authState.isAuthenticated}
-          Manage sync settings
+          Manage sync
         {:else}
           Set up sync
         {/if}

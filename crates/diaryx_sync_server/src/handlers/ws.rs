@@ -25,6 +25,8 @@ pub struct WsQuery {
     pub session: Option<String>,
     /// Guest ID (for session guests)
     pub guest_id: Option<String>,
+    /// File path (for body doc sync - if present, routes to body doc handler)
+    pub file: Option<String>,
 }
 
 /// Shared state for WebSocket handler
@@ -36,17 +38,32 @@ pub struct WsState {
 
 /// Connection mode determined from query parameters
 enum ConnectionMode {
-    /// Authenticated user sync (doc + token)
+    /// Authenticated user sync (doc + token) - workspace metadata only
     Authenticated {
         user_id: String,
         device_id: String,
         workspace_id: String,
     },
-    /// Session guest (session code)
+    /// Authenticated user sync for body doc (doc + token + file)
+    AuthenticatedBody {
+        user_id: String,
+        device_id: String,
+        workspace_id: String,
+        file_path: String,
+    },
+    /// Session guest (session code) - workspace metadata only
     SessionGuest {
         session_code: String,
         guest_id: String,
         workspace_id: String,
+        read_only: bool,
+    },
+    /// Session guest for body doc (session code + file)
+    SessionGuestBody {
+        session_code: String,
+        guest_id: String,
+        workspace_id: String,
+        file_path: String,
         read_only: bool,
     },
 }
@@ -83,14 +100,25 @@ pub async fn ws_handler(
             .clone()
             .unwrap_or_else(|| format!("guest-{}", uuid::Uuid::new_v4()));
 
-        ConnectionMode::SessionGuest {
-            session_code,
-            guest_id,
-            workspace_id: session.workspace_id,
-            read_only: session.read_only,
+        // Check if this is a body doc connection
+        if let Some(file_path) = &query.file {
+            ConnectionMode::SessionGuestBody {
+                session_code,
+                guest_id,
+                workspace_id: session.workspace_id,
+                file_path: file_path.clone(),
+                read_only: session.read_only,
+            }
+        } else {
+            ConnectionMode::SessionGuest {
+                session_code,
+                guest_id,
+                workspace_id: session.workspace_id,
+                read_only: session.read_only,
+            }
         }
     } else if let (Some(doc), Some(token)) = (&query.doc, &query.token) {
-        // Authenticated sync (existing behavior)
+        // Authenticated sync
         let auth = match validate_token(&state.repo, token) {
             Some(a) => a,
             None => {
@@ -129,15 +157,30 @@ pub async fn ws_handler(
             workspace_id
         };
 
-        info!(
-            "WebSocket upgrade: user={}, workspace={}",
-            auth.user.email, workspace_id
-        );
+        // Check if this is a body doc connection
+        if let Some(file_path) = &query.file {
+            info!(
+                "WebSocket upgrade (body): user={}, workspace={}, file={}",
+                auth.user.email, workspace_id, file_path
+            );
 
-        ConnectionMode::Authenticated {
-            user_id: auth.user.id,
-            device_id: auth.session.device_id,
-            workspace_id,
+            ConnectionMode::AuthenticatedBody {
+                user_id: auth.user.id,
+                device_id: auth.session.device_id,
+                workspace_id,
+                file_path: file_path.clone(),
+            }
+        } else {
+            info!(
+                "WebSocket upgrade: user={}, workspace={}",
+                auth.user.email, workspace_id
+            );
+
+            ConnectionMode::Authenticated {
+                user_id: auth.user.id,
+                device_id: auth.session.device_id,
+                workspace_id,
+            }
         }
     } else {
         warn!(
@@ -157,6 +200,16 @@ pub async fn ws_handler(
                 handle_authenticated_socket(socket, state, user_id, device_id, workspace_id)
             })
             .into_response(),
+        ConnectionMode::AuthenticatedBody {
+            user_id,
+            device_id,
+            workspace_id,
+            file_path,
+        } => ws
+            .on_upgrade(move |socket| {
+                handle_body_socket(socket, state, user_id, device_id, workspace_id, file_path)
+            })
+            .into_response(),
         ConnectionMode::SessionGuest {
             session_code,
             guest_id,
@@ -174,6 +227,30 @@ pub async fn ws_handler(
                     session_code,
                     guest_id,
                     workspace_id,
+                    read_only,
+                )
+            })
+            .into_response()
+        }
+        ConnectionMode::SessionGuestBody {
+            session_code,
+            guest_id,
+            workspace_id,
+            file_path,
+            read_only,
+        } => {
+            info!(
+                "WebSocket upgrade (body): session={}, guest={}, workspace={}, file={}",
+                session_code, guest_id, workspace_id, file_path
+            );
+            ws.on_upgrade(move |socket| {
+                handle_session_body_socket(
+                    socket,
+                    state,
+                    session_code,
+                    guest_id,
+                    workspace_id,
+                    file_path,
                     read_only,
                 )
             })
@@ -441,6 +518,213 @@ async fn handle_session_socket(
     );
 
     // Connection will be dropped here, which calls unsubscribe
+
+    // Maybe remove the room if no more connections
+    state.sync_state.maybe_remove_room(&workspace_id).await;
+}
+
+/// Handle an authenticated body document WebSocket connection
+async fn handle_body_socket(
+    socket: WebSocket,
+    state: WsState,
+    user_id: String,
+    device_id: String,
+    workspace_id: String,
+    file_path: String,
+) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Get or create the sync room
+    let room = state.sync_state.get_or_create_room(&workspace_id).await;
+
+    // Generate a unique client ID
+    let client_id = format!("{}:{}", user_id, device_id);
+
+    // Subscribe to body updates for this file
+    let mut body_rx = room.subscribe_body(&file_path, &client_id);
+
+    info!(
+        "Body sync connected: workspace={}, file={}, user={}",
+        workspace_id, file_path, user_id
+    );
+
+    // Send initial sync state (our state vector)
+    let initial_sv = room.get_body_state_vector(&file_path).await;
+    if let Err(e) = ws_tx.send(Message::Binary(initial_sv.into())).await {
+        error!("Failed to send initial body state vector: {}", e);
+        room.unsubscribe_body(&file_path, &client_id).await;
+        return;
+    }
+
+    // Handle bidirectional communication
+    loop {
+        tokio::select! {
+            // Handle incoming messages from client
+            Some(msg) = ws_rx.next() => {
+                match msg {
+                    Ok(Message::Binary(data)) => {
+                        // Handle body sync message
+                        if let Some(response) = room.handle_body_message(&file_path, &data).await {
+                            if let Err(e) = ws_tx.send(Message::Binary(response.into())).await {
+                                error!("Failed to send body response: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Message::Ping(data)) => {
+                        if let Err(e) = ws_tx.send(Message::Pong(data)).await {
+                            error!("Failed to send pong: {}", e);
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        debug!("Client requested close");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle broadcast messages for this body doc
+            result = body_rx.recv() => {
+                match result {
+                    Ok((broadcast_file, broadcast_msg)) => {
+                        // Only forward if it's for our file
+                        if broadcast_file == file_path {
+                            if let Err(e) = ws_tx.send(Message::Binary(broadcast_msg.into())).await {
+                                error!("Failed to send body broadcast: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Body broadcast receiver lagged {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+
+            else => break,
+        }
+    }
+
+    // Cleanup
+    room.unsubscribe_body(&file_path, &client_id).await;
+
+    info!(
+        "Body sync disconnected: workspace={}, file={}, user={}",
+        workspace_id, file_path, user_id
+    );
+
+    // Maybe remove the room if no more connections
+    state.sync_state.maybe_remove_room(&workspace_id).await;
+}
+
+/// Handle a session guest body document WebSocket connection
+async fn handle_session_body_socket(
+    socket: WebSocket,
+    state: WsState,
+    session_code: String,
+    guest_id: String,
+    workspace_id: String,
+    file_path: String,
+    _read_only: bool,
+) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Get or create the sync room
+    let room = state.sync_state.get_or_create_room(&workspace_id).await;
+
+    // Use guest_id as client_id
+    let client_id = guest_id.clone();
+
+    // Subscribe to body updates for this file
+    let mut body_rx = room.subscribe_body(&file_path, &client_id);
+
+    info!(
+        "Session body sync connected: session={}, file={}, guest={}",
+        session_code, file_path, guest_id
+    );
+
+    // Send initial sync state (our state vector)
+    let initial_sv = room.get_body_state_vector(&file_path).await;
+    if let Err(e) = ws_tx.send(Message::Binary(initial_sv.into())).await {
+        error!("Failed to send initial body state vector: {}", e);
+        room.unsubscribe_body(&file_path, &client_id).await;
+        return;
+    }
+
+    // Handle bidirectional communication
+    loop {
+        tokio::select! {
+            // Handle incoming messages from client
+            Some(msg) = ws_rx.next() => {
+                match msg {
+                    Ok(Message::Binary(data)) => {
+                        // Handle body sync message (TODO: respect read_only in future)
+                        if let Some(response) = room.handle_body_message(&file_path, &data).await {
+                            if let Err(e) = ws_tx.send(Message::Binary(response.into())).await {
+                                error!("Failed to send body response: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Message::Ping(data)) => {
+                        if let Err(e) = ws_tx.send(Message::Pong(data)).await {
+                            error!("Failed to send pong: {}", e);
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        debug!("Client requested close");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle broadcast messages for this body doc
+            result = body_rx.recv() => {
+                match result {
+                    Ok((broadcast_file, broadcast_msg)) => {
+                        // Only forward if it's for our file
+                        if broadcast_file == file_path {
+                            if let Err(e) = ws_tx.send(Message::Binary(broadcast_msg.into())).await {
+                                error!("Failed to send body broadcast: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Body broadcast receiver lagged {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+
+            else => break,
+        }
+    }
+
+    // Cleanup
+    room.unsubscribe_body(&file_path, &client_id).await;
+
+    info!(
+        "Session body sync disconnected: session={}, file={}, guest={}",
+        session_code, file_path, guest_id
+    );
 
     // Maybe remove the room if no more connections
     state.sync_state.maybe_remove_room(&workspace_id).await;

@@ -487,6 +487,27 @@ pub enum Command {
     /// Get storage usage information.
     GetStorageUsage,
 
+    // === CRDT Initialization ===
+    /// Initialize workspace CRDT by scanning filesystem and populating state.
+    ///
+    /// This replaces the frontend's `setupWorkspaceCrdt()` logic by:
+    /// 1. Finding the root index file
+    /// 2. Recursively scanning all files in the workspace tree
+    /// 3. Populating the CRDT with file metadata and body content
+    ///
+    /// If `audience` is provided, only files visible to that audience are included
+    /// (uses the same filtering logic as `PlanExport`).
+    ///
+    /// Returns the number of files populated.
+    #[cfg(feature = "crdt")]
+    InitializeWorkspaceCrdt {
+        /// Path to workspace root (directory or root index file).
+        workspace_path: String,
+        /// Optional audience filter. If provided, only files visible to this audience
+        /// are included in CRDT (e.g., "family", "public", or "*" for all non-private).
+        audience: Option<String>,
+    },
+
     // === CRDT Sync Operations ===
     /// Get the CRDT state vector for sync.
     #[cfg(feature = "crdt")]
