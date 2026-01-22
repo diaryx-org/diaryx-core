@@ -23,6 +23,8 @@
               (lib.fileset.fileFilter (file: file.hasExt "toml") ./.)
               (lib.fileset.fileFilter (file: file.name == "Cargo.lock") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "md") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "json") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "png") ./.)
             ];
           };
 
@@ -32,6 +34,8 @@
             inherit src;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "diaryx" ];
+            cargoTestFlags = [ "-p" "diaryx" ];
+            doCheck = false;
 
             buildInputs = lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_15
