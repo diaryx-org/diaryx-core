@@ -17,11 +17,14 @@ audience:
 
 # Diaryx
 
-Diaryx is software for personal writing, designed to embed standardized metadata into markdown files, eliminating the need to index a vault and introducing greater portability across applications.
+Diaryx is software for personal writing, designed to embed standardized metadata into markdown files, which leads to a wide range of emergent benefits:
 
-This repo uses Diaryx for its own documentation. The "root index file" is [README.md](README.md). In the frontmatter, it has a `contents` property that includes a list of markdown files considered part of the documentation. Each of these files has a `part_of` property set to `README.md`, allowing for bidirectional traversal. Markdown files are considered "leaf" files if they do not have a `contents` property, or "index" files if they do. A root index file is a file that has a `contents` property but no `part_of` property.
+- No need to keep an index of the files
+- Better portability + longevity
+- Easily readable by humans (and AI agents)
+- Hierarchal, heritable traits
 
-Another important feature of Diaryx enabled by this structure is "audience filtering." Files may have an `audience` property, which defines access groups for the file and its children. Thus, Diaryx may export different subsets of the documentation to different audiences.
+This repository uses Diaryx for its own documentation. The "root index file" is [README.md](README.md). In the frontmatter, it has a `contents` property that includes a list of markdown files considered part of the documentation. Each of these files has a `part_of` property set to `README.md`, allowing for bidirectional traversal. Markdown files are considered "leaf" files if they do not have a `contents` property, or "index" files if they do. A root index file is a file that has a `contents` property but no `part_of` property.
 
 All of this logic is defined in the `diaryx_core` Rust crate, and is used by the `diaryx` CLI, `diaryx_wasm`, and `apps/tauri`. Please refer to the links below for more information on these specific projects.
 
@@ -30,6 +33,7 @@ All of this logic is defined in the `diaryx_core` Rust crate, and is used by the
 - [`crates/diaryx_core`](crates/diaryx_core/README.md): Core logic for all Diaryx apps.
 - [`crates/diaryx`](crates/diaryx/README.md): CLI frontend for Diaryx.
 - [`crates/diaryx_wasm`](crates/diaryx_wasm/README.md): WebAssembly bindings for `diaryx_core`, used in `apps/web`.
+[`crates/diaryx_sync_server`](crates/diaryx_sync_server/README.md): Sync server to allow sync/live editing functionality in Web/Tauri clients.
 - [`apps/web`](apps/web/README.md): Svelte + TipTap frontend for Diaryx.
 - [`apps/tauri`](apps/tauri/README.md): Tauri frontend for Diaryx. Uses `apps/web` as its frontend, but calls the functions through the Tauri backend instead of through WebAssembly, allowing for native filesystem access.
 
