@@ -343,14 +343,30 @@
             if (!guestInitialSyncDone) {
               console.log('[App] Guest session - initial sync, opening root entry:', crdtTree.path);
               workspaceStore.expandNode(crdtTree.path);
+
+              // Collect all file paths for body sync
+              const filePaths = collectFilePaths(crdtTree);
+
+              // Sync the root file's body FIRST before opening it
+              // This ensures content is available when the entry opens
+              if (filePaths.length > 0) {
+                const rootPath = crdtTree.path;
+                console.log(`[App] Guest: Syncing root body first: ${rootPath}`);
+                try {
+                  await proactivelySyncBodies([rootPath], 1);
+                } catch (e) {
+                  console.warn('[App] Guest root body sync failed:', e);
+                }
+              }
+
               await openEntry(crdtTree.path);
               guestInitialSyncDone = true;
 
-              // Proactively sync body docs for all files in the tree (guests)
-              const filePaths = collectFilePaths(crdtTree);
-              if (filePaths.length > 0) {
-                console.log(`[App] Guest: Proactively syncing ${filePaths.length} body docs in background`);
-                proactivelySyncBodies(filePaths, 3).catch((e) => {
+              // Proactively sync body docs for remaining files in the tree (guests)
+              const remainingPaths = filePaths.filter((p) => p !== crdtTree.path);
+              if (remainingPaths.length > 0) {
+                console.log(`[App] Guest: Proactively syncing ${remainingPaths.length} remaining body docs in background`);
+                proactivelySyncBodies(remainingPaths, 3).catch((e) => {
                   console.warn('[App] Guest proactive body sync failed:', e);
                 });
               }

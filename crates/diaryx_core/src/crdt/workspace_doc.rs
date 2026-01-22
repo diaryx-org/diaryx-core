@@ -116,7 +116,14 @@ impl WorkspaceCrdt {
             let updates = storage.get_all_updates(&doc_name)?;
             for crdt_update in updates {
                 if let Ok(update) = Update::decode_v1(&crdt_update.data) {
-                    let _ = txn.apply_update(update);
+                    if let Err(e) = txn.apply_update(update) {
+                        log::warn!(
+                            "Failed to apply stored update {} for {}: {}",
+                            crdt_update.update_id,
+                            doc_name,
+                            e
+                        );
+                    }
                 }
             }
         }

@@ -200,8 +200,9 @@ export class RustSyncBridge {
         clearTimeout(this.syncedDebounceTimeout);
       }
 
-      // Set a short debounce - if no more messages arrive within 100ms,
-      // we consider the initial sync complete
+      // Set a debounce - if no more messages arrive within 300ms,
+      // we consider the initial sync complete. Using 300ms instead of 100ms
+      // to handle cases where server messages arrive with delays between them.
       this.syncedDebounceTimeout = setTimeout(() => {
         if (!this.synced) {
           console.log('[RustSyncBridge] Initial sync complete (debounced)');
@@ -209,7 +210,7 @@ export class RustSyncBridge {
           this.onSynced?.();
         }
         this.syncedDebounceTimeout = null;
-      }, 100);
+      }, 300);
     }
 
     // Notify caller of remote update (for UI refresh)

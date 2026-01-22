@@ -187,7 +187,8 @@ export async function createShareSession(workspaceId: string, readOnly: boolean 
     shareSessionStore.startHosting(joinCode, workspaceId, readOnly, selectedAudience);
 
     // Step 3: Start document sync for this session (isHost=true to send initial state)
-    startSessionSync(wsUrl, joinCode, true);
+    // Await to ensure initial sync completes before marking session as ready
+    await startSessionSync(wsUrl, joinCode, true);
 
     // Set active session code for per-document sync (real-time editing)
     setActiveSessionCode(joinCode);
@@ -366,12 +367,17 @@ export async function joinShareSession(joinCode: string): Promise<string> {
             console.log('[ShareService] Joined session:', msg.joinCode, 'backendType:', backendType, 'readOnly:', msg.readOnly);
 
             // Start document sync for this session (isHost=false, receive state from server)
-            startSessionSync(wsUrl, msg.joinCode, false);
-
-            // Set active session code for per-document sync (real-time editing)
-            setActiveSessionCode(msg.joinCode);
-
-            resolve(msg.workspaceId);
+            // Await to ensure initial sync completes before resolving (guest sees all data)
+            startSessionSync(wsUrl, msg.joinCode, false).then(() => {
+              // Set active session code for per-document sync (real-time editing)
+              setActiveSessionCode(msg.joinCode);
+              resolve(msg.workspaceId);
+            }).catch((err) => {
+              console.warn('[ShareService] Session sync did not complete fully:', err);
+              // Still resolve - connection is established, sync may complete later
+              setActiveSessionCode(msg.joinCode);
+              resolve(msg.workspaceId);
+            });
           } else if (msg.type === 'read_only_changed') {
             shareSessionStore.setReadOnly(msg.readOnly);
             console.log('[ShareService] Read-only changed:', msg.readOnly);

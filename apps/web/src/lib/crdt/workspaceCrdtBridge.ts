@@ -429,6 +429,7 @@ function notifyBodyChange(path: string, body: string): void {
 /**
  * Start syncing with a share session.
  * This will connect to the server with the session code.
+ * Returns a Promise that resolves when initial sync is complete.
  * @param isHost - If true, sends initial state to server (for session hosts)
  */
 export async function startSessionSync(sessionServerUrl: string, sessionCode: string, isHost: boolean = false): Promise<void> {
@@ -450,6 +451,12 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
   const workspaceDocName = 'workspace';
   console.log('[WorkspaceCrdtBridge] Creating RustSyncBridge for session:', sessionServerUrl, 'doc:', workspaceDocName, 'session:', sessionCode);
 
+  // Create a promise that resolves when initial sync completes
+  let syncResolve: () => void;
+  const syncPromise = new Promise<void>((resolve) => {
+    syncResolve = resolve;
+  });
+
   syncBridge = createRustSyncBridge({
     serverUrl: sessionServerUrl,
     docName: workspaceDocName,
@@ -470,6 +477,8 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
         // Notify UI to refresh tree (triggers App.svelte to build tree from CRDT)
         notifySessionSync();
       }
+      // Resolve the sync promise to signal completion
+      syncResolve();
     },
     onRemoteUpdate: async () => {
       // Remote update received - handle based on host/guest mode
@@ -488,6 +497,18 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
   });
 
   await syncBridge.connect();
+
+  // Wait for initial sync to complete (with timeout)
+  const timeoutPromise = new Promise<void>((_, reject) => {
+    setTimeout(() => reject(new Error('Session sync timeout')), 15000);
+  });
+
+  try {
+    await Promise.race([syncPromise, timeoutPromise]);
+    console.log('[WorkspaceCrdtBridge] Session sync fully complete');
+  } catch (error) {
+    console.warn('[WorkspaceCrdtBridge] Session sync did not complete in time, continuing anyway');
+  }
 }
 
 /**
@@ -1063,14 +1084,30 @@ async function getOrCreateBodyBridge(filePath: string): Promise<BodySyncBridge |
     bodyBridges.delete(canonicalPath);
   }
 
-  // SIMPLIFIED: CRDT is the single source of truth.
-  // At startup, InitializeWorkspaceCrdt reconciles file mtime vs CRDT modified_at.
-  // If file was newer, CRDT was updated from file. Otherwise, CRDT is authoritative.
-  // Here we just track current content for echo detection.
+  // CRITICAL: Load body content from disk into CRDT BEFORE connecting sync bridge.
+  // Without this, the body CRDT is empty when sync starts, and the server's
+  // (possibly empty) state would overwrite local content.
   try {
     const existingBodyContent = await rustApi.getBodyContent(canonicalPath);
-    if (existingBodyContent) {
+    if (existingBodyContent && existingBodyContent.length > 0) {
+      // Body CRDT already has content - just track for echo detection
       lastKnownBodyContent.set(canonicalPath, existingBodyContent);
+      console.log(`[BodySyncBridge] Body CRDT already has ${existingBodyContent.length} chars for ${canonicalPath}`);
+    } else if (backendApi && !shareSessionStore.isGuest) {
+      // Body CRDT is empty - try to load content from disk (hosts only)
+      // Guests don't have files on disk, so skip this for them
+      try {
+        console.log(`[BodySyncBridge] Body CRDT empty for ${canonicalPath}, loading from disk...`);
+        const entry = await backendApi.getEntry(canonicalPath);
+        if (entry && entry.content && entry.content.length > 0) {
+          console.log(`[BodySyncBridge] Loading ${entry.content.length} chars from disk into CRDT for ${canonicalPath}`);
+          await rustApi.setBodyContent(canonicalPath, entry.content);
+          lastKnownBodyContent.set(canonicalPath, entry.content);
+        }
+      } catch (diskErr) {
+        // File might not exist on disk (e.g., remote-only file) - that's OK
+        console.log(`[BodySyncBridge] Could not load from disk for ${canonicalPath}:`, diskErr);
+      }
     }
   } catch (err) {
     console.warn(`[BodySyncBridge] Could not get body content for ${canonicalPath}:`, err);

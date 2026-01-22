@@ -510,13 +510,13 @@ impl SyncRoom {
     // ==================== Body Document Operations ====================
 
     /// Subscribe to body document updates for a specific file
-    pub fn subscribe_body(
+    pub async fn subscribe_body(
         &self,
         file_path: &str,
         client_id: &str,
     ) -> broadcast::Receiver<(String, Vec<u8>)> {
-        // Track subscription
-        let mut subs = futures::executor::block_on(self.body_subscriptions.write());
+        // Track subscription using async lock
+        let mut subs = self.body_subscriptions.write().await;
         subs.entry(file_path.to_string())
             .or_default()
             .insert(client_id.to_string());

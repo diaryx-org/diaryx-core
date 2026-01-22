@@ -1360,19 +1360,28 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                     // Reconciliation logic: compare file mtime vs CRDT modified_at
                     // If CRDT has newer or equal timestamp, skip updating from file
-                    if let (Some(crdt_entry), Some(fmtime)) = (&existing_crdt_entry, file_mtime) {
-                        if crdt_entry.modified_at >= fmtime && !crdt_entry.deleted {
-                            log::debug!(
-                                "[InitializeWorkspaceCrdt] Keeping CRDT version for {} (CRDT: {}, file: {})",
-                                path_str,
-                                crdt_entry.modified_at,
-                                fmtime
-                            );
-                            // Add children to stack to continue tree traversal
-                            for child in node.children.iter().rev() {
-                                stack.push((child, Some(path_str.clone())));
+                    if let Some(crdt_entry) = &existing_crdt_entry {
+                        if !crdt_entry.deleted {
+                            // If we have file mtime, compare timestamps
+                            // If no file mtime available (OPFS/web), trust the CRDT if it has data
+                            let should_keep_crdt = match file_mtime {
+                                Some(fmtime) => crdt_entry.modified_at >= fmtime,
+                                None => true, // No mtime available, trust existing CRDT entry
+                            };
+
+                            if should_keep_crdt {
+                                log::debug!(
+                                    "[InitializeWorkspaceCrdt] Keeping CRDT version for {} (CRDT: {}, file: {:?})",
+                                    path_str,
+                                    crdt_entry.modified_at,
+                                    file_mtime
+                                );
+                                // Add children to stack to continue tree traversal
+                                for child in node.children.iter().rev() {
+                                    stack.push((child, Some(path_str.clone())));
+                                }
+                                continue;
                             }
-                            continue;
                         }
                     }
 

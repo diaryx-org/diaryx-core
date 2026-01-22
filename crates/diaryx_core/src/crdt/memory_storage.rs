@@ -170,13 +170,17 @@ impl CrdtStorage for MemoryStorage {
             if let Some(state) = &base_state
                 && let Ok(update) = Update::decode_v1(state)
             {
-                let _ = txn.apply_update(update);
+                if let Err(e) = txn.apply_update(update) {
+                    log::warn!("Failed to apply base state for {}: {}", name, e);
+                }
             }
 
             // Apply incremental updates up to the specified ID
             for update_data in doc_updates {
                 if let Ok(update) = Update::decode_v1(&update_data) {
-                    let _ = txn.apply_update(update);
+                    if let Err(e) = txn.apply_update(update) {
+                        log::warn!("Failed to apply incremental update for {}: {}", name, e);
+                    }
                 }
             }
         }
@@ -326,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_get_state_at_reconstructs_history() {
-        use yrs::{GetString, Text, Transact, updates::encoder::Encode};
+        use yrs::{GetString, Text, Transact};
 
         let storage = MemoryStorage::new();
 
@@ -376,7 +380,7 @@ mod tests {
         {
             let mut txn = doc_at_1.transact_mut();
             let update = Update::decode_v1(&state_at_1).unwrap();
-            txn.apply_update(update);
+            txn.apply_update(update).unwrap();
         }
         let text_at_1 = doc_at_1.get_or_insert_text("content");
         {
@@ -390,7 +394,7 @@ mod tests {
         {
             let mut txn = doc_at_2.transact_mut();
             let update = Update::decode_v1(&state_at_2).unwrap();
-            txn.apply_update(update);
+            txn.apply_update(update).unwrap();
         }
         let text_at_2 = doc_at_2.get_or_insert_text("content");
         {

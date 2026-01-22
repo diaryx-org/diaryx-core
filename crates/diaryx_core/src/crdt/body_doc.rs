@@ -86,7 +86,13 @@ impl BodyDoc {
             && let Ok(update) = Update::decode_v1(&state)
         {
             let mut txn = doc.transact_mut();
-            let _ = txn.apply_update(update);
+            if let Err(e) = txn.apply_update(update) {
+                log::warn!(
+                    "Failed to apply stored state for body doc {}: {}",
+                    doc_name,
+                    e
+                );
+            }
         }
 
         Ok(Self {
@@ -387,7 +393,9 @@ impl BodyDoc {
             && let Ok(update) = Update::decode_v1(&state)
         {
             let mut txn = self.doc.transact_mut();
-            let _ = txn.apply_update(update);
+            if let Err(e) = txn.apply_update(update) {
+                log::warn!("Failed to reload body doc {}: {}", self.doc_name, e);
+            }
         }
         Ok(())
     }

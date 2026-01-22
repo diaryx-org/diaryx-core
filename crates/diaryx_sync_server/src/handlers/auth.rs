@@ -6,9 +6,10 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -18,6 +19,8 @@ pub struct AuthState {
     pub magic_link_service: Arc<MagicLinkService>,
     pub email_service: Arc<EmailService>,
     pub repo: Arc<AuthRepo>,
+    /// Path to workspace database files (for cleanup on account deletion)
+    pub workspaces_dir: Option<PathBuf>,
 }
 
 /// Request body for magic link request
@@ -92,6 +95,7 @@ pub fn auth_routes(state: AuthState) -> Router {
         .route("/verify", get(verify_magic_link))
         .route("/me", get(get_current_user))
         .route("/logout", post(logout))
+        .route("/account", delete(delete_account))
         .route("/devices", get(list_devices))
         .route("/devices/{device_id}", axum::routing::delete(delete_device))
         .with_state(state)
@@ -333,4 +337,47 @@ async fn delete_device(
     }
 
     StatusCode::NO_CONTENT
+}
+
+/// DELETE /auth/account - Delete user account and all server data
+async fn delete_account(
+    State(state): State<AuthState>,
+    RequireAuth(auth): RequireAuth,
+) -> impl IntoResponse {
+    let user_id = &auth.user.id;
+
+    info!("Deleting account for user: {}", user_id);
+
+    // Delete user from database (returns workspace IDs for file cleanup)
+    let workspace_ids = match state.repo.delete_user(user_id) {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("Failed to delete user {}: {}", user_id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Delete workspace database files from disk
+    if let Some(workspaces_dir) = &state.workspaces_dir {
+        for workspace_id in workspace_ids {
+            let db_path = workspaces_dir.join(format!("{}.db", workspace_id));
+            if db_path.exists() {
+                if let Err(e) = std::fs::remove_file(&db_path) {
+                    warn!("Failed to delete workspace file {:?}: {}", db_path, e);
+                } else {
+                    info!("Deleted workspace file: {:?}", db_path);
+                }
+            }
+        }
+    }
+
+    info!("Successfully deleted account for user: {}", user_id);
+
+    StatusCode::NO_CONTENT.into_response()
 }

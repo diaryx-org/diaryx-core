@@ -540,16 +540,19 @@ async fn handle_body_socket(
     // Generate a unique client ID
     let client_id = format!("{}:{}", user_id, device_id);
 
-    // Subscribe to body updates for this file
-    let mut body_rx = room.subscribe_body(&file_path, &client_id);
-
     info!(
         "Body sync connected: workspace={}, file={}, user={}",
         workspace_id, file_path, user_id
     );
 
-    // Send initial sync state (our state vector)
+    // Get initial sync state BEFORE subscribing to avoid race condition
+    // This ensures we don't miss updates that arrive between subscribe and getting state
     let initial_sv = room.get_body_state_vector(&file_path).await;
+
+    // Subscribe to body updates for this file AFTER getting initial state
+    let mut body_rx = room.subscribe_body(&file_path, &client_id).await;
+
+    // Send initial sync state (our state vector)
     if let Err(e) = ws_tx.send(Message::Binary(initial_sv.into())).await {
         error!("Failed to send initial body state vector: {}", e);
         room.unsubscribe_body(&file_path, &client_id).await;
@@ -644,16 +647,19 @@ async fn handle_session_body_socket(
     // Use guest_id as client_id
     let client_id = guest_id.clone();
 
-    // Subscribe to body updates for this file
-    let mut body_rx = room.subscribe_body(&file_path, &client_id);
-
     info!(
         "Session body sync connected: session={}, file={}, guest={}",
         session_code, file_path, guest_id
     );
 
-    // Send initial sync state (our state vector)
+    // Get initial sync state BEFORE subscribing to avoid race condition
+    // This ensures we don't miss updates that arrive between subscribe and getting state
     let initial_sv = room.get_body_state_vector(&file_path).await;
+
+    // Subscribe to body updates for this file AFTER getting initial state
+    let mut body_rx = room.subscribe_body(&file_path, &client_id).await;
+
+    // Send initial sync state (our state vector)
     if let Err(e) = ws_tx.send(Message::Binary(initial_sv.into())).await {
         error!("Failed to send initial body state vector: {}", e);
         room.unsubscribe_body(&file_path, &client_id).await;

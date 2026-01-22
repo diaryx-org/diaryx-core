@@ -9,7 +9,7 @@
   import * as Drawer from "$lib/components/ui/drawer";
   import * as Tabs from "$lib/components/ui/tabs";
   import { Button } from "$lib/components/ui/button";
-  import { Settings, Eye, FolderOpen, FileText, RefreshCw, Database, Bug } from "@lucide/svelte";
+  import { Settings, Eye, FolderOpen, FileText, RefreshCw, Database, Bug, User } from "@lucide/svelte";
   import { getMobileState } from "./hooks/useMobile.svelte";
 
   // Import modular settings components
@@ -17,9 +17,11 @@
   import WorkspaceSettings from "./settings/WorkspaceSettings.svelte";
   import StorageSettings from "./settings/StorageSettings.svelte";
   import SyncSettings from "./settings/SyncSettings.svelte";
+  import AccountSettings from "./settings/AccountSettings.svelte";
   import BackupSettings from "./settings/BackupSettings.svelte";
   import ImportSettings from "./settings/ImportSettings.svelte";
   import CloudBackupSettings from "./settings/CloudBackupSettings.svelte";
+  import ClearDataSettings from "./settings/ClearDataSettings.svelte";
   import DebugInfo from "./settings/DebugInfo.svelte";
   import TemplateSettings from "./settings/TemplateSettings.svelte";
 
@@ -73,6 +75,10 @@
         <RefreshCw class="size-4 mr-1.5 hidden sm:inline" />
         Sync
       </Tabs.Trigger>
+      <Tabs.Trigger value="account" class="shrink-0">
+        <User class="size-4 mr-1.5 hidden sm:inline" />
+        Account
+      </Tabs.Trigger>
       <Tabs.Trigger value="data" class="shrink-0">
         <Database class="size-4 mr-1.5 hidden sm:inline" />
         Data
@@ -115,11 +121,18 @@
       </div>
     </Tabs.Content>
 
+    <Tabs.Content value="account">
+      <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
+        <AccountSettings onOpenWizard={onOpenSyncWizard} />
+      </div>
+    </Tabs.Content>
+
     <Tabs.Content value="data">
       <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
         <BackupSettings {workspacePath} />
         <ImportSettings {workspacePath} />
         <CloudBackupSettings {workspacePath} />
+        <ClearDataSettings />
       </div>
     </Tabs.Content>
 

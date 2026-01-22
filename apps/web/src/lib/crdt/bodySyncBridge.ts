@@ -243,16 +243,19 @@ export class BodySyncBridge {
 
       // Notify with the current content now that we've synced
       // This ensures the UI gets updated with server content
+      // Wait for content notification to complete before calling onSynced
       this.rustApi.getBodyContent(this.filePath).then((content) => {
         if (content.length > 0) {
           console.log(`[BodySyncBridge] Notifying body change after sync for ${this.filePath}: ${content.length} chars`);
           this.onBodyChange?.(content);
         }
+        // Call onSynced AFTER content notification completes
+        this.onSynced?.();
       }).catch((err) => {
         console.error(`[BodySyncBridge] Error getting body content after sync:`, err);
+        // Still call onSynced even on error so callers aren't left waiting
+        this.onSynced?.();
       });
-
-      this.onSynced?.();
     }
   }
 

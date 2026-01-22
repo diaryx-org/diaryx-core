@@ -163,6 +163,22 @@ export class AuthService {
   }
 
   /**
+   * Delete user account and all server data.
+   */
+  async deleteAccount(authToken: string): Promise<void> {
+    const response = await fetch(`${this.serverUrl}/auth/account`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new AuthError('Failed to delete account', response.status);
+    }
+  }
+
+  /**
    * Get server status.
    */
   async getStatus(): Promise<{ status: string; version: string; active_connections: number }> {

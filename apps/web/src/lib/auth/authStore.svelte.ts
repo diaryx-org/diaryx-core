@@ -305,6 +305,33 @@ export async function deleteDevice(deviceId: string): Promise<void> {
   await refreshUserInfo();
 }
 
+/**
+ * Delete account and all server data.
+ * This deletes data from the server but preserves local workspace data.
+ */
+export async function deleteAccount(): Promise<void> {
+  const token = getToken();
+  if (!authService || !token) return;
+
+  // Delete server data
+  await authService.deleteAccount(token);
+
+  // Clear local auth state (but NOT local workspace data)
+  state.isAuthenticated = false;
+  state.user = null;
+  state.workspaces = [];
+  state.devices = [];
+  state.error = null;
+
+  localStorage.removeItem(STORAGE_KEYS.TOKEN);
+  localStorage.removeItem(STORAGE_KEYS.USER);
+
+  // Clear collaboration settings
+  setAuthToken(undefined);
+  setCollaborationWorkspaceId(null);
+  collaborationStore.setEnabled(false);
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================

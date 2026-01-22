@@ -141,6 +141,24 @@ impl AuthRepo {
         Ok(())
     }
 
+    /// Delete a user and all related data (devices, sessions, workspaces, share_sessions cascade)
+    /// Returns the list of workspace IDs that were deleted (for file cleanup)
+    pub fn delete_user(&self, user_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // First, get the user's workspace IDs for file cleanup
+        let mut stmt = conn.prepare("SELECT id FROM user_workspaces WHERE user_id = ?")?;
+        let workspace_ids: Vec<String> = stmt
+            .query_map([user_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Delete the user (CASCADE will handle devices, sessions, workspaces, share_sessions)
+        conn.execute("DELETE FROM users WHERE id = ?", [user_id])?;
+
+        Ok(workspace_ids)
+    }
+
     // ===== Device operations =====
 
     /// Create a new device
@@ -640,5 +658,35 @@ mod tests {
         repo.delete_session(&token).unwrap();
         let deleted = repo.validate_session(&token).unwrap();
         assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn test_delete_user() {
+        let repo = setup_test_db();
+
+        // Create user with device, session, and workspace
+        let user_id = repo.get_or_create_user("delete-test@example.com").unwrap();
+        let device_id = repo
+            .create_device(&user_id, Some("Test Device"), None)
+            .unwrap();
+        let expires = Utc::now() + chrono::Duration::days(30);
+        let session_token = repo.create_session(&user_id, &device_id, expires).unwrap();
+        let workspace_id = repo.get_or_create_workspace(&user_id, "default").unwrap();
+
+        // Verify everything exists
+        assert!(repo.get_user(&user_id).unwrap().is_some());
+        assert!(!repo.get_user_devices(&user_id).unwrap().is_empty());
+        assert!(repo.validate_session(&session_token).unwrap().is_some());
+        assert!(!repo.get_user_workspaces(&user_id).unwrap().is_empty());
+
+        // Delete user
+        let deleted_workspace_ids = repo.delete_user(&user_id).unwrap();
+        assert_eq!(deleted_workspace_ids, vec![workspace_id]);
+
+        // Verify everything is deleted (cascade)
+        assert!(repo.get_user(&user_id).unwrap().is_none());
+        assert!(repo.get_user_devices(&user_id).unwrap().is_empty());
+        assert!(repo.validate_session(&session_token).unwrap().is_none());
+        assert!(repo.get_user_workspaces(&user_id).unwrap().is_empty());
     }
 }

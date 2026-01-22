@@ -72,6 +72,7 @@
               bun
               pkg-config
               prek
+              llvmPackages.lld  # Required for WASM linking
             ] ++ lib.optionals pkgs.stdenv.isDarwin [
               apple-sdk_15
             ];

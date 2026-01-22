@@ -267,7 +267,10 @@
               <a
                 href={devLink}
                 class="text-xs text-primary hover:underline flex items-center gap-1 break-all"
-                onclick={() => handleVerifyToken(new URL(devLink!).searchParams.get("token") || "")}
+                onclick={(e) => {
+                  e.preventDefault();
+                  handleVerifyToken(new URL(devLink!).searchParams.get("token") || "");
+                }}
               >
                 <Link class="size-3 shrink-0" />
                 Click here to verify

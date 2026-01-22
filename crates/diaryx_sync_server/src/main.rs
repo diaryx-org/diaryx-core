@@ -77,13 +77,14 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let sync_state = Arc::new(SyncState::new(workspaces_dir));
+    let sync_state = Arc::new(SyncState::new(workspaces_dir.clone()));
 
     // Create handler states
     let auth_state = diaryx_sync_server::handlers::auth::AuthState {
         magic_link_service,
         email_service,
         repo: repo.clone(),
+        workspaces_dir: Some(workspaces_dir.clone()),
     };
 
     let api_state = diaryx_sync_server::handlers::api::ApiState {
