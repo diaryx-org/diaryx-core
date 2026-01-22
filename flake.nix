@@ -18,31 +18,33 @@
 
         inherit (pkgs) lib;
 
-        # Rust toolchain (1.91.0) as specified in Cargo.toml
         rustToolchain = pkgs.rust-bin.stable."1.91.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Source filtering
         src = craneLib.cleanCargoSource (craneLib.path ./.);
 
         commonArgs = {
           inherit src;
           strictDeps = true;
 
-          buildInputs = with pkgs; [
-            stdenv.cc.cc.lib
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.libiconv
-            pkgs.apple-sdk.frameworks.Security
-            pkgs.apple-sdk.frameworks.CoreFoundation
-            pkgs.apple-sdk.frameworks.SystemConfiguration
-          ];
+          buildInputs = [
+            pkgs.stdenv.cc.cc.lib
+          ] ++ lib.optionals pkgs.stdenv.isDarwin (
+            with pkgs.apple-sdk_11.frameworks; [
+              pkgs.libiconv
+              Security
+              CoreFoundation
+              SystemConfiguration
+            ]
+          );
 
-          nativeBuildInputs = with pkgs; [
-            pkg-config
+          nativeBuildInputs = [
+            pkgs.pkg-config
+          ] ++ lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.apple-sdk_11
           ];
         };
 
