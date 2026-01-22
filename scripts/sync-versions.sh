@@ -30,4 +30,8 @@ rm -f "$REPO_ROOT/apps/tauri/src-tauri/tauri.conf.json.bak"
 sed -i.bak -E 's/("version": ")[^"]+(")/\1'"$VERSION"'\2/' "$REPO_ROOT/apps/web/package.json"
 rm -f "$REPO_ROOT/apps/web/package.json.bak"
 
+# Update flake.nix
+sed -i.bak -E 's/(version = ")[^"]+(")/\1'"$VERSION"'\2/' "$REPO_ROOT/flake.nix"
+rm -f "$REPO_ROOT/flake.nix.bak"
+
 echo "Version synced to $VERSION in all files"

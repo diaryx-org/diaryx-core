@@ -6,3 +6,4 @@ result
 **/dist
 **/.env
 workspaces
+.direnv

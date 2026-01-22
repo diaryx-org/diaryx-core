@@ -3,88 +3,81 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    crane.url = "github:ipetkov/crane";
-    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, crane, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          localSystem = system;
-          overlays = [ (import rust-overlay) ];
-        };
+  outputs = { self, nixpkgs, ... }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+    in
+    {
+      packages = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          inherit (pkgs) lib;
 
-        inherit (pkgs) lib;
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              (lib.fileset.fileFilter (file: file.hasExt "rs") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "toml") ./.)
+              (lib.fileset.fileFilter (file: file.name == "Cargo.lock") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "md") ./.)
+            ];
+          };
 
-        rustToolchain = pkgs.rust-bin.stable."1.91.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
-        };
+          diaryx-cli = pkgs.rustPlatform.buildRustPackage {
+            pname = "diaryx";
+            version = "0.11.0";
+            inherit src;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [ "-p" "diaryx" ];
 
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+            buildInputs = lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.apple-sdk_15
+            ];
 
-        src = lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [
-            # Include all standard Rust/Cargo files (the default)
-            (craneLib.fileset.commonCargoSources ./.)
-            # Explicitly include all Markdown files for documentation
-            (lib.fileset.fileFilter (file: file.hasExt "md") ./.)
-          ];
-        };
-
-        commonArgs = {
-          inherit src;
-          pname = "diaryx";
-          version = "0.11.0";
-          strictDeps = true;
-
-          buildInputs = [
-            pkgs.stdenv.cc.cc.lib
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.apple-sdk_15
-          ];
-
-          nativeBuildInputs = [
-            pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.apple-sdk_15
-          ];
-        };
-
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-        diaryx-cli = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-          pname = "diaryx";
-          cargoExtraArgs = "-p diaryx";
+            nativeBuildInputs = [ pkgs.pkg-config ];
+          };
+        in
+        {
+          default = diaryx-cli;
         });
 
-      in
-      {
-        packages.default = diaryx-cli;
-
-        apps.default = flake-utils.lib.mkApp {
-          drv = diaryx-cli;
-        };
-
-        devShells.default = craneLib.devShell {
-          inputsFrom = [ diaryx-cli ];
-
-          packages = with pkgs; [
-            rustToolchain
-            cargo-release
-            cargo-binstall
-            wasm-pack
-            bun
-          ];
-
-          shellHook = ''
-            echo "Welcome to the Diaryx development environment!"
-            echo "Rust: $(rustc --version)"
-            echo "Bun:  $(bun --version)"
-          '';
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/diaryx";
         };
       });
+
+      devShells = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              rustc
+              cargo
+              rust-analyzer
+              clippy
+              rustfmt
+              cargo-binstall
+              wasm-pack
+              bun
+              pkg-config
+              prek
+            ] ++ lib.optionals pkgs.stdenv.isDarwin [
+              apple-sdk_15
+            ];
+
+            shellHook = ''
+              echo "Welcome to the Diaryx development environment!"
+              echo "Rust: $(rustc --version)"
+              echo "Bun:  $(bun --version)"
+            '';
+          };
+        });
+    };
 }
