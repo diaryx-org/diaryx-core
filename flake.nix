@@ -36,9 +36,9 @@
             stdenv.cc.cc.lib
           ] ++ lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
-            pkgs.apple-sdk_11.frameworks.Security
-            pkgs.apple-sdk_11.frameworks.CoreFoundation
-            pkgs.apple-sdk_11.frameworks.SystemConfiguration
+            pkgs.apple-sdk.frameworks.Security
+            pkgs.apple-sdk.frameworks.CoreFoundation
+            pkgs.apple-sdk.frameworks.SystemConfiguration
           ];
 
           nativeBuildInputs = with pkgs; [
