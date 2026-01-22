@@ -110,11 +110,13 @@ pub(crate) fn json_to_yaml(json: serde_json::Value) -> Value {
 pub struct Diaryx<FS: AsyncFileSystem> {
     fs: FS,
     /// CRDT workspace document (optional, requires `crdt` feature).
+    /// Wrapped in Arc to allow sharing between backend and command execution.
     #[cfg(feature = "crdt")]
-    workspace_crdt: Option<WorkspaceCrdt>,
+    workspace_crdt: Option<Arc<WorkspaceCrdt>>,
     /// CRDT body document manager (optional, requires `crdt` feature).
+    /// Wrapped in Arc to allow sharing between backend and command execution.
     #[cfg(feature = "crdt")]
-    body_doc_manager: Option<BodyDocManager>,
+    body_doc_manager: Option<Arc<BodyDocManager>>,
 }
 
 impl<FS: AsyncFileSystem> Diaryx<FS> {
@@ -136,8 +138,8 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     pub fn with_crdt(fs: FS, storage: Arc<dyn CrdtStorage>) -> Self {
         Self {
             fs,
-            workspace_crdt: Some(WorkspaceCrdt::new(Arc::clone(&storage))),
-            body_doc_manager: Some(BodyDocManager::new(storage)),
+            workspace_crdt: Some(Arc::new(WorkspaceCrdt::new(Arc::clone(&storage)))),
+            body_doc_manager: Some(Arc::new(BodyDocManager::new(storage))),
         }
     }
 
@@ -147,12 +149,32 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     /// If no existing state is found, creates a new empty workspace CRDT.
     #[cfg(feature = "crdt")]
     pub fn with_crdt_load(fs: FS, storage: Arc<dyn CrdtStorage>) -> Result<Self> {
-        let workspace_crdt = WorkspaceCrdt::load(Arc::clone(&storage))?;
+        let workspace_crdt = Arc::new(WorkspaceCrdt::load(Arc::clone(&storage))?);
+        let body_doc_manager = Arc::new(BodyDocManager::new(storage));
         Ok(Self {
             fs,
             workspace_crdt: Some(workspace_crdt),
-            body_doc_manager: Some(BodyDocManager::new(storage)),
+            body_doc_manager: Some(body_doc_manager),
         })
+    }
+
+    /// Create a Diaryx instance with pre-configured CRDT instances.
+    ///
+    /// Use this when you need to share CRDT instances that have event
+    /// callbacks configured (e.g., in WASM backend). This ensures that
+    /// all operations use the same CRDT instances with their callbacks,
+    /// allowing remote updates to trigger UI notifications.
+    #[cfg(feature = "crdt")]
+    pub fn with_crdt_instances(
+        fs: FS,
+        workspace_crdt: Arc<WorkspaceCrdt>,
+        body_doc_manager: Arc<BodyDocManager>,
+    ) -> Self {
+        Self {
+            fs,
+            workspace_crdt: Some(workspace_crdt),
+            body_doc_manager: Some(body_doc_manager),
+        }
     }
 
     /// Get a reference to the underlying filesystem.
@@ -618,8 +640,8 @@ impl<'a, FS: AsyncFileSystem + Clone> ValidateOps<'a, FS> {
 #[cfg(feature = "crdt")]
 pub struct CrdtOps<'a, FS: AsyncFileSystem> {
     _diaryx: &'a Diaryx<FS>,
-    crdt: &'a WorkspaceCrdt,
-    body_docs: &'a BodyDocManager,
+    crdt: &'a Arc<WorkspaceCrdt>,
+    body_docs: &'a Arc<BodyDocManager>,
 }
 
 #[cfg(feature = "crdt")]
@@ -784,12 +806,21 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
 
     // ==================== Sync Protocol Operations ====================
 
+    /// Check if a doc name refers to the workspace CRDT.
+    ///
+    /// Workspace doc names can be either "workspace" (local-only mode)
+    /// or "{workspace_id}:workspace" (authenticated mode with server sync).
+    fn is_workspace_doc(doc_name: &str) -> bool {
+        doc_name == "workspace" || doc_name.ends_with(":workspace")
+    }
+
     /// Create a SyncStep1 message for workspace or body document.
     ///
-    /// Use doc_name="workspace" for the workspace CRDT, or a file path for body docs.
+    /// Use doc_name="workspace" or "{id}:workspace" for the workspace CRDT,
+    /// or a file path for body docs.
     pub fn create_sync_step1(&self, doc_name: &str) -> Vec<u8> {
         log::debug!("[Y-sync] create_sync_step1 for doc: {}", doc_name);
-        if doc_name == "workspace" {
+        if Self::is_workspace_doc(doc_name) {
             let sv = self.crdt.encode_state_vector();
             log::debug!("[Y-sync] Workspace state_vector {} bytes", sv.len());
             crate::crdt::SyncMessage::SyncStep1(sv).encode()
@@ -824,7 +855,7 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         let mut response: Option<Vec<u8>> = None;
 
         for sync_msg in messages {
-            let msg_response = if doc_name == "workspace" {
+            let msg_response = if Self::is_workspace_doc(doc_name) {
                 self.handle_workspace_sync_message(sync_msg)?
             } else {
                 self.handle_body_sync_message(doc_name, sync_msg)?

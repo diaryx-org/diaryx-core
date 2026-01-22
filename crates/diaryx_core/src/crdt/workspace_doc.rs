@@ -23,6 +23,8 @@
 //! [`encode_state_as_update`] for the sync handshake, and [`apply_update`]
 //! to integrate remote changes.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use yrs::updates::decoder::Decode;
@@ -32,6 +34,7 @@ use yrs::{Doc, Map, MapRef, Observable, ReadTxn, StateVector, Transact, Update};
 use super::storage::{CrdtStorage, StorageResult};
 use super::types::{CrdtUpdate, FileMetadata, UpdateOrigin};
 use crate::error::DiaryxError;
+use crate::fs::FileSystemEvent;
 
 /// The name of the Y.Map containing file metadata.
 const FILES_MAP_NAME: &str = "files";
@@ -55,6 +58,10 @@ pub struct WorkspaceCrdt {
 
     /// Document name for storage operations
     doc_name: String,
+
+    /// Optional callback for emitting filesystem events on remote/sync updates.
+    /// This enables unified event handling for both local and remote changes.
+    event_callback: Option<Arc<dyn Fn(&FileSystemEvent) + Send + Sync>>,
 }
 
 impl WorkspaceCrdt {
@@ -73,6 +80,7 @@ impl WorkspaceCrdt {
             files_map,
             storage,
             doc_name,
+            event_callback: None,
         }
     }
 
@@ -120,7 +128,33 @@ impl WorkspaceCrdt {
             files_map,
             storage,
             doc_name,
+            event_callback: None,
         })
+    }
+
+    /// Set the event callback for emitting filesystem events on remote/sync updates.
+    ///
+    /// When set, this callback will be invoked with `FileSystemEvent`s whenever
+    /// `apply_update()` is called with a non-Local origin. This enables unified
+    /// event handling where the UI responds the same way to both local and remote changes.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut crdt = WorkspaceCrdt::load(storage)?;
+    /// crdt.set_event_callback(Arc::new(|event| {
+    ///     println!("Remote change: {:?}", event);
+    /// }));
+    /// ```
+    pub fn set_event_callback(&mut self, callback: Arc<dyn Fn(&FileSystemEvent) + Send + Sync>) {
+        self.event_callback = Some(callback);
+    }
+
+    /// Emit a filesystem event to the registered callback, if any.
+    fn emit_event(&self, event: FileSystemEvent) {
+        if let Some(ref cb) = self.event_callback {
+            cb(&event);
+        }
     }
 
     /// Get the underlying yrs document.
@@ -304,7 +338,23 @@ impl WorkspaceCrdt {
     /// Apply an update from a remote peer.
     ///
     /// Returns the update ID if the update was persisted to storage.
+    ///
+    /// For non-Local origins (Remote, Sync), this method will detect what changed
+    /// and emit corresponding `FileSystemEvent`s via the event callback. This enables
+    /// unified event handling where the UI responds the same way to both local and
+    /// remote changes.
     pub fn apply_update(&self, update: &[u8], origin: UpdateOrigin) -> StorageResult<Option<i64>> {
+        // Only emit events for remote/sync updates (Local updates emit via CrdtFs)
+        let should_emit = origin != UpdateOrigin::Local && self.event_callback.is_some();
+
+        // Capture state before the update (only if we need to emit events)
+        let files_before: HashMap<String, FileMetadata> = if should_emit {
+            self.list_files().into_iter().collect()
+        } else {
+            HashMap::new()
+        };
+
+        // Decode and apply the update
         let decoded = Update::decode_v1(update)
             .map_err(|e| DiaryxError::Unsupported(format!("Failed to decode update: {}", e)))?;
 
@@ -314,9 +364,73 @@ impl WorkspaceCrdt {
                 .map_err(|e| DiaryxError::Unsupported(format!("Failed to apply update: {}", e)))?;
         }
 
+        // Diff and emit events for changes
+        if should_emit {
+            let files_after: HashMap<String, FileMetadata> =
+                self.list_files().into_iter().collect();
+            self.emit_diff_events(&files_before, &files_after);
+        }
+
         // Persist the update to storage
         let update_id = self.storage.append_update(&self.doc_name, update, origin)?;
         Ok(Some(update_id))
+    }
+
+    /// Emit filesystem events for changes between two states.
+    ///
+    /// This compares the before and after states and emits appropriate events:
+    /// - `FileCreated` for new, non-deleted files
+    /// - `FileDeleted` for files that were deleted (or newly marked as deleted)
+    /// - `MetadataChanged` for files whose metadata changed
+    fn emit_diff_events(
+        &self,
+        before: &HashMap<String, FileMetadata>,
+        after: &HashMap<String, FileMetadata>,
+    ) {
+        // Detect created files (in after but not in before, and not deleted)
+        for (path, metadata) in after {
+            if !before.contains_key(path) && !metadata.deleted {
+                self.emit_event(FileSystemEvent::file_created_with_metadata(
+                    PathBuf::from(path),
+                    Some(self.metadata_to_frontmatter(metadata)),
+                    metadata.part_of.as_ref().map(PathBuf::from),
+                ));
+            }
+        }
+
+        // Detect deleted files (was not deleted before, is deleted now or removed)
+        for (path, old_meta) in before {
+            let is_deleted = after.get(path).map(|m| m.deleted).unwrap_or(true);
+            if !old_meta.deleted && is_deleted {
+                self.emit_event(FileSystemEvent::file_deleted_with_parent(
+                    PathBuf::from(path),
+                    old_meta.part_of.as_ref().map(PathBuf::from),
+                ));
+            }
+        }
+
+        // Detect metadata changes (file exists in both, metadata differs, not deleted)
+        for (path, new_meta) in after {
+            if let Some(old_meta) = before.get(path) {
+                if old_meta != new_meta && !new_meta.deleted && !old_meta.deleted {
+                    self.emit_event(FileSystemEvent::metadata_changed(
+                        PathBuf::from(path),
+                        self.metadata_to_frontmatter(new_meta),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Convert FileMetadata to a serde_json::Value for event frontmatter.
+    fn metadata_to_frontmatter(&self, metadata: &FileMetadata) -> serde_json::Value {
+        // Serialize the metadata to JSON, handling any errors gracefully
+        serde_json::to_value(metadata).unwrap_or_else(|_| {
+            // Fallback: create a minimal object with just the title
+            serde_json::json!({
+                "title": metadata.title
+            })
+        })
     }
 
     // ==================== Persistence ====================

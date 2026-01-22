@@ -102,4 +102,15 @@ impl FileSystem for RealFileSystem {
     fn write_binary(&self, path: &Path, content: &[u8]) -> Result<()> {
         fs::write(path, content)
     }
+
+    fn get_modified_time(&self, path: &Path) -> Option<i64> {
+        fs::metadata(path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as i64)
+            })
+    }
 }

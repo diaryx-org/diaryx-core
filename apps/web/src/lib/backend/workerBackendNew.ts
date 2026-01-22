@@ -13,6 +13,8 @@ import type {
   Command,
   Response,
   Config,
+  FileSystemEvent,
+  FileSystemEventCallback,
 } from './interface';
 import { BackendEventEmitter } from './eventEmitter';
 import type { WorkerApi } from './wasmWorkerNew';
@@ -23,6 +25,10 @@ export class WorkerBackendNew implements Backend {
   private remote: Comlink.Remote<WorkerApi> | null = null;
   private eventEmitter = new BackendEventEmitter();
   private _ready = false;
+
+  // Filesystem event subscription management
+  private fsEventCallbacks = new Map<number, FileSystemEventCallback>();
+  private nextFsEventId = 1;
 
   /**
    * Initialize the backend.
@@ -44,7 +50,28 @@ export class WorkerBackendNew implements Backend {
 
     // Listen for events from worker
     port1.onmessage = (event) => {
-      this.eventEmitter.emit(event.data);
+      const message = event.data;
+
+      // Handle filesystem events from worker
+      if (message?.type === 'FileSystemEvent' && message.data) {
+        try {
+          const fsEvent = JSON.parse(message.data) as FileSystemEvent;
+          // Dispatch to all subscribers
+          for (const callback of this.fsEventCallbacks.values()) {
+            try {
+              callback(fsEvent);
+            } catch (e) {
+              console.error('[WorkerBackendNew] Error in filesystem event callback:', e);
+            }
+          }
+        } catch (e) {
+          console.error('[WorkerBackendNew] Failed to parse filesystem event:', e);
+        }
+        return;
+      }
+
+      // Handle other events via eventEmitter
+      this.eventEmitter.emit(message);
     };
     port1.start();
 
@@ -128,6 +155,48 @@ export class WorkerBackendNew implements Backend {
 
   off(event: BackendEventType, listener: BackendEventListener): void {
     this.eventEmitter.off(event, listener);
+  }
+
+  // =========================================================================
+  // Filesystem Event Subscription
+  // =========================================================================
+
+  /**
+   * Subscribe to filesystem events from the Rust backend.
+   * Events are forwarded from the worker thread.
+   */
+  onFileSystemEvent(callback: FileSystemEventCallback): number {
+    const id = this.nextFsEventId++;
+    this.fsEventCallbacks.set(id, callback);
+    return id;
+  }
+
+  /**
+   * Unsubscribe from filesystem events.
+   */
+  offFileSystemEvent(id: number): boolean {
+    return this.fsEventCallbacks.delete(id);
+  }
+
+  /**
+   * Emit a filesystem event (for testing).
+   * Note: This only dispatches locally, doesn't go to the worker.
+   */
+  emitFileSystemEvent(event: FileSystemEvent): void {
+    for (const callback of this.fsEventCallbacks.values()) {
+      try {
+        callback(event);
+      } catch (e) {
+        console.error('[WorkerBackendNew] Error in filesystem event callback:', e);
+      }
+    }
+  }
+
+  /**
+   * Get the number of active filesystem event subscriptions.
+   */
+  eventSubscriberCount(): number {
+    return this.fsEventCallbacks.size;
   }
 
   // =========================================================================

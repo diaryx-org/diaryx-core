@@ -248,6 +248,23 @@ export type BackendEvent =
 
 export type BackendEventListener = (event: BackendEvent) => void;
 
+/**
+ * FileSystemEvent from the Rust backend.
+ * These events are emitted by the decorated filesystem layer.
+ */
+export type FileSystemEvent =
+  | { type: 'FileCreated'; path: string; frontmatter?: unknown; parent_path?: string }
+  | { type: 'FileDeleted'; path: string; parent_path?: string }
+  | { type: 'FileRenamed'; old_path: string; new_path: string }
+  | { type: 'FileMoved'; path: string; old_parent?: string; new_parent?: string }
+  | { type: 'MetadataChanged'; path: string; frontmatter: unknown }
+  | { type: 'ContentsChanged'; path: string; body: string };
+
+/**
+ * Callback type for filesystem event subscriptions.
+ */
+export type FileSystemEventCallback = (event: FileSystemEvent) => void;
+
 
 // ============================================================================
 // Backend Interface
@@ -390,6 +407,55 @@ export interface Backend {
     workspacePath?: string,
     onProgress?: (bytesUploaded: number, totalBytes: number) => void,
   ): Promise<ImportResult>;
+
+  // --------------------------------------------------------------------------
+  // Filesystem Event Subscription (from Rust decorator layer)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Subscribe to filesystem events from the Rust decorator layer.
+   *
+   * The callback receives FileSystemEvent objects when filesystem operations
+   * occur (create, delete, rename, move, metadata changes, etc.).
+   *
+   * @param callback Function called with each filesystem event
+   * @returns Subscription ID that can be used to unsubscribe
+   *
+   * @example
+   * ```ts
+   * const id = backend.onFileSystemEvent((event) => {
+   *   if (event.type === 'FileCreated') {
+   *     console.log('New file:', event.path);
+   *   }
+   * });
+   *
+   * // Later, to unsubscribe:
+   * backend.offFileSystemEvent(id);
+   * ```
+   */
+  onFileSystemEvent?(callback: FileSystemEventCallback): number;
+
+  /**
+   * Unsubscribe from filesystem events.
+   *
+   * @param id The subscription ID returned by onFileSystemEvent
+   * @returns true if the subscription was found and removed
+   */
+  offFileSystemEvent?(id: number): boolean;
+
+  /**
+   * Manually emit a filesystem event.
+   *
+   * Primarily used for testing or manual sync scenarios.
+   *
+   * @param event The event to emit
+   */
+  emitFileSystemEvent?(event: FileSystemEvent): void;
+
+  /**
+   * Get the number of active event subscriptions.
+   */
+  eventSubscriberCount?(): number;
 }
 
 // ============================================================================

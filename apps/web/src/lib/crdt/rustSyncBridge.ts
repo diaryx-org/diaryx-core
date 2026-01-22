@@ -50,6 +50,14 @@ export class RustSyncBridge {
   private reconnectAttempts = 0;
   private synced = false;
 
+  /**
+   * Track sync completion more accurately.
+   * We use a debounce to ensure all messages in the initial burst are processed
+   * before calling onSynced. This prevents marking as synced prematurely
+   * when the server sends multiple messages during handshake.
+   */
+  private syncedDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
+
   /** Last state vector we sent, used to detect local changes */
   private lastSentStateVector: Uint8Array | null = null;
 
@@ -182,13 +190,29 @@ export class RustSyncBridge {
       }
     }
 
-    // Mark as synced after first successful message exchange
+    // Track that we've received at least one message (likely SyncStep2/Update)
+    // We use a debounce to ensure all messages in the initial burst are processed
+    // before calling onSynced. This handles cases where server sends multiple messages
+    // during the Y-sync handshake.
     if (!this.synced) {
-      this.synced = true;
-      this.onSynced?.();
+      // Clear any existing debounce timer
+      if (this.syncedDebounceTimeout) {
+        clearTimeout(this.syncedDebounceTimeout);
+      }
+
+      // Set a short debounce - if no more messages arrive within 100ms,
+      // we consider the initial sync complete
+      this.syncedDebounceTimeout = setTimeout(() => {
+        if (!this.synced) {
+          console.log('[RustSyncBridge] Initial sync complete (debounced)');
+          this.synced = true;
+          this.onSynced?.();
+        }
+        this.syncedDebounceTimeout = null;
+      }, 100);
     }
 
-    // Notify caller of remote update
+    // Notify caller of remote update (for UI refresh)
     this.onRemoteUpdate?.();
 
     // Update our state vector tracking
@@ -244,6 +268,11 @@ export class RustSyncBridge {
    */
   disconnect(): void {
     this.cancelReconnect();
+    // Clear sync debounce timer
+    if (this.syncedDebounceTimeout) {
+      clearTimeout(this.syncedDebounceTimeout);
+      this.syncedDebounceTimeout = null;
+    }
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.close();

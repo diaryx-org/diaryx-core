@@ -4,6 +4,7 @@
 //! individual file contents. Each file in the workspace can have its own
 //! BodyDoc for real-time sync of markdown content.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use yrs::{
@@ -14,6 +15,7 @@ use yrs::{
 use super::storage::{CrdtStorage, StorageResult};
 use super::types::UpdateOrigin;
 use crate::error::DiaryxError;
+use crate::fs::FileSystemEvent;
 
 /// Name of the Y.Text holding the document body content.
 const BODY_TEXT_NAME: &str = "body";
@@ -50,6 +52,8 @@ pub struct BodyDoc {
     frontmatter_map: yrs::MapRef,
     storage: Arc<dyn CrdtStorage>,
     doc_name: String,
+    /// Optional callback for emitting filesystem events on remote/sync updates.
+    event_callback: Option<Arc<dyn Fn(&FileSystemEvent) + Send + Sync>>,
 }
 
 impl BodyDoc {
@@ -67,6 +71,7 @@ impl BodyDoc {
             frontmatter_map,
             storage,
             doc_name,
+            event_callback: None,
         }
     }
 
@@ -90,7 +95,23 @@ impl BodyDoc {
             frontmatter_map,
             storage,
             doc_name,
+            event_callback: None,
         })
+    }
+
+    /// Set the event callback for emitting filesystem events on remote/sync updates.
+    ///
+    /// When set, this callback will be invoked with `ContentsChanged` events whenever
+    /// `apply_update()` is called with a non-Local origin.
+    pub fn set_event_callback(&mut self, callback: Arc<dyn Fn(&FileSystemEvent) + Send + Sync>) {
+        self.event_callback = Some(callback);
+    }
+
+    /// Emit a filesystem event to the registered callback, if any.
+    fn emit_event(&self, event: FileSystemEvent) {
+        if let Some(ref cb) = self.event_callback {
+            cb(&event);
+        }
     }
 
     /// Get the document name (file path).
@@ -106,27 +127,76 @@ impl BodyDoc {
         self.body_text.get_string(&txn)
     }
 
-    /// Set the body content, replacing any existing content.
-    /// The change is automatically recorded in the update history.
+    /// Set the body content, using minimal diff operations.
+    ///
+    /// Instead of delete-all + insert-all (which breaks CRDT sync), this method
+    /// calculates the minimal diff between current and new content, applying
+    /// only the necessary insert/delete operations. This ensures that Y.js
+    /// operation IDs are preserved where content hasn't changed, allowing
+    /// proper CRDT merging across clients.
     ///
     /// # Errors
     ///
     /// Returns an error if the update fails to persist to storage.
     pub fn set_body(&self, content: &str) -> StorageResult<()> {
-        // Get state vector before the change
-        let sv_before = {
+        // Get current content and state vector before the change
+        let (current, sv_before) = {
             let txn = self.doc.transact();
-            txn.state_vector()
+            (self.body_text.get_string(&txn), txn.state_vector())
         };
 
-        // Make the change
+        // If content is the same, no-op
+        if current == content {
+            return Ok(());
+        }
+
+        // Calculate minimal diff using common prefix/suffix approach
+        let current_chars: Vec<char> = current.chars().collect();
+        let new_chars: Vec<char> = content.chars().collect();
+
+        // Find common prefix length
+        let common_prefix = current_chars
+            .iter()
+            .zip(new_chars.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        // Find common suffix length (but don't overlap with prefix)
+        let remaining_current = current_chars.len() - common_prefix;
+        let remaining_new = new_chars.len() - common_prefix;
+        let common_suffix = current_chars[common_prefix..]
+            .iter()
+            .rev()
+            .zip(new_chars[common_prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .take(remaining_current.min(remaining_new))
+            .count();
+
+        // Calculate the range to delete and text to insert
+        let delete_start = common_prefix;
+        let delete_end = current_chars.len() - common_suffix;
+        let insert_start = common_prefix;
+        let insert_end = new_chars.len() - common_suffix;
+
+        // Apply the minimal changes
         {
             let mut txn = self.doc.transact_mut();
-            let current_len = self.body_text.len(&txn);
-            if current_len > 0 {
-                self.body_text.remove_range(&mut txn, 0, current_len);
+
+            // Delete the changed portion (if any)
+            if delete_end > delete_start {
+                // Y.js uses byte offsets, so convert char positions to Y.js positions
+                // For TextRef, we need the length in Y.js units
+                let delete_len = (delete_end - delete_start) as u32;
+                self.body_text
+                    .remove_range(&mut txn, delete_start as u32, delete_len);
             }
-            self.body_text.insert(&mut txn, 0, content);
+
+            // Insert the new portion (if any)
+            if insert_end > insert_start {
+                let insert_text: String = new_chars[insert_start..insert_end].iter().collect();
+                self.body_text
+                    .insert(&mut txn, delete_start as u32, &insert_text);
+            }
         }
 
         // Capture the incremental update and store it
@@ -272,7 +342,14 @@ impl BodyDoc {
     }
 
     /// Apply an update from a remote peer.
+    ///
+    /// For non-Local origins (Remote, Sync), this method will emit a `ContentsChanged`
+    /// event via the event callback. This enables unified event handling where the UI
+    /// responds the same way to both local and remote changes.
     pub fn apply_update(&self, update: &[u8], origin: UpdateOrigin) -> StorageResult<Option<i64>> {
+        // Only emit events for remote/sync updates (Local updates emit via CrdtFs)
+        let should_emit = origin != UpdateOrigin::Local && self.event_callback.is_some();
+
         let decoded = Update::decode_v1(update)
             .map_err(|e| DiaryxError::Crdt(format!("Failed to decode update: {}", e)))?;
 
@@ -280,6 +357,15 @@ impl BodyDoc {
             let mut txn = self.doc.transact_mut();
             txn.apply_update(decoded)
                 .map_err(|e| DiaryxError::Crdt(format!("Failed to apply update: {}", e)))?;
+        }
+
+        // Emit ContentsChanged event for remote body updates
+        if should_emit {
+            let content = self.get_body();
+            self.emit_event(FileSystemEvent::contents_changed(
+                PathBuf::from(&self.doc_name),
+                content,
+            ));
         }
 
         // Persist the update

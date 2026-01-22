@@ -162,6 +162,14 @@ pub trait AsyncFileSystem: Send + Sync {
             Ok(all_entries)
         })
     }
+
+    /// Get file modification time as milliseconds since Unix epoch.
+    ///
+    /// Returns `None` if the file doesn't exist or the modification time
+    /// cannot be determined (e.g., in WASM environments without real filesystem).
+    fn get_modified_time<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(async move { None })
+    }
 }
 
 /// Async abstraction over filesystem operations (WASM version).
@@ -277,6 +285,14 @@ pub trait AsyncFileSystem {
             Ok(all_entries)
         })
     }
+
+    /// Get file modification time as milliseconds since Unix epoch.
+    ///
+    /// Returns `None` if the file doesn't exist or the modification time
+    /// cannot be determined (e.g., in WASM environments without real filesystem).
+    fn get_modified_time<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(async move { None })
+    }
 }
 
 // ============================================================================
@@ -375,6 +391,10 @@ impl<F: FileSystem + Send + Sync> AsyncFileSystem for SyncToAsyncFs<F> {
     fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move { self.inner.list_files(dir) })
     }
+
+    fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(async move { self.inner.get_modified_time(path) })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -425,6 +445,10 @@ impl<F: FileSystem> AsyncFileSystem for SyncToAsyncFs<F> {
 
     fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         Box::pin(async move { self.inner.list_files(dir) })
+    }
+
+    fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        Box::pin(async move { self.inner.get_modified_time(path) })
     }
 }
 
@@ -478,6 +502,10 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
     fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         (*self).list_files(dir)
     }
+
+    fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        (*self).get_modified_time(path)
+    }
 }
 
 // Blanket implementation for references to AsyncFileSystem (WASM)
@@ -529,6 +557,10 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
 
     fn list_files<'a>(&'a self, dir: &'a Path) -> BoxFuture<'a, Result<Vec<PathBuf>>> {
         (*self).list_files(dir)
+    }
+
+    fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
+        (*self).get_modified_time(path)
     }
 }
 

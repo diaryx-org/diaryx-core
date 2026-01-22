@@ -1332,6 +1332,12 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let mut stack: Vec<(&crate::workspace::TreeNode, Option<String>)> =
                     vec![(&tree, None)];
 
+                // Get CRDT for reconciliation checks
+                let crdt = self.crdt().unwrap(); // Safe - checked above
+
+                // Track files updated from disk (file was newer than CRDT)
+                let mut files_updated_from_disk: Vec<String> = Vec::new();
+
                 while let Some((node, parent_path)) = stack.pop() {
                     let path_str = node.path.to_string_lossy().to_string();
 
@@ -1346,7 +1352,31 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         }
                     }
 
-                    // Read file content
+                    // Get file modification time from filesystem
+                    let file_mtime = self.fs().get_modified_time(&node.path).await;
+
+                    // Get existing CRDT entry for reconciliation
+                    let existing_crdt_entry = crdt.get_file(&path_str);
+
+                    // Reconciliation logic: compare file mtime vs CRDT modified_at
+                    // If CRDT has newer or equal timestamp, skip updating from file
+                    if let (Some(crdt_entry), Some(fmtime)) = (&existing_crdt_entry, file_mtime) {
+                        if crdt_entry.modified_at >= fmtime && !crdt_entry.deleted {
+                            log::debug!(
+                                "[InitializeWorkspaceCrdt] Keeping CRDT version for {} (CRDT: {}, file: {})",
+                                path_str,
+                                crdt_entry.modified_at,
+                                fmtime
+                            );
+                            // Add children to stack to continue tree traversal
+                            for child in node.children.iter().rev() {
+                                stack.push((child, Some(path_str.clone())));
+                            }
+                            continue;
+                        }
+                    }
+
+                    // File is newer or no CRDT entry exists - read and update
                     let content = match self.entry().read_raw(&path_str).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -1371,6 +1401,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                             continue;
                         }
                     };
+
+                    // Track if this was an update from disk (existing CRDT entry with older timestamp)
+                    if existing_crdt_entry.is_some() {
+                        files_updated_from_disk.push(path_str.clone());
+                        log::info!(
+                            "[InitializeWorkspaceCrdt] Updating {} from disk (file is newer)",
+                            path_str
+                        );
+                    }
 
                     // Build FileMetadata
                     let title = parsed
@@ -1453,6 +1492,10 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         extra.insert("_body".to_string(), serde_json::Value::String(parsed.body));
                     }
 
+                    // Use file mtime if available, otherwise current time
+                    let modified_at =
+                        file_mtime.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
                     let metadata = crate::crdt::FileMetadata {
                         title,
                         part_of: parent_path.clone(),
@@ -1462,7 +1505,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         audience: file_audience,
                         description,
                         extra,
-                        modified_at: chrono::Utc::now().timestamp_millis(),
+                        modified_at,
                     };
 
                     files_to_add.push((path_str.clone(), metadata));
@@ -1473,9 +1516,9 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     }
                 }
 
-                // Now populate CRDT using the CrdtOps wrapper
-                let crdt = self.crdt().unwrap(); // Safe - checked above
+                // Now populate CRDT
                 let file_count = files_to_add.len();
+                let updated_count = files_updated_from_disk.len();
 
                 for (path, metadata) in files_to_add {
                     if let Err(e) = crdt.set_file(&path, metadata) {
@@ -1490,7 +1533,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 // Save CRDT state
                 crdt.save()?;
 
-                let msg = if audience.is_some() {
+                let msg = if updated_count > 0 {
+                    if audience.is_some() {
+                        format!(
+                            "{} files populated, {} updated from disk (audience filtered)",
+                            file_count, updated_count
+                        )
+                    } else {
+                        format!(
+                            "{} files populated, {} updated from disk",
+                            file_count, updated_count
+                        )
+                    }
+                } else if audience.is_some() {
                     format!("{} files populated (audience filtered)", file_count)
                 } else {
                     format!("{} files populated", file_count)

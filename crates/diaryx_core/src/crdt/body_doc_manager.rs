@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 use super::body_doc::BodyDoc;
 use super::storage::{CrdtStorage, StorageResult};
 use super::types::UpdateOrigin;
+use crate::fs::FileSystemEvent;
 
 /// Manager for multiple body document CRDTs.
 ///
@@ -38,6 +39,9 @@ use super::types::UpdateOrigin;
 pub struct BodyDocManager {
     storage: Arc<dyn CrdtStorage>,
     docs: RwLock<HashMap<String, Arc<BodyDoc>>>,
+    /// Optional callback for emitting filesystem events on remote/sync updates.
+    /// This callback is propagated to each BodyDoc when created.
+    event_callback: RwLock<Option<Arc<dyn Fn(&FileSystemEvent) + Send + Sync>>>,
 }
 
 impl BodyDocManager {
@@ -46,6 +50,24 @@ impl BodyDocManager {
         Self {
             storage,
             docs: RwLock::new(HashMap::new()),
+            event_callback: RwLock::new(None),
+        }
+    }
+
+    /// Set the event callback for emitting filesystem events on remote/sync updates.
+    ///
+    /// This callback will be propagated to each BodyDoc when it's created or loaded.
+    /// Existing loaded documents will NOT receive the callback - only newly loaded ones.
+    pub fn set_event_callback(&self, callback: Arc<dyn Fn(&FileSystemEvent) + Send + Sync>) {
+        let mut cb = self.event_callback.write().unwrap();
+        *cb = Some(callback);
+    }
+
+    /// Apply the event callback to a BodyDoc if one is set.
+    fn apply_event_callback(&self, doc: &mut BodyDoc) {
+        let cb = self.event_callback.read().unwrap();
+        if let Some(ref callback) = *cb {
+            doc.set_event_callback(Arc::clone(callback));
         }
     }
 
@@ -75,7 +97,9 @@ impl BodyDocManager {
 
                 // Document exists, load it
                 match BodyDoc::load(Arc::clone(&self.storage), doc_name.to_string()) {
-                    Ok(doc) => {
+                    Ok(mut doc) => {
+                        // Apply event callback if set
+                        self.apply_event_callback(&mut doc);
                         let doc = Arc::new(doc);
                         docs.insert(doc_name.to_string(), Arc::clone(&doc));
                         Some(doc)
@@ -107,24 +131,27 @@ impl BodyDocManager {
         }
 
         // Try to load, or create new
-        let doc = match BodyDoc::load(Arc::clone(&self.storage), doc_name.to_string()) {
-            Ok(doc) => Arc::new(doc),
-            Err(_) => Arc::new(BodyDoc::new(
-                Arc::clone(&self.storage),
-                doc_name.to_string(),
-            )),
+        let mut doc = match BodyDoc::load(Arc::clone(&self.storage), doc_name.to_string()) {
+            Ok(doc) => doc,
+            Err(_) => BodyDoc::new(Arc::clone(&self.storage), doc_name.to_string()),
         };
 
+        // Apply event callback if set
+        self.apply_event_callback(&mut doc);
+
+        let doc = Arc::new(doc);
         docs.insert(doc_name.to_string(), Arc::clone(&doc));
         doc
     }
 
     /// Create a new document, replacing any existing one.
     pub fn create(&self, doc_name: &str) -> Arc<BodyDoc> {
-        let doc = Arc::new(BodyDoc::new(
-            Arc::clone(&self.storage),
-            doc_name.to_string(),
-        ));
+        let mut doc = BodyDoc::new(Arc::clone(&self.storage), doc_name.to_string());
+
+        // Apply event callback if set
+        self.apply_event_callback(&mut doc);
+
+        let doc = Arc::new(doc);
 
         let mut docs = self.docs.write().unwrap();
         docs.insert(doc_name.to_string(), Arc::clone(&doc));

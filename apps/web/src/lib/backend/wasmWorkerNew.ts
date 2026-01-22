@@ -19,6 +19,12 @@ let backend: any | null = null;
 // Discovered workspace root path (set after init)
 let rootPath: string | null = null;
 
+// Event port for forwarding filesystem events to main thread
+let eventPort: MessagePort | null = null;
+
+// Subscription ID for filesystem events (to clean up on shutdown)
+let fsEventSubscriptionId: number | null = null;
+
 // Clear cached root path (call after rename operations)
 function clearRootPathCache() {
   rootPath = null;
@@ -66,7 +72,10 @@ async function executeAndExtract<T>(
 /**
  * Initialize the backend and set up event forwarding.
  */
-async function init(_port: MessagePort, storageType: StorageType, directoryHandle?: FileSystemDirectoryHandle): Promise<void> {
+async function init(port: MessagePort, storageType: StorageType, directoryHandle?: FileSystemDirectoryHandle): Promise<void> {
+  // Store event port for forwarding filesystem events
+  eventPort = port;
+
   // Initialize CRDT storage bridge BEFORE importing WASM
   // This sets up the global bridge that Rust will use for persistent CRDT storage
   // Skip for memory storage (guest mode) since CRDT doesn't need persistence there
@@ -99,6 +108,17 @@ async function init(_port: MessagePort, storageType: StorageType, directoryHandl
     backend = (wasm.DiaryxBackend as any).createInMemory();
   } else {
     backend = await wasm.DiaryxBackend.createIndexedDb();
+  }
+
+  // Subscribe to filesystem events and forward them to the main thread
+  if (backend.onFileSystemEvent && eventPort) {
+    fsEventSubscriptionId = backend.onFileSystemEvent((eventJson: string) => {
+      // Forward the event JSON to the main thread via MessagePort
+      eventPort!.postMessage({ type: 'FileSystemEvent', data: eventJson });
+    });
+    console.log('[WasmWorker] Subscribed to filesystem events, id:', fsEventSubscriptionId);
+  } else {
+    console.log('[WasmWorker] Filesystem events not available on this backend');
   }
 
   console.log('[WasmWorker] DiaryxBackend initialized with storage:', storageType);

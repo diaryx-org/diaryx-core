@@ -50,13 +50,6 @@ export class BodySyncBridge {
   private reconnectAttempts = 0;
   private synced = false;
 
-  /**
-   * Suppress body change notifications during initial sync.
-   * This prevents the server's state from overwriting local content during connection.
-   * Set to false after the first explicit sendBodyUpdate call.
-   */
-  private suppressBodyChange = true;
-
   constructor(options: BodySyncBridgeOptions) {
     this.serverUrl = options.serverUrl;
     this.workspaceId = options.workspaceId;
@@ -123,8 +116,6 @@ export class BodySyncBridge {
       console.log(`[BodySyncBridge] Disconnected from file: ${this.filePath}`);
       this.onStatusChange?.(false);
       this.synced = false;
-      // Re-enable suppression on disconnect so reconnect doesn't immediately write to disk
-      this.suppressBodyChange = true;
 
       if (!this.destroyed) {
         this.scheduleReconnect();
@@ -209,7 +200,7 @@ export class BodySyncBridge {
 
     for (const msg of messages) {
       if (msg.type === 'SyncStep1') {
-        // Server is asking for our diff
+        // Server is asking for our diff based on its state vector
         const diff = await this.rustApi.getBodyMissingUpdates(this.filePath, msg.payload);
         if (diff.length > 0) {
           // Send SyncStep2 with our diff
@@ -224,38 +215,23 @@ export class BodySyncBridge {
         if (msg.payload.length > 0) {
           // Get content BEFORE applying update
           const contentBefore = await this.rustApi.getBodyContent(this.filePath);
+          console.log(`[BodySyncBridge] Before applying ${msg.type} for ${this.filePath}: "${contentBefore.slice(0, 50)}..." (${contentBefore.length} chars)`);
 
           // Apply the remote update to the CRDT
           await this.rustApi.applyBodyUpdate(this.filePath, msg.payload);
 
           // Get content AFTER applying update
           const contentAfter = await this.rustApi.getBodyContent(this.filePath);
+          console.log(`[BodySyncBridge] After applying ${msg.type} for ${this.filePath}: "${contentAfter.slice(0, 50)}..." (${contentAfter.length} chars)`);
 
           // Check if content actually changed
           if (contentAfter !== contentBefore) {
-            // IMPORTANT: If the update would result in LOSING content (non-empty -> empty),
-            // restore the original content and DON'T notify.
-            // This protects against server's empty state overwriting local content.
-            if (contentAfter.length === 0 && contentBefore.length > 0) {
-              console.warn(`[BodySyncBridge] Remote update would erase ${contentBefore.length} chars for ${this.filePath} - restoring local content`);
-              // Restore our content by re-setting it
-              await this.rustApi.setBodyContent(this.filePath, contentBefore);
-              // Re-send our content to the server so it gets our data
-              const fullState = await this.rustApi.getBodyFullState(this.filePath);
-              if (fullState.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
-                const updateMsg = this.encodeUpdateMessage(fullState);
-                console.log(`[BodySyncBridge] Re-sending local content to server: ${fullState.length} bytes`);
-                this.ws.send(updateMsg);
-              }
-            } else if (this.suppressBodyChange) {
-              // During initial sync, don't notify about body changes
-              // This prevents race conditions where server state overwrites local content
-              console.log(`[BodySyncBridge] Suppressing body change during initial sync for ${this.filePath}`);
-            } else {
-              // Content changed and new content is not empty (or old was also empty)
-              console.log(`[BodySyncBridge] Content changed for ${this.filePath}: ${contentBefore.length} -> ${contentAfter.length} chars`);
-              this.onBodyChange?.(contentAfter);
-            }
+            console.log(`[BodySyncBridge] Content changed for ${this.filePath}: ${contentBefore.length} -> ${contentAfter.length} chars`);
+            this.onBodyChange?.(contentAfter);
+          } else if (msg.payload.length > 10) {
+            // Update was applied but content didn't change - this likely means
+            // the documents have divergent histories. Log for debugging.
+            console.warn(`[BodySyncBridge] Content unchanged after ${msg.type} for ${this.filePath} (${msg.payload.length} bytes applied) - possible divergent histories`);
           }
         }
       }
@@ -264,6 +240,18 @@ export class BodySyncBridge {
     // Mark as synced after first successful message exchange
     if (!this.synced) {
       this.synced = true;
+
+      // Notify with the current content now that we've synced
+      // This ensures the UI gets updated with server content
+      this.rustApi.getBodyContent(this.filePath).then((content) => {
+        if (content.length > 0) {
+          console.log(`[BodySyncBridge] Notifying body change after sync for ${this.filePath}: ${content.length} chars`);
+          this.onBodyChange?.(content);
+        }
+      }).catch((err) => {
+        console.error(`[BodySyncBridge] Error getting body content after sync:`, err);
+      });
+
       this.onSynced?.();
     }
   }
@@ -350,6 +338,11 @@ export class BodySyncBridge {
   /**
    * Send local body changes to the server.
    * Call this after making changes to the body doc.
+   *
+   * Note: We send the full state rather than incremental diffs because:
+   * 1. The Rust set_body now uses text diffing to generate minimal Y.js operations
+   * 2. Sending full state ensures the server has all operations for proper sync
+   * 3. Incremental diffs can fail when documents have divergent histories
    */
   async sendBodyUpdate(content: string): Promise<void> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
@@ -358,11 +351,11 @@ export class BodySyncBridge {
     }
 
     try {
-      // Update the local body doc first
+      // Update the local body doc (uses text diffing internally for minimal ops)
       await this.rustApi.setBodyContent(this.filePath, content);
 
-      // Get the full state to send
-      // Using full state is more reliable than diff, especially for new docs
+      // Send full state - this includes all operations in the document
+      // The Y.js protocol handles deduplication on the receiving end
       const fullState = await this.rustApi.getBodyFullState(this.filePath);
 
       if (fullState.length > 0) {
@@ -372,12 +365,6 @@ export class BodySyncBridge {
         this.ws.send(updateMsg);
       }
 
-      // After first explicit send, allow body change notifications
-      // This means we've established our content and can now listen for remote changes
-      if (this.suppressBodyChange) {
-        console.log(`[BodySyncBridge] Enabling body change notifications for ${this.filePath}`);
-        this.suppressBodyChange = false;
-      }
     } catch (err) {
       console.error('[BodySyncBridge] Error sending body update:', err);
     }

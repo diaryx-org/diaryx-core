@@ -4,11 +4,47 @@
 //! allowing different implementations for native and WASM targets.
 //!
 //! For async operations, see the `AsyncFileSystem` trait and `SyncToAsyncFs` adapter.
+//!
+//! ## Decorators
+//!
+//! The filesystem module includes a decorator pattern for extending filesystem behavior:
+//!
+//! - [`EventEmittingFs`]: Emits events for all filesystem operations
+//! - [`CrdtFs`]: Automatically updates CRDT on file operations (requires `crdt` feature)
+//! - [`DecoratedFsBuilder`]: Builder for composing decorators (requires `crdt` feature)
+//!
+//! ### Example (with `crdt` feature)
+//!
+//! ```ignore
+//! use diaryx_core::fs::{DecoratedFsBuilder, InMemoryFileSystem, SyncToAsyncFs};
+//! use diaryx_core::crdt::MemoryStorage;
+//! use std::sync::Arc;
+//!
+//! let base_fs = SyncToAsyncFs::new(InMemoryFileSystem::new());
+//! let storage = Arc::new(MemoryStorage::new());
+//!
+//! let decorated = DecoratedFsBuilder::new(base_fs)
+//!     .with_crdt(storage)
+//!     .build();
+//!
+//! // All writes now update CRDT and emit events
+//! ```
 
 mod async_fs;
 mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+
+// Decorator modules
+mod callback_registry;
+mod event_fs;
+mod events;
+
+// CRDT-dependent decorators
+#[cfg(feature = "crdt")]
+mod crdt_fs;
+#[cfg(feature = "crdt")]
+mod decorator_stack;
 
 pub use async_fs::{AsyncFileSystem, BoxFuture, SyncToAsyncFs};
 
@@ -17,6 +53,17 @@ pub(crate) use async_fs::block_on_test;
 pub use memory::InMemoryFileSystem;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::RealFileSystem;
+
+// Export event types and callback registry (always available)
+pub use callback_registry::{CallbackRegistry, EventCallback, SubscriptionId};
+pub use event_fs::EventEmittingFs;
+pub use events::FileSystemEvent;
+
+// Export CRDT-dependent decorators
+#[cfg(feature = "crdt")]
+pub use crdt_fs::CrdtFs;
+#[cfg(feature = "crdt")]
+pub use decorator_stack::{DecoratedFs, DecoratedFsBuilder};
 
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
@@ -115,6 +162,14 @@ pub trait FileSystem: Send + Sync {
 
         Ok(all_entries)
     }
+
+    /// Get file modification time as milliseconds since Unix epoch.
+    ///
+    /// Returns `None` if the file doesn't exist or the modification time
+    /// cannot be determined.
+    fn get_modified_time(&self, _path: &Path) -> Option<i64> {
+        None
+    }
 }
 
 // Blanket implementation for references to FileSystem
@@ -165,5 +220,9 @@ impl<T: FileSystem> FileSystem for &T {
 
     fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         (*self).list_files(dir)
+    }
+
+    fn get_modified_time(&self, path: &Path) -> Option<i64> {
+        (*self).get_modified_time(path)
     }
 }

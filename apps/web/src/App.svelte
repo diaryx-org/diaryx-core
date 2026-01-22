@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { getBackend, isTauri } from "./lib/backend";
+  import { getBackend, isTauri, type TreeNode } from "./lib/backend";
   import { createApi, type Api } from "./lib/backend/api";
   import type { JsonValue } from "./lib/backend/generated/serde_json/JsonValue";
   import type { FileMetadata } from "./lib/backend/generated";
@@ -18,6 +18,9 @@
     getTreeFromCrdt,
     isDeviceSyncActive,
     renameFileInYDoc,
+    initEventSubscription,
+    waitForInitialSync,
+    proactivelySyncBodies,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -168,6 +171,9 @@
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const AUTO_SAVE_DELAY_MS = 2500; // 2.5 seconds
 
+  // Event subscription cleanup (for filesystem events from Rust backend)
+  let cleanupEventSubscription: (() => void) | null = null;
+
   // Set VITE_DISABLE_WORKSPACE_CRDT=true to disable workspace CRDT for debugging
   // This keeps per-file collaboration working but disables the workspace-level sync
   const workspaceCrdtDisabled: boolean =
@@ -182,6 +188,20 @@
       return Object.fromEntries(frontmatter.entries());
     }
     return frontmatter;
+  }
+
+  // Helper to collect all file paths from a tree node
+  function collectFilePaths(node: TreeNode | null, paths: string[] = []): string[] {
+    if (!node) return paths;
+    if (node.path.endsWith('.md')) {
+      paths.push(node.path);
+    }
+    if (node.children) {
+      for (const child of node.children) {
+        collectFilePaths(child, paths);
+      }
+    }
+    return paths;
   }
 
   // Attachment state
@@ -269,12 +289,25 @@
       const apiInstance = createApi(backendInstance);
       setBackendApi(apiInstance);
 
+      // Initialize filesystem event subscription for automatic UI updates
+      cleanupEventSubscription = initEventSubscription(backendInstance);
+
       // Initialize Rust CRDT API
       rustApi = new RustCrdtApi(backendInstance);
 
       // Initialize workspace CRDT (unless disabled for debugging)
       if (!workspaceCrdtDisabled) {
         await setupWorkspaceCrdt();
+
+        // Wait for initial sync to complete before building tree
+        // This ensures synced files are available for display
+        console.log('[App] Waiting for initial sync to complete...');
+        const syncCompleted = await waitForInitialSync(10000);
+        if (syncCompleted) {
+          console.log('[App] Initial sync complete, proceeding with tree refresh');
+        } else {
+          console.warn('[App] Initial sync timed out or not applicable, proceeding anyway');
+        }
       } else {
         console.log(
           "[App] Workspace CRDT disabled via VITE_DISABLE_WORKSPACE_CRDT",
@@ -282,6 +315,19 @@
       }
 
       await refreshTree();
+
+      // Proactively sync body docs for all files in the tree
+      // This ensures file content is available when users open files
+      if (tree && !workspaceCrdtDisabled) {
+        const filePaths = collectFilePaths(tree);
+        if (filePaths.length > 0) {
+          console.log(`[App] Proactively syncing ${filePaths.length} body docs in background`);
+          // Run in background - don't block initialization
+          proactivelySyncBodies(filePaths, 3).catch((e) => {
+            console.warn('[App] Proactive body sync failed:', e);
+          });
+        }
+      }
 
       // Register callback to refresh tree when session data is received
       onSessionSync(async () => {
@@ -299,6 +345,15 @@
               workspaceStore.expandNode(crdtTree.path);
               await openEntry(crdtTree.path);
               guestInitialSyncDone = true;
+
+              // Proactively sync body docs for all files in the tree (guests)
+              const filePaths = collectFilePaths(crdtTree);
+              if (filePaths.length > 0) {
+                console.log(`[App] Guest: Proactively syncing ${filePaths.length} body docs in background`);
+                proactivelySyncBodies(filePaths, 3).catch((e) => {
+                  console.warn('[App] Guest proactive body sync failed:', e);
+                });
+              }
             } else {
               console.log('[App] Guest session - incremental sync, tree updated');
             }
@@ -411,6 +466,8 @@
   onDestroy(() => {
     // Cleanup blob URLs
     revokeBlobUrls();
+    // Cleanup filesystem event subscription
+    cleanupEventSubscription?.();
     // Disconnect workspace CRDT (keeps local state for quick reconnect)
     disconnectWorkspace();
   });
@@ -467,11 +524,16 @@
 
       // IMPORTANT: Populate CRDT from filesystem BEFORE connecting to server
       // This ensures our local files are available to sync to other devices
+      // At startup, reconciles file mtime vs CRDT modified_at - if file is newer, CRDT is updated
       if (sharedWorkspaceId) {
         console.log("[App] Initializing CRDT from filesystem via Rust command...");
         try {
           const result = await api.initializeWorkspaceCrdt(workspacePath);
           console.log("[App] CRDT initialized:", result);
+          // Show toast if files were updated from disk (external edits detected)
+          if (result.includes("updated from disk")) {
+            toast.info(result);
+          }
         } catch (e) {
           console.warn("[App] Failed to initialize CRDT from filesystem:", e);
           // Continue anyway - server sync may bring in data

@@ -31,6 +31,7 @@ import {
   syncBodyContent,
   updateFileBodyInYDoc,
   getFileMetadata,
+  ensureBodySync,
 } from '../lib/crdt/workspaceCrdtBridge';
 // Note: Collaboration sync now happens at workspace level via workspaceCrdtBridge
 
@@ -89,6 +90,11 @@ export async function openEntry(
     entryStore.setTitleError(null); // Clear any title error when switching files
 
     console.log('[EntryController] Loaded entry:', entry);
+
+    // Eagerly create body sync bridge to receive remote body updates.
+    // This is critical for new clients syncing from the server - without this,
+    // files would appear empty because the body bridge wasn't created yet.
+    await ensureBodySync(path);
 
     // Transform attachment paths to blob URLs for display
     if (entry) {
