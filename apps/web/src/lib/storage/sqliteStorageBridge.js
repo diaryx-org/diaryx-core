@@ -170,6 +170,20 @@ export function crdt_compact(name, keepUpdates) {
   storage.compact(name, keepUpdates);
 }
 
+/**
+ * Rename a document by copying its state and updates to a new name.
+ * @param {string} oldName - Current document name
+ * @param {string} newName - New document name
+ */
+export function crdt_rename_doc(oldName, newName) {
+  const storage = getSqliteStorageSync();
+  if (!storage) {
+    console.error("[SqliteStorageBridge] Storage not initialized");
+    return;
+  }
+  storage.renameDoc(oldName, newName);
+}
+
 // ============================================================================
 // File index methods
 // ============================================================================

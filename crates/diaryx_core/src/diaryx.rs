@@ -117,6 +117,9 @@ pub struct Diaryx<FS: AsyncFileSystem> {
     /// Wrapped in Arc to allow sharing between backend and command execution.
     #[cfg(feature = "crdt")]
     body_doc_manager: Option<Arc<BodyDocManager>>,
+    /// Sync handler for processing remote CRDT updates (optional, requires `crdt` feature).
+    #[cfg(feature = "crdt")]
+    sync_handler: Option<Arc<crate::crdt::SyncHandler<FS>>>,
 }
 
 impl<FS: AsyncFileSystem> Diaryx<FS> {
@@ -128,6 +131,8 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
             workspace_crdt: None,
             #[cfg(feature = "crdt")]
             body_doc_manager: None,
+            #[cfg(feature = "crdt")]
+            sync_handler: None,
         }
     }
 
@@ -135,11 +140,16 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     ///
     /// The CRDT layer enables real-time sync and version history.
     #[cfg(feature = "crdt")]
-    pub fn with_crdt(fs: FS, storage: Arc<dyn CrdtStorage>) -> Self {
+    pub fn with_crdt(fs: FS, storage: Arc<dyn CrdtStorage>) -> Self
+    where
+        FS: Clone,
+    {
+        let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
         Self {
             fs,
             workspace_crdt: Some(Arc::new(WorkspaceCrdt::new(Arc::clone(&storage)))),
             body_doc_manager: Some(Arc::new(BodyDocManager::new(storage))),
+            sync_handler: Some(sync_handler),
         }
     }
 
@@ -148,13 +158,18 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     /// This attempts to load the workspace CRDT state from storage.
     /// If no existing state is found, creates a new empty workspace CRDT.
     #[cfg(feature = "crdt")]
-    pub fn with_crdt_load(fs: FS, storage: Arc<dyn CrdtStorage>) -> Result<Self> {
+    pub fn with_crdt_load(fs: FS, storage: Arc<dyn CrdtStorage>) -> Result<Self>
+    where
+        FS: Clone,
+    {
         let workspace_crdt = Arc::new(WorkspaceCrdt::load(Arc::clone(&storage))?);
         let body_doc_manager = Arc::new(BodyDocManager::new(storage));
+        let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
         Ok(Self {
             fs,
             workspace_crdt: Some(workspace_crdt),
             body_doc_manager: Some(body_doc_manager),
+            sync_handler: Some(sync_handler),
         })
     }
 
@@ -169,11 +184,16 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
         fs: FS,
         workspace_crdt: Arc<WorkspaceCrdt>,
         body_doc_manager: Arc<BodyDocManager>,
-    ) -> Self {
+    ) -> Self
+    where
+        FS: Clone,
+    {
+        let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
         Self {
             fs,
             workspace_crdt: Some(workspace_crdt),
             body_doc_manager: Some(body_doc_manager),
+            sync_handler: Some(sync_handler),
         }
     }
 
@@ -217,6 +237,22 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     #[cfg(feature = "crdt")]
     pub fn has_crdt(&self) -> bool {
         self.workspace_crdt.is_some() && self.body_doc_manager.is_some()
+    }
+
+    /// Get a reference to the body document manager (for internal use).
+    ///
+    /// Returns `None` if CRDT support is not enabled.
+    #[cfg(feature = "crdt")]
+    pub(crate) fn body_doc_manager(&self) -> Option<&Arc<BodyDocManager>> {
+        self.body_doc_manager.as_ref()
+    }
+
+    /// Get a reference to the sync handler (for internal use).
+    ///
+    /// Returns `None` if CRDT support is not enabled or sync handler not configured.
+    #[cfg(feature = "crdt")]
+    pub(crate) fn sync_handler(&self) -> Option<&Arc<crate::crdt::SyncHandler<FS>>> {
+        self.sync_handler.as_ref()
     }
 }
 

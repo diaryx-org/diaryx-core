@@ -72,6 +72,38 @@ pub enum FileSystemEvent {
         /// New body content.
         body: String,
     },
+
+    // === Sync Events ===
+    /// Sync session started.
+    SyncStarted {
+        /// Document name (e.g., "workspace" or file path for body docs).
+        doc_name: String,
+    },
+
+    /// Initial sync completed.
+    SyncCompleted {
+        /// Document name.
+        doc_name: String,
+        /// Number of files synced.
+        files_synced: usize,
+    },
+
+    /// Sync status changed.
+    SyncStatusChanged {
+        /// Status: "idle", "connecting", "syncing", "synced", "error".
+        status: String,
+        /// Optional error message when status is "error".
+        #[serde(default)]
+        error: Option<String>,
+    },
+
+    /// Sync progress update.
+    SyncProgress {
+        /// Number of files completed.
+        completed: usize,
+        /// Total number of files to sync.
+        total: usize,
+    },
 }
 
 impl FileSystemEvent {
@@ -138,15 +170,47 @@ impl FileSystemEvent {
         Self::ContentsChanged { path, body }
     }
 
+    /// Create a SyncStarted event.
+    pub fn sync_started(doc_name: String) -> Self {
+        Self::SyncStarted { doc_name }
+    }
+
+    /// Create a SyncCompleted event.
+    pub fn sync_completed(doc_name: String, files_synced: usize) -> Self {
+        Self::SyncCompleted {
+            doc_name,
+            files_synced,
+        }
+    }
+
+    /// Create a SyncStatusChanged event.
+    pub fn sync_status_changed(status: impl Into<String>, error: Option<String>) -> Self {
+        Self::SyncStatusChanged {
+            status: status.into(),
+            error,
+        }
+    }
+
+    /// Create a SyncProgress event.
+    pub fn sync_progress(completed: usize, total: usize) -> Self {
+        Self::SyncProgress { completed, total }
+    }
+
     /// Get the primary path associated with this event.
-    pub fn path(&self) -> &PathBuf {
+    /// Returns None for sync events which don't have a path.
+    pub fn path(&self) -> Option<&PathBuf> {
         match self {
-            Self::FileCreated { path, .. } => path,
-            Self::FileDeleted { path, .. } => path,
-            Self::FileRenamed { new_path, .. } => new_path,
-            Self::FileMoved { path, .. } => path,
-            Self::MetadataChanged { path, .. } => path,
-            Self::ContentsChanged { path, .. } => path,
+            Self::FileCreated { path, .. } => Some(path),
+            Self::FileDeleted { path, .. } => Some(path),
+            Self::FileRenamed { new_path, .. } => Some(new_path),
+            Self::FileMoved { path, .. } => Some(path),
+            Self::MetadataChanged { path, .. } => Some(path),
+            Self::ContentsChanged { path, .. } => Some(path),
+            // Sync events don't have a primary path
+            Self::SyncStarted { .. } => None,
+            Self::SyncCompleted { .. } => None,
+            Self::SyncStatusChanged { .. } => None,
+            Self::SyncProgress { .. } => None,
         }
     }
 
@@ -159,6 +223,10 @@ impl FileSystemEvent {
             Self::FileMoved { .. } => "FileMoved",
             Self::MetadataChanged { .. } => "MetadataChanged",
             Self::ContentsChanged { .. } => "ContentsChanged",
+            Self::SyncStarted { .. } => "SyncStarted",
+            Self::SyncCompleted { .. } => "SyncCompleted",
+            Self::SyncStatusChanged { .. } => "SyncStatusChanged",
+            Self::SyncProgress { .. } => "SyncProgress",
         }
     }
 }
@@ -169,22 +237,25 @@ mod tests {
 
     #[test]
     fn test_file_created_event() {
-        let event = FileSystemEvent::file_created(PathBuf::from("test.md"));
-        assert_eq!(event.path(), &PathBuf::from("test.md"));
+        let path = PathBuf::from("test.md");
+        let event = FileSystemEvent::file_created(path.clone());
+        assert_eq!(event.path(), Some(&path));
         assert_eq!(event.event_type(), "FileCreated");
     }
 
     #[test]
     fn test_file_deleted_event() {
-        let event = FileSystemEvent::file_deleted(PathBuf::from("test.md"));
-        assert_eq!(event.path(), &PathBuf::from("test.md"));
+        let path = PathBuf::from("test.md");
+        let event = FileSystemEvent::file_deleted(path.clone());
+        assert_eq!(event.path(), Some(&path));
         assert_eq!(event.event_type(), "FileDeleted");
     }
 
     #[test]
     fn test_file_renamed_event() {
-        let event = FileSystemEvent::file_renamed(PathBuf::from("old.md"), PathBuf::from("new.md"));
-        assert_eq!(event.path(), &PathBuf::from("new.md"));
+        let new_path = PathBuf::from("new.md");
+        let event = FileSystemEvent::file_renamed(PathBuf::from("old.md"), new_path.clone());
+        assert_eq!(event.path(), Some(&new_path));
         assert_eq!(event.event_type(), "FileRenamed");
     }
 
@@ -202,5 +273,25 @@ mod tests {
 
         let parsed: FileSystemEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.event_type(), "FileCreated");
+    }
+
+    #[test]
+    fn test_sync_events() {
+        let event = FileSystemEvent::sync_started("workspace".to_string());
+        assert_eq!(event.event_type(), "SyncStarted");
+        assert!(event.path().is_none());
+
+        let event = FileSystemEvent::sync_completed("workspace".to_string(), 10);
+        assert_eq!(event.event_type(), "SyncCompleted");
+
+        let event = FileSystemEvent::sync_status_changed("synced", None);
+        assert_eq!(event.event_type(), "SyncStatusChanged");
+
+        let event =
+            FileSystemEvent::sync_status_changed("error", Some("Connection failed".to_string()));
+        assert_eq!(event.event_type(), "SyncStatusChanged");
+
+        let event = FileSystemEvent::sync_progress(5, 10);
+        assert_eq!(event.event_type(), "SyncProgress");
     }
 }

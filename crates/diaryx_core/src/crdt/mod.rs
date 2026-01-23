@@ -51,6 +51,7 @@ mod memory_storage;
 mod sqlite_storage;
 mod storage;
 mod sync;
+mod sync_handler;
 mod types;
 mod workspace_doc;
 
@@ -62,5 +63,6 @@ pub use memory_storage::MemoryStorage;
 pub use sqlite_storage::SqliteStorage;
 pub use storage::{CrdtStorage, StorageResult};
 pub use sync::{BodySyncProtocol, SyncMessage, SyncProtocol};
+pub use sync_handler::{GuestConfig, SyncHandler};
 pub use types::{BinaryRef, CrdtUpdate, FileMetadata, UpdateOrigin};
 pub use workspace_doc::WorkspaceCrdt;

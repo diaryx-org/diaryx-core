@@ -238,6 +238,52 @@ impl BodyDocManager {
         let mut docs = self.docs.write().unwrap();
         docs.clear();
     }
+
+    /// Rename a body document by copying its content to a new name and deleting the old one.
+    ///
+    /// This operation:
+    /// 1. Renames the document in storage (snapshot + updates)
+    /// 2. Renames any cached document in memory
+    ///
+    /// Used when a file is renamed to migrate its body CRDT to the new path.
+    pub fn rename(&self, old_name: &str, new_name: &str) -> StorageResult<()> {
+        log::debug!("BodyDocManager: renaming {} to {}", old_name, new_name);
+
+        // First rename in storage
+        self.storage.rename_doc(old_name, new_name)?;
+
+        // Then update the cache - remove old entry and add under new name
+        let mut docs = self.docs.write().unwrap();
+        if let Some(doc) = docs.remove(old_name) {
+            // Update the doc_name in the BodyDoc itself
+            doc.set_doc_name(new_name.to_string());
+            docs.insert(new_name.to_string(), doc);
+        }
+
+        log::debug!(
+            "BodyDocManager: rename complete {} -> {}",
+            old_name,
+            new_name
+        );
+        Ok(())
+    }
+
+    /// Delete a body document from storage and cache.
+    ///
+    /// This removes both the document snapshot and all updates from storage,
+    /// and unloads any cached version from memory.
+    pub fn delete(&self, doc_name: &str) -> StorageResult<()> {
+        log::debug!("BodyDocManager: deleting {}", doc_name);
+
+        // Delete from storage
+        self.storage.delete_doc(doc_name)?;
+
+        // Remove from cache
+        let mut docs = self.docs.write().unwrap();
+        docs.remove(doc_name);
+
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for BodyDocManager {
@@ -434,5 +480,73 @@ mod tests {
         // Verify sync
         let doc2 = manager2.get("shared.md").unwrap();
         assert_eq!(doc2.get_body(), "Hello from manager1");
+    }
+
+    #[test]
+    fn test_rename_preserves_content() {
+        let storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        let manager = BodyDocManager::new(Arc::clone(&storage));
+
+        // Create and populate a document
+        let doc = manager.get_or_create("old_name.md");
+        doc.set_body("Important content");
+        let _ = doc.save();
+
+        // Rename
+        manager.rename("old_name.md", "new_name.md").unwrap();
+
+        // Old name should be gone
+        assert!(!manager.is_loaded("old_name.md"));
+        assert!(storage.load_doc("old_name.md").unwrap().is_none());
+
+        // New name should have the content
+        assert!(manager.is_loaded("new_name.md"));
+        let renamed_doc = manager.get("new_name.md").unwrap();
+        assert_eq!(renamed_doc.get_body(), "Important content");
+        assert_eq!(renamed_doc.doc_name(), "new_name.md");
+    }
+
+    #[test]
+    fn test_rename_uncached_doc() {
+        let storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        let manager = BodyDocManager::new(Arc::clone(&storage));
+
+        // Create document, save it, then clear cache
+        let doc = manager.get_or_create("old_name.md");
+        doc.set_body("Persisted content");
+        let _ = doc.save();
+        manager.clear();
+        assert!(!manager.is_loaded("old_name.md"));
+
+        // Rename (doc not in cache)
+        manager.rename("old_name.md", "new_name.md").unwrap();
+
+        // Old storage entry should be gone
+        assert!(storage.load_doc("old_name.md").unwrap().is_none());
+
+        // New storage entry should exist with content
+        assert!(storage.load_doc("new_name.md").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_delete_removes_from_storage_and_cache() {
+        let storage: Arc<dyn CrdtStorage> = Arc::new(MemoryStorage::new());
+        let manager = BodyDocManager::new(Arc::clone(&storage));
+
+        // Create and save a document
+        let doc = manager.get_or_create("to_delete.md");
+        doc.set_body("Soon to be deleted");
+        let _ = doc.save();
+
+        // Verify it exists
+        assert!(manager.is_loaded("to_delete.md"));
+        assert!(storage.load_doc("to_delete.md").unwrap().is_some());
+
+        // Delete
+        manager.delete("to_delete.md").unwrap();
+
+        // Should be gone from both cache and storage
+        assert!(!manager.is_loaded("to_delete.md"));
+        assert!(storage.load_doc("to_delete.md").unwrap().is_none());
     }
 }

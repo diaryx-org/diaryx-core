@@ -721,6 +721,66 @@ pub enum Command {
         /// The update bytes to send.
         update: Vec<u8>,
     },
+
+    // ==================== Sync Handler Commands ====================
+    /// Configure the sync handler for guest mode.
+    ///
+    /// In guest mode, storage paths are prefixed to isolate guest data.
+    #[cfg(feature = "crdt")]
+    ConfigureSyncHandler {
+        /// Guest join code (None to disable guest mode).
+        guest_join_code: Option<String>,
+        /// Whether the guest uses OPFS (requires path prefixing).
+        #[serde(default)]
+        uses_opfs: bool,
+    },
+
+    /// Apply a remote workspace update with disk write side effects.
+    ///
+    /// This processes a remote CRDT update and optionally writes the
+    /// changed files to disk, emitting FileSystemEvents.
+    #[cfg(feature = "crdt")]
+    ApplyRemoteWorkspaceUpdateWithEffects {
+        /// Binary update data.
+        update: Vec<u8>,
+        /// If true, write changed files to disk. If false, only apply to CRDT.
+        #[serde(default)]
+        write_to_disk: bool,
+    },
+
+    /// Apply a remote body update with disk write side effects.
+    ///
+    /// This processes a remote body CRDT update and optionally writes
+    /// the body content to disk.
+    #[cfg(feature = "crdt")]
+    ApplyRemoteBodyUpdateWithEffects {
+        /// Document name (file path).
+        doc_name: String,
+        /// Binary update data.
+        update: Vec<u8>,
+        /// If true, write body to disk. If false, only apply to CRDT.
+        #[serde(default)]
+        write_to_disk: bool,
+    },
+
+    /// Convert a canonical path to a storage path.
+    ///
+    /// For guests using OPFS, this prefixes with `guest/{join_code}/`.
+    /// For hosts or in-memory guests, returns the path unchanged.
+    #[cfg(feature = "crdt")]
+    GetStoragePath {
+        /// Canonical path (e.g., "notes/hello.md").
+        canonical_path: String,
+    },
+
+    /// Convert a storage path to a canonical path.
+    ///
+    /// Strips the `guest/{join_code}/` prefix if present for OPFS guests.
+    #[cfg(feature = "crdt")]
+    GetCanonicalPath {
+        /// Storage path (possibly with guest prefix).
+        storage_path: String,
+    },
 }
 
 // ============================================================================

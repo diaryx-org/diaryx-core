@@ -5,7 +5,7 @@
 //! BodyDoc for real-time sync of markdown content.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use yrs::{
     Doc, GetString, Map, Observable, ReadTxn, Text, Transact, Update, updates::decoder::Decode,
@@ -51,7 +51,9 @@ pub struct BodyDoc {
     body_text: yrs::TextRef,
     frontmatter_map: yrs::MapRef,
     storage: Arc<dyn CrdtStorage>,
-    doc_name: String,
+    /// The document name (file path). Uses RwLock for interior mutability
+    /// to allow renaming via `set_doc_name()` without mutable access.
+    doc_name: RwLock<String>,
     /// Optional callback for emitting filesystem events on remote/sync updates.
     event_callback: Option<Arc<dyn Fn(&FileSystemEvent) + Send + Sync>>,
 }
@@ -70,7 +72,7 @@ impl BodyDoc {
             body_text,
             frontmatter_map,
             storage,
-            doc_name,
+            doc_name: RwLock::new(doc_name),
             event_callback: None,
         }
     }
@@ -100,7 +102,7 @@ impl BodyDoc {
             body_text,
             frontmatter_map,
             storage,
-            doc_name,
+            doc_name: RwLock::new(doc_name),
             event_callback: None,
         })
     }
@@ -121,8 +123,18 @@ impl BodyDoc {
     }
 
     /// Get the document name (file path).
-    pub fn doc_name(&self) -> &str {
-        &self.doc_name
+    pub fn doc_name(&self) -> String {
+        self.doc_name.read().unwrap().clone()
+    }
+
+    /// Set the document name (file path).
+    ///
+    /// This is used when renaming a file to update the internal doc_name
+    /// without re-creating the document. Uses interior mutability to allow
+    /// renaming through an Arc<BodyDoc>.
+    pub fn set_doc_name(&self, new_name: String) {
+        let mut name = self.doc_name.write().unwrap();
+        *name = new_name;
     }
 
     // ==================== Body Content Operations ====================
@@ -257,8 +269,9 @@ impl BodyDoc {
         };
 
         if !update.is_empty() {
+            let doc_name = self.doc_name.read().unwrap();
             self.storage
-                .append_update(&self.doc_name, &update, UpdateOrigin::Local)?;
+                .append_update(&doc_name, &update, UpdateOrigin::Local)?;
         }
         Ok(())
     }
@@ -366,16 +379,17 @@ impl BodyDoc {
         }
 
         // Emit ContentsChanged event for remote body updates
+        let doc_name = self.doc_name.read().unwrap().clone();
         if should_emit {
             let content = self.get_body();
             self.emit_event(FileSystemEvent::contents_changed(
-                PathBuf::from(&self.doc_name),
+                PathBuf::from(&doc_name),
                 content,
             ));
         }
 
         // Persist the update
-        let update_id = self.storage.append_update(&self.doc_name, update, origin)?;
+        let update_id = self.storage.append_update(&doc_name, update, origin)?;
         Ok(Some(update_id))
     }
 
@@ -384,17 +398,19 @@ impl BodyDoc {
     /// Save the current state to storage.
     pub fn save(&self) -> StorageResult<()> {
         let state = self.encode_state_as_update();
-        self.storage.save_doc(&self.doc_name, &state)
+        let doc_name = self.doc_name.read().unwrap();
+        self.storage.save_doc(&doc_name, &state)
     }
 
     /// Reload state from storage.
     pub fn reload(&mut self) -> StorageResult<()> {
-        if let Some(state) = self.storage.load_doc(&self.doc_name)?
+        let doc_name = self.doc_name.read().unwrap().clone();
+        if let Some(state) = self.storage.load_doc(&doc_name)?
             && let Ok(update) = Update::decode_v1(&state)
         {
             let mut txn = self.doc.transact_mut();
             if let Err(e) = txn.apply_update(update) {
-                log::warn!("Failed to reload body doc {}: {}", self.doc_name, e);
+                log::warn!("Failed to reload body doc {}: {}", doc_name, e);
             }
         }
         Ok(())
@@ -404,12 +420,14 @@ impl BodyDoc {
 
     /// Get the update history for this document.
     pub fn get_history(&self) -> StorageResult<Vec<super::types::CrdtUpdate>> {
-        self.storage.get_all_updates(&self.doc_name)
+        let doc_name = self.doc_name.read().unwrap();
+        self.storage.get_all_updates(&doc_name)
     }
 
     /// Get updates since a given ID.
     pub fn get_updates_since(&self, since_id: i64) -> StorageResult<Vec<super::types::CrdtUpdate>> {
-        self.storage.get_updates_since(&self.doc_name, since_id)
+        let doc_name = self.doc_name.read().unwrap();
+        self.storage.get_updates_since(&doc_name, since_id)
     }
 
     // ==================== Observers ====================
@@ -442,8 +460,9 @@ impl BodyDoc {
 
 impl std::fmt::Debug for BodyDoc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let doc_name = self.doc_name.read().unwrap();
         f.debug_struct("BodyDoc")
-            .field("doc_name", &self.doc_name)
+            .field("doc_name", &*doc_name)
             .field("body_len", &self.body_len())
             .finish_non_exhaustive()
     }

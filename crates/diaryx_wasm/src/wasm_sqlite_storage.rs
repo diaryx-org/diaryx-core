@@ -326,6 +326,15 @@ impl CrdtStorage for WasmSqliteStorage {
         let id = result.as_f64().unwrap_or(0.0) as i64;
         Ok(id)
     }
+
+    fn rename_doc(&self, old_name: &str, new_name: &str) -> StorageResult<()> {
+        self.call_fn(
+            "crdt_rename_doc",
+            &[JsValue::from_str(old_name), JsValue::from_str(new_name)],
+        )
+        .map_err(|e| DiaryxError::Crdt(format!("rename_doc failed: {:?}", e)))?;
+        Ok(())
+    }
 }
 
 impl WasmSqliteStorage {

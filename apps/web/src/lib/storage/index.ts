@@ -51,6 +51,7 @@ export async function setupCrdtStorageBridge(): Promise<void> {
     crdt_get_all_updates: bridge.crdt_get_all_updates,
     crdt_get_latest_update_id: bridge.crdt_get_latest_update_id,
     crdt_compact: bridge.crdt_compact,
+    crdt_rename_doc: bridge.crdt_rename_doc,
     crdt_update_file_index: bridge.crdt_update_file_index,
     crdt_query_active_files: bridge.crdt_query_active_files,
     crdt_remove_from_file_index: bridge.crdt_remove_from_file_index,

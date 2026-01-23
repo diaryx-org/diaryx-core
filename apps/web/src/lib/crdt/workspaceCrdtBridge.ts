@@ -7,7 +7,6 @@
  * Supports Hocuspocus server-based sync for device-to-device synchronization.
  */
 
-import * as Y from 'yjs';
 import type { RustCrdtApi } from './rustCrdtApi';
 import { RustSyncBridge, createRustSyncBridge } from './rustSyncBridge';
 import { BodySyncBridge, createBodySyncBridge } from './bodySyncBridge';
@@ -18,6 +17,8 @@ import type { Api } from '../backend/api';
 import { shareSessionStore } from '@/models/stores/shareSessionStore.svelte';
 import { getClientOwnerId } from '@/models/services/shareService';
 import { getToken } from '$lib/auth/authStore.svelte';
+// New Rust sync helpers - can progressively replace TypeScript implementations
+import * as syncHelpers from './syncHelpers';
 
 /**
  * Convert an HTTP URL to a WebSocket URL for sync.
@@ -44,7 +45,6 @@ let backendApi: Api | null = null;
 // Workspace server sync - re-enabled after fixing incremental update issue.
 // The previous issue was caused by re-encoding full state instead of applying incremental updates.
 const WORKSPACE_SERVER_SYNC_ENABLED = true;
-let workspaceYDoc: Y.Doc | null = null;
 let serverUrl: string | null = null;
 let _workspaceId: string | null = null;
 let initialized = false;
@@ -339,7 +339,8 @@ async function processRemoteUpdateForGuests(): Promise<void> {
       }
     } else {
       // File exists - write to disk
-      const body = (metadata.extra?.['_body'] as string) ?? '';
+      // Get body content from Rust CRDT BodyDocs (not extra._body which is deprecated)
+      const body = await rustApi.getBodyContent(path) ?? '';
       await writeFileWithFrontmatter(storagePath, metadata, body);
 
       // Notify body change callbacks so editor can reload if needed
@@ -749,10 +750,6 @@ export async function destroyWorkspace(): Promise<void> {
 
   syncBridge?.destroy();
   syncBridge = null;
-  if (workspaceYDoc) {
-    workspaceYDoc.destroy();
-    workspaceYDoc = null;
-  }
 
   // Clear pending intervals/timeouts to prevent memory leaks
   for (const interval of pendingIntervals) {
@@ -969,73 +966,29 @@ export async function setFileMetadata(path: string, metadata: FileMetadata): Pro
 }
 
 /**
- * Sync a single file to the session Y.Doc.
- * This will trigger the SimpleSyncBridge to send the update to the server.
+ * Rename a file in the Y.Doc - NO-OP STUB.
+ *
+ * @deprecated The JS Y.Doc has been removed. Body migration is now handled
+ * by the Rust CRDT layer in command_handler.rs when RenameEntry is executed.
+ * This function is kept as a no-op for backward compatibility with callers
+ * that haven't been updated yet.
  */
-function syncFileToYDoc(path: string, metadata: FileMetadata): void {
-  if (!workspaceYDoc || !syncBridge) {
-    return; // No session active
-  }
-
-  console.log('[WorkspaceCrdtBridge] Syncing file to Y.Doc:', path);
-  const filesMap = workspaceYDoc.getMap('files');
-  const metadataObj: Record<string, unknown> = {
-    title: metadata.title,
-    part_of: metadata.part_of,
-    contents: metadata.contents,
-    attachments: metadata.attachments,
-    deleted: metadata.deleted,
-    audience: metadata.audience,
-    description: metadata.description,
-    extra: metadata.extra,
-    modified_at: metadata.modified_at ? Number(metadata.modified_at) : null,
-  };
-  filesMap.set(path, metadataObj);
-  console.log('[WorkspaceCrdtBridge] File synced to Y.Doc, total files:', filesMap.size);
+export function renameFileInYDoc(_oldPath: string, _newPath: string, _metadata: FileMetadata): void {
+  // No-op: Body migration is now handled by Rust CRDT in command_handler.rs
+  // when RenameEntry/MoveEntry commands are executed.
 }
 
 /**
- * Rename a file in the Y.Doc (remove old path, add new path).
- * This is used when a file is renamed to sync the change to other devices.
- * @param oldPath - The original file path
- * @param newPath - The new file path after rename
- * @param metadata - The file metadata to store at the new path
+ * Delete a file in the Y.Doc - NO-OP STUB.
+ *
+ * @deprecated The JS Y.Doc has been removed. Body deletion is now handled
+ * by the Rust CRDT layer in command_handler.rs when DeleteEntry is executed.
+ * This function is kept as a no-op for backward compatibility with callers
+ * that haven't been updated yet.
  */
-export function renameFileInYDoc(oldPath: string, newPath: string, metadata: FileMetadata): void {
-  if (!workspaceYDoc || !syncBridge) {
-    return; // No session active
-  }
-
-  console.log('[WorkspaceCrdtBridge] Renaming file in Y.Doc:', oldPath, '->', newPath);
-  const filesMap = workspaceYDoc.getMap('files');
-
-  // Remove old path
-  filesMap.delete(oldPath);
-
-  // Add new path with metadata
-  syncFileToYDoc(newPath, metadata);
-}
-
-/**
- * Delete a file in the Y.Doc (mark as deleted with tombstone).
- * This syncs the delete operation to other devices.
- */
-export function deleteFileInYDoc(path: string): void {
-  if (!workspaceYDoc || !syncBridge) {
-    return; // No session active
-  }
-
-  console.log('[WorkspaceCrdtBridge] Deleting file in Y.Doc:', path);
-  const filesMap = workspaceYDoc.getMap('files');
-
-  // Get existing metadata and mark as deleted (tombstone)
-  const existing = filesMap.get(path) as Record<string, unknown> | undefined;
-  if (existing) {
-    filesMap.set(path, { ...existing, deleted: true, modified_at: Date.now() });
-  } else {
-    // File not in Y.Doc - create tombstone
-    filesMap.set(path, { deleted: true, modified_at: Date.now() });
-  }
+export function deleteFileInYDoc(_path: string): void {
+  // No-op: Body deletion is now handled by Rust CRDT in command_handler.rs
+  // when DeleteEntry command is executed.
 }
 
 /**
@@ -1047,69 +1000,15 @@ function isReadOnlyBlocked(): boolean {
 }
 
 /**
- * Update file body content in the workspace Y.Doc.
- * This allows live sync of file content changes during:
- * - Live share sessions (when _sessionCode is set)
- * - Device-to-device sync (when syncBridge is active)
- * Called when the editor saves content.
+ * Update file body content in the workspace Y.Doc - NO-OP STUB.
+ *
+ * @deprecated The JS Y.Doc has been removed. Body sync is now handled entirely
+ * by the Rust CRDT BodyDocs via syncBodyContent(). This function is kept as a
+ * no-op for backward compatibility with callers that haven't been updated yet.
  */
-export function updateFileBodyInYDoc(path: string, body: string): void {
-  // Check if we have an active sync mechanism (either session or device sync)
-  const hasActiveSync = _sessionCode !== null || (syncBridge !== null && syncBridge.isSynced());
-
-  if (!workspaceYDoc || !hasActiveSync) {
-    return; // No sync active
-  }
-
-  // Block updates in read-only mode for guests
-  if (isReadOnlyBlocked()) {
-    console.log('[WorkspaceCrdtBridge] Blocked body update in read-only session:', path);
-    return;
-  }
-
-  // Convert guest storage path to canonical path for Y.Doc sync
-  // This ensures host and guest use the same keys in the files map
-  const canonicalPath = getCanonicalPath(path);
-  console.log('[WorkspaceCrdtBridge] Updating file body in Y.Doc:', canonicalPath, 'length:', body.length);
-  const filesMap = workspaceYDoc.getMap('files');
-  const existing = filesMap.get(canonicalPath) as Record<string, unknown> | undefined;
-
-  if (existing) {
-    // Preserve existing metadata and update body in extra
-    const existingExtra = (existing.extra as Record<string, unknown>) || {};
-    const updated = {
-      ...existing,
-      extra: {
-        ...existingExtra,
-        _body: body,
-      },
-      modified_at: Date.now(),
-    };
-    filesMap.set(canonicalPath, updated);
-    console.log('[WorkspaceCrdtBridge] File body updated in Y.Doc');
-  } else {
-    // File doesn't exist in Y.Doc yet - create minimal entry with body
-    console.log('[WorkspaceCrdtBridge] Creating new file entry in Y.Doc with body:', canonicalPath);
-    const metadataObj: Record<string, unknown> = {
-      title: null,
-      part_of: null,
-      contents: null,
-      attachments: [],
-      deleted: false,
-      audience: null,
-      description: null,
-      extra: { _body: body },
-      modified_at: Date.now(),
-    };
-    filesMap.set(canonicalPath, metadataObj);
-  }
-
-  // After updating Y.Doc, send changes to sync server
-  if (syncBridge) {
-    syncBridge.sendLocalChanges().catch((err) => {
-      console.error('[WorkspaceCrdtBridge] Failed to send body sync:', err);
-    });
-  }
+export function updateFileBodyInYDoc(_path: string, _body: string): void {
+  // No-op: Body sync is now handled entirely by Rust CRDT BodyDocs via
+  // syncBodyContent(). Callers should use syncBodyContent() instead.
 }
 
 /**
@@ -1862,6 +1761,19 @@ function notifySyncStatus(status: 'idle' | 'connecting' | 'syncing' | 'synced' |
 }
 
 /**
+ * Notify all sync progress callbacks.
+ */
+function notifySyncProgress(completed: number, total: number): void {
+  for (const callback of syncProgressCallbacks) {
+    try {
+      callback(completed, total);
+    } catch (err) {
+      console.error('[WorkspaceCrdtBridge] Sync progress callback error:', err);
+    }
+  }
+}
+
+/**
  * Notify all session sync callbacks.
  */
 function notifySessionSync(): void {
@@ -2046,6 +1958,28 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
       // Body content changed - notify body change callbacks
       notifyBodyChange(event.path, event.body);
       break;
+
+    // Sync events - use helpers for dispatch
+    case 'SyncStarted':
+      console.log('[WorkspaceCrdtBridge] Sync started for:', event.doc_name);
+      break;
+
+    case 'SyncCompleted':
+      console.log('[WorkspaceCrdtBridge] Sync completed for:', event.doc_name, 'files:', event.files_synced);
+      markInitialSyncComplete();
+      // Update file index after sync
+      updateFileIndexFromCrdt();
+      break;
+
+    case 'SyncStatusChanged':
+      console.log('[WorkspaceCrdtBridge] Sync status changed:', event.status, event.error);
+      notifySyncStatus(event.status as 'idle' | 'connecting' | 'syncing' | 'synced' | 'error', event.error);
+      break;
+
+    case 'SyncProgress':
+      console.log('[WorkspaceCrdtBridge] Sync progress:', event.completed, '/', event.total);
+      notifySyncProgress(event.completed, event.total);
+      break;
   }
 }
 
@@ -2061,7 +1995,7 @@ export function isEventSubscriptionActive(): boolean {
 // ===========================================================================
 
 /**
- * Debug function to check Hocuspocus sync state.
+ * Debug function to check sync state.
  * Call this from browser console: window.debugSync()
  */
 export function debugSync(): void {
@@ -2071,12 +2005,6 @@ export function debugSync(): void {
   console.log('syncBridge.synced:', syncBridge?.isSynced());
   console.log('initialized:', initialized);
   console.log('rustApi:', rustApi ? 'exists' : 'null');
-  console.log('workspaceYDoc:', workspaceYDoc ? 'exists' : 'null');
-
-  if (workspaceYDoc) {
-    const filesMap = workspaceYDoc.getMap('files');
-    console.log('workspaceYDoc files count:', filesMap.size);
-  }
 
   if (rustApi) {
     console.log('Fetching Rust CRDT state...');
@@ -2103,3 +2031,7 @@ if (typeof window !== 'undefined') {
 
 // Re-export types
 export type { FileMetadata, BinaryRef };
+
+// Re-export sync helpers for progressive integration
+// These can replace TypeScript implementations with Rust-backed versions
+export { syncHelpers };

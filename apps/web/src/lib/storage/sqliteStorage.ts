@@ -297,6 +297,26 @@ export class SqliteStorage {
     this.markDirty();
   }
 
+  /**
+   * Rename a document by updating its name in the documents and updates tables.
+   * This is used when a file is renamed to migrate its CRDT state.
+   */
+  renameDoc(oldName: string, newName: string): void {
+    // Rename document snapshot
+    this.db.run("UPDATE documents SET name = ? WHERE name = ?", [
+      newName,
+      oldName,
+    ]);
+
+    // Rename updates to point to new doc_name
+    this.db.run("UPDATE updates SET doc_name = ? WHERE doc_name = ?", [
+      newName,
+      oldName,
+    ]);
+
+    this.markDirty();
+  }
+
   // =========================================================================
   // File index methods (for queryable file metadata)
   // =========================================================================

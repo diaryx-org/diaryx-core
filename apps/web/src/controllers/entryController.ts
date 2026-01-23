@@ -26,11 +26,7 @@ import {
   isDeviceSyncActive,
   renameFile,
   deleteFile,
-  renameFileInYDoc,
-  deleteFileInYDoc,
   syncBodyContent,
-  updateFileBodyInYDoc,
-  getFileMetadata,
   ensureBodySync,
 } from '../lib/crdt/workspaceCrdtBridge';
 // Note: Collaboration sync now happens at workspace level via workspaceCrdtBridge
@@ -522,12 +518,9 @@ export async function renameEntry(
   const newPath = await api.renameEntry(path, newFilename);
 
   // Sync rename to Rust CRDT for device-to-device sync
+  // Note: Body doc migration is now handled by the Rust backend in command_handler.rs
   if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
     await renameFile(path, newPath); // Rust CRDT for device sync
-    const metadata = await getFileMetadata(newPath);
-    if (metadata) {
-      renameFileInYDoc(path, newPath, metadata); // Y.js for live share
-    }
   }
 
   if (onSuccess) {
@@ -559,11 +552,6 @@ export async function duplicateEntry(
 
   // Sync body content through Rust CRDT for device-to-device sync
   await syncBodyContent(newPath, entry.content);
-
-  // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
-  if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
-    updateFileBodyInYDoc(newPath, entry.content);
-  }
 
   if (onSuccess) {
     await onSuccess();
@@ -597,9 +585,9 @@ export async function deleteEntryWithSync(
     await api.deleteEntry(path);
 
     // Sync delete to Rust CRDT for device-to-device sync
+    // Note: Body doc deletion is now handled by the Rust backend in command_handler.rs
     if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
       await deleteFile(path); // Rust CRDT for device sync
-      deleteFileInYDoc(path); // Y.js for live share
     }
 
     // If we deleted the currently open entry, clear it
@@ -655,11 +643,6 @@ export async function createChildEntryWithSync(
     // Sync body content through Rust CRDT for device-to-device sync
     await syncBodyContent(newPath, entry.content);
 
-    // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
-    if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
-      updateFileBodyInYDoc(newPath, entry.content);
-    }
-
     if (onSuccess) {
       await onSuccess(newPath);
     }
@@ -695,11 +678,6 @@ export async function createEntryWithSync(
 
     // Sync body content through Rust CRDT for device-to-device sync
     await syncBodyContent(newPath, entry.content);
-
-    // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
-    if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
-      updateFileBodyInYDoc(newPath, entry.content);
-    }
 
     if (onSuccess) {
       await onSuccess();
@@ -741,11 +719,6 @@ export async function saveEntryWithSync(
 
     // Sync body content through Rust CRDT for device-to-device sync
     await syncBodyContent(currentEntry.path, markdown);
-
-    // Additionally update JS Y.Doc for live share sessions (Hocuspocus)
-    if (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode) {
-      updateFileBodyInYDoc(currentEntry.path, markdown);
-    }
   } catch (e) {
     uiStore.setError(e instanceof Error ? e.message : String(e));
   } finally {

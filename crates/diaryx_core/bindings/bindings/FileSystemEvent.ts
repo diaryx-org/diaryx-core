@@ -63,4 +63,32 @@ path: string,
 /**
  * New body content.
  */
-body: string, };
+body: string, } | { "type": "SyncStarted",
+/**
+ * Document name (e.g., "workspace" or file path for body docs).
+ */
+doc_name: string, } | { "type": "SyncCompleted",
+/**
+ * Document name.
+ */
+doc_name: string,
+/**
+ * Number of files synced.
+ */
+files_synced: number, } | { "type": "SyncStatusChanged",
+/**
+ * Status: "idle", "connecting", "syncing", "synced", "error".
+ */
+status: string,
+/**
+ * Optional error message when status is "error".
+ */
+error: string | null, } | { "type": "SyncProgress",
+/**
+ * Number of files completed.
+ */
+completed: number,
+/**
+ * Total number of files to sync.
+ */
+total: number, };

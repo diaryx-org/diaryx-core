@@ -475,6 +475,26 @@ impl CrdtStorage for SqliteStorage {
             Err(e) => Err(DiaryxError::Database(e)),
         }
     }
+
+    fn rename_doc(&self, old_name: &str, new_name: &str) -> StorageResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        // Rename document snapshot
+        tx.execute(
+            "UPDATE documents SET name = ? WHERE name = ?",
+            params![new_name, old_name],
+        )?;
+
+        // Rename updates to point to new doc_name
+        tx.execute(
+            "UPDATE updates SET doc_name = ? WHERE doc_name = ?",
+            params![new_name, old_name],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

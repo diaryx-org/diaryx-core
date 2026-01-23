@@ -212,6 +212,37 @@ impl CrdtStorage for MemoryStorage {
             .map(|u| u.id)
             .unwrap_or(0))
     }
+
+    fn rename_doc(&self, old_name: &str, new_name: &str) -> StorageResult<()> {
+        // Copy document snapshot
+        {
+            let mut docs = self.docs.write().unwrap();
+            if let Some(state) = docs.remove(old_name) {
+                docs.insert(new_name.to_string(), state);
+            }
+        }
+
+        // Copy updates with new doc_name
+        {
+            let mut updates = self.updates.write().unwrap();
+            if let Some(old_updates) = updates.remove(old_name) {
+                let new_updates: Vec<StoredUpdate> = old_updates
+                    .into_iter()
+                    .map(|u| StoredUpdate {
+                        id: u.id,
+                        data: u.data,
+                        timestamp: u.timestamp,
+                        origin: u.origin,
+                        device_id: u.device_id,
+                        device_name: u.device_name,
+                    })
+                    .collect();
+                updates.insert(new_name.to_string(), new_updates);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -410,5 +441,53 @@ mod tests {
         // No doc, no updates - should return None
         let result = storage.get_state_at("nonexistent", 1).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rename_doc() {
+        let storage = MemoryStorage::new();
+
+        // Create a doc with state and updates
+        storage.save_doc("old_name", b"test state").unwrap();
+        storage
+            .append_update("old_name", b"update1", UpdateOrigin::Local)
+            .unwrap();
+        storage
+            .append_update("old_name", b"update2", UpdateOrigin::Remote)
+            .unwrap();
+
+        // Verify old name exists
+        assert!(storage.load_doc("old_name").unwrap().is_some());
+        assert_eq!(storage.get_all_updates("old_name").unwrap().len(), 2);
+
+        // Rename
+        storage.rename_doc("old_name", "new_name").unwrap();
+
+        // Old name should be gone
+        assert!(storage.load_doc("old_name").unwrap().is_none());
+        assert!(storage.get_all_updates("old_name").unwrap().is_empty());
+
+        // New name should have the content
+        assert_eq!(
+            storage.load_doc("new_name").unwrap(),
+            Some(b"test state".to_vec())
+        );
+        let updates = storage.get_all_updates("new_name").unwrap();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].origin, UpdateOrigin::Local);
+        assert_eq!(updates[1].origin, UpdateOrigin::Remote);
+    }
+
+    #[test]
+    fn test_rename_doc_nonexistent() {
+        let storage = MemoryStorage::new();
+
+        // Renaming a nonexistent doc should not error
+        let result = storage.rename_doc("nonexistent", "new_name");
+        assert!(result.is_ok());
+
+        // Both should be empty
+        assert!(storage.load_doc("nonexistent").unwrap().is_none());
+        assert!(storage.load_doc("new_name").unwrap().is_none());
     }
 }

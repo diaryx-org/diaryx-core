@@ -106,6 +106,16 @@ pub trait CrdtStorage: Send + Sync {
     ///
     /// Returns 0 if no updates exist.
     fn get_latest_update_id(&self, name: &str) -> StorageResult<i64>;
+
+    /// Rename a document by copying its state and updates to a new name.
+    ///
+    /// This operation:
+    /// 1. Copies the document snapshot from old name to new name
+    /// 2. Copies all updates to the new document name
+    /// 3. Deletes the old document and its updates
+    ///
+    /// Used when renaming files to migrate their body CRDT state.
+    fn rename_doc(&self, old_name: &str, new_name: &str) -> StorageResult<()>;
 }
 
 #[cfg(test)]

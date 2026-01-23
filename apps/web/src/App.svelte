@@ -3,7 +3,6 @@
   import { getBackend, isTauri, type TreeNode } from "./lib/backend";
   import { createApi, type Api } from "./lib/backend/api";
   import type { JsonValue } from "./lib/backend/generated/serde_json/JsonValue";
-  import type { FileMetadata } from "./lib/backend/generated";
   // New Rust CRDT module imports
   import { RustCrdtApi } from "./lib/crdt/rustCrdtApi";
   import {
@@ -16,8 +15,6 @@
     onSyncProgress,
     onSyncStatus,
     getTreeFromCrdt,
-    isDeviceSyncActive,
-    renameFileInYDoc,
     initEventSubscription,
     waitForInitialSync,
     proactivelySyncBodies,
@@ -1127,23 +1124,7 @@
 
             // CRDT is now automatically updated via backend event subscription
             // (file:renamed event triggers CRDT updates)
-
-            // Also sync rename to Y.Doc for device-to-device sync
-            if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
-              const updatedFrontmatter: Record<string, unknown> = { ...currentEntry.frontmatter, [key]: value };
-              const metadata: FileMetadata = {
-                title: (updatedFrontmatter.title as string | null) ?? null,
-                part_of: (updatedFrontmatter.part_of as string | null) ?? null,
-                contents: Array.isArray(updatedFrontmatter.contents) ? updatedFrontmatter.contents as string[] : null,
-                attachments: Array.isArray(updatedFrontmatter.attachments) ? updatedFrontmatter.attachments : [],
-                deleted: false,
-                audience: Array.isArray(updatedFrontmatter.audience) ? updatedFrontmatter.audience as string[] : null,
-                description: (updatedFrontmatter.description as string | null) ?? null,
-                extra: {},
-                modified_at: BigInt(Date.now()),
-              };
-              renameFileInYDoc(oldPath, newPath, metadata);
-            }
+            // Body doc migration is now handled by the Rust backend in command_handler.rs
 
             // Update current entry path and refresh tree
             currentEntry = {

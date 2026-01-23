@@ -258,7 +258,12 @@ export type FileSystemEvent =
   | { type: 'FileRenamed'; old_path: string; new_path: string }
   | { type: 'FileMoved'; path: string; old_parent?: string; new_parent?: string }
   | { type: 'MetadataChanged'; path: string; frontmatter: unknown }
-  | { type: 'ContentsChanged'; path: string; body: string };
+  | { type: 'ContentsChanged'; path: string; body: string }
+  // Sync events
+  | { type: 'SyncStarted'; doc_name: string }
+  | { type: 'SyncCompleted'; doc_name: string; files_synced: number }
+  | { type: 'SyncStatusChanged'; status: string; error?: string }
+  | { type: 'SyncProgress'; completed: number; total: number };
 
 /**
  * Callback type for filesystem event subscriptions.
