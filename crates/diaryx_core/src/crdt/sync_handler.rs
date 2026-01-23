@@ -156,12 +156,12 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
                 }
             } else {
                 // File exists - merge metadata and write to disk
+                // Use get_or_create to ensure the body doc is loaded from storage if it exists,
+                // or created fresh if it doesn't. This fixes the bug where body docs that exist
+                // in storage but aren't loaded in memory would return empty string.
                 let body = if let Some(manager) = body_manager {
-                    if let Some(doc) = manager.get(&canonical_path) {
-                        doc.get_body()
-                    } else {
-                        String::new()
-                    }
+                    let doc = manager.get_or_create(&canonical_path);
+                    doc.get_body()
                 } else {
                     String::new()
                 };
@@ -286,8 +286,9 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
 
     /// Merge CRDT metadata with disk metadata.
     ///
-    /// CRDT values take precedence, but disk values are used as fallback
-    /// when CRDT values are null or empty arrays.
+    /// CRDT values take precedence. Disk values are used as fallback only when
+    /// CRDT values are `None` (not set). An explicitly set empty array `Some([])`
+    /// is NOT replaced with disk values, as this represents an intentional deletion.
     pub fn merge_metadata(&self, crdt: &FileMetadata, disk: Option<&FileMetadata>) -> FileMetadata {
         let disk = match disk {
             Some(d) => d,
@@ -297,10 +298,11 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
         FileMetadata {
             title: crdt.title.clone().or_else(|| disk.title.clone()),
             part_of: crdt.part_of.clone().or_else(|| disk.part_of.clone()),
-            contents: if is_empty_or_none(&crdt.contents) {
-                disk.contents.clone()
-            } else {
-                crdt.contents.clone()
+            // Only fall back to disk if crdt.contents is None (not set).
+            // Some([]) means explicitly cleared and should not be overwritten.
+            contents: match &crdt.contents {
+                None => disk.contents.clone(),
+                Some(_) => crdt.contents.clone(),
             },
             attachments: if crdt.attachments.is_empty() {
                 disk.attachments.clone()
@@ -308,10 +310,11 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
                 crdt.attachments.clone()
             },
             deleted: crdt.deleted,
-            audience: if is_empty_or_none(&crdt.audience) {
-                disk.audience.clone()
-            } else {
-                crdt.audience.clone()
+            // Only fall back to disk if crdt.audience is None (not set).
+            // Some([]) means explicitly cleared and should not be overwritten.
+            audience: match &crdt.audience {
+                None => disk.audience.clone(),
+                Some(_) => crdt.audience.clone(),
             },
             description: crdt
                 .description
@@ -391,14 +394,6 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
         let content = self.fs.read_to_string(path).await?;
         let parsed = crate::frontmatter::parse_or_empty(&content)?;
         Ok(parsed.body)
-    }
-}
-
-/// Check if an Option<Vec<T>> is None or contains an empty vector.
-fn is_empty_or_none<T>(opt: &Option<Vec<T>>) -> bool {
-    match opt {
-        None => true,
-        Some(v) => v.is_empty(),
     }
 }
 
@@ -530,12 +525,12 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_metadata_empty_arrays_use_disk() {
+    fn test_merge_metadata_explicit_empty_array_not_overwritten() {
         let handler = create_test_handler();
 
         let crdt = FileMetadata {
-            contents: Some(vec![]), // Empty array
-            attachments: vec![],    // Empty attachments
+            contents: Some(vec![]), // Explicitly cleared array
+            attachments: vec![],    // Empty attachments (falls back to disk)
             ..Default::default()
         };
 
@@ -555,8 +550,10 @@ mod tests {
 
         let merged = handler.merge_metadata(&crdt, Some(&disk));
 
-        // Empty arrays should fall back to disk
-        assert_eq!(merged.contents, Some(vec!["child.md".to_string()]));
+        // Some([]) is an explicit clearing - should NOT fall back to disk
+        // This enables proper sync of deletions from remote peers
+        assert_eq!(merged.contents, Some(vec![]));
+        // Empty Vec attachments still falls back to disk (no explicit clearing mechanism)
         assert_eq!(merged.attachments.len(), 1);
     }
 }

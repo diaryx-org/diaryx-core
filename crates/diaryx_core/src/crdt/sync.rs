@@ -377,13 +377,36 @@ impl SyncProtocol {
     /// - **SyncStep2**: Applies the update, returns None
     /// - **Update**: Applies the update, returns None
     pub fn handle_message(&mut self, msg: &[u8]) -> StorageResult<Option<Vec<u8>>> {
+        let (response, _changed_files) = self.handle_message_with_changes(msg)?;
+        Ok(response)
+    }
+
+    /// Handle an incoming message from a remote peer, tracking changed files.
+    ///
+    /// Returns (optional_response, changed_file_paths).
+    /// Handles combined messages (e.g., SyncStep2 + SyncStep1 from Hocuspocus).
+    ///
+    /// # Message Types
+    ///
+    /// - **SyncStep1**: Returns a SyncStep2 with missing updates
+    /// - **SyncStep2**: Applies the update, returns None
+    /// - **Update**: Applies the update, returns None
+    ///
+    /// The changed_file_paths contains paths of files that were modified by
+    /// SyncStep2 or Update messages. This allows callers to selectively
+    /// write those files to disk.
+    pub fn handle_message_with_changes(
+        &mut self,
+        msg: &[u8],
+    ) -> StorageResult<(Option<Vec<u8>>, Vec<String>)> {
         // Decode all sub-messages (Hocuspocus may send combined SyncStep2 + SyncStep1)
         let messages = SyncMessage::decode_all(msg)?;
         if messages.is_empty() {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
 
         let mut response: Option<Vec<u8>> = None;
+        let mut all_changed_files = Vec::new();
 
         for sync_msg in messages {
             match sync_msg {
@@ -410,7 +433,10 @@ impl SyncProtocol {
                     // Remote is sending updates we don't have
                     if !update.is_empty() {
                         log::debug!("[Y-sync] Applying SyncStep2 update, {} bytes", update.len());
-                        self.workspace.apply_update(&update, UpdateOrigin::Sync)?;
+                        let (_, changed_files) = self
+                            .workspace
+                            .apply_update_tracking_changes(&update, UpdateOrigin::Sync)?;
+                        all_changed_files.extend(changed_files);
                     }
                     // SyncStep2 doesn't generate a response by itself,
                     // but if combined with SyncStep1, we'll respond to that
@@ -419,13 +445,16 @@ impl SyncProtocol {
                     // Remote is sending a live update
                     if !update.is_empty() {
                         log::debug!("[Y-sync] Applying Update, {} bytes", update.len());
-                        self.workspace.apply_update(&update, UpdateOrigin::Remote)?;
+                        let (_, changed_files) = self
+                            .workspace
+                            .apply_update_tracking_changes(&update, UpdateOrigin::Remote)?;
+                        all_changed_files.extend(changed_files);
                     }
                 }
             }
         }
 
-        Ok(response)
+        Ok((response, all_changed_files))
     }
 
     /// Get the current state as a full update.

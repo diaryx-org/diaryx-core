@@ -68,7 +68,8 @@ export function setAuthToken(_token: string | undefined): void {
  */
 export function setActiveSessionCode(code: string | null): void {
   if (code === null) {
-    stopSessionSync();
+    // Fire and forget - callers should use stopSessionSync() directly and await it
+    void stopSessionSync();
   } else {
     // Note: startSessionSync requires a server URL and isHost flag.
     // This shim cannot fully replicate the old behavior.

@@ -9,6 +9,7 @@
     disconnectWorkspace,
     setWorkspaceId,
     setBackendApi,
+    setBackend,
     onSessionSync,
     onBodyChange,
     onFileChange,
@@ -285,6 +286,7 @@
       // Set the backend API for CRDT bridge (used for writing synced files to disk)
       const apiInstance = createApi(backendInstance);
       setBackendApi(apiInstance);
+      setBackend(backendInstance);
 
       // Initialize filesystem event subscription for automatic UI updates
       cleanupEventSubscription = initEventSubscription(backendInstance);

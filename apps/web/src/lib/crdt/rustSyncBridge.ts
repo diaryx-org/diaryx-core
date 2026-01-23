@@ -25,6 +25,8 @@ export interface RustSyncBridgeOptions {
   ownerId?: string;
   /** Auth token for authenticated sync */
   authToken?: string;
+  /** If true, Rust will write changed files to disk after applying updates */
+  writeToDisk?: boolean;
   /** Callback when connection status changes */
   onStatusChange?: (connected: boolean) => void;
   /** Callback when synced with server */
@@ -42,6 +44,7 @@ export class RustSyncBridge {
   private sendInitialState: boolean;
   private ownerId?: string;
   private authToken?: string;
+  private writeToDisk: boolean;
   private onStatusChange?: (connected: boolean) => void;
   private onSynced?: () => void;
   private onRemoteUpdate?: () => void;
@@ -72,6 +75,7 @@ export class RustSyncBridge {
     this.sendInitialState = options.sendInitialState ?? false;
     this.ownerId = options.ownerId;
     this.authToken = options.authToken;
+    this.writeToDisk = options.writeToDisk ?? false;
     this.onStatusChange = options.onStatusChange;
     this.onSynced = options.onSynced;
     this.onRemoteUpdate = options.onRemoteUpdate;
@@ -176,7 +180,8 @@ export class RustSyncBridge {
 
     // Let Rust handle the message (decode and apply)
     // Rust returns a response if one is needed (e.g., SyncStep2)
-    const response = await this.rustApi.handleSyncMessage(data, this.docName);
+    // If writeToDisk is true, Rust will also write changed files to disk
+    const response = await this.rustApi.handleSyncMessage(data, this.docName, this.writeToDisk);
 
     if (response && response.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
       // Detect ping-pong loops: if we're about to send the same response as last time,

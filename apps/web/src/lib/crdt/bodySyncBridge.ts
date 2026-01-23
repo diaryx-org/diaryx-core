@@ -9,6 +9,8 @@
  */
 
 import type { RustCrdtApi } from './rustCrdtApi';
+import type { Backend } from '../backend/interface';
+import * as syncHelpers from './syncHelpers';
 
 export interface BodySyncBridgeOptions {
   /** WebSocket server URL (without query params) */
@@ -19,6 +21,10 @@ export interface BodySyncBridgeOptions {
   filePath: string;
   /** Rust CRDT API instance */
   rustApi: RustCrdtApi;
+  /** Backend instance for disk writes */
+  backend?: Backend;
+  /** If true, Rust will write body to disk after applying updates */
+  writeToDisk?: boolean;
   /** Optional session code for session-scoped sync */
   sessionCode?: string;
   /** Guest ID (for session guests) */
@@ -39,6 +45,8 @@ export class BodySyncBridge {
   private workspaceId: string;
   private filePath: string;
   private rustApi: RustCrdtApi;
+  private backend?: Backend;
+  private writeToDisk: boolean;
   private sessionCode?: string;
   private guestId?: string;
   private authToken?: string;
@@ -49,12 +57,16 @@ export class BodySyncBridge {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private synced = false;
+  /** Track last notified content to prevent duplicate notifications */
+  private lastNotifiedContent: string | null = null;
 
   constructor(options: BodySyncBridgeOptions) {
     this.serverUrl = options.serverUrl;
     this.workspaceId = options.workspaceId;
     this.filePath = options.filePath;
     this.rustApi = options.rustApi;
+    this.backend = options.backend;
+    this.writeToDisk = options.writeToDisk ?? false;
     this.sessionCode = options.sessionCode;
     this.guestId = options.guestId;
     this.authToken = options.authToken;
@@ -218,7 +230,17 @@ export class BodySyncBridge {
           console.log(`[BodySyncBridge] Before applying ${msg.type} for ${this.filePath}: "${contentBefore.slice(0, 50)}..." (${contentBefore.length} chars)`);
 
           // Apply the remote update to the CRDT
-          await this.rustApi.applyBodyUpdate(this.filePath, msg.payload);
+          // Use Rust command that also handles disk writes if enabled
+          if (this.writeToDisk && this.backend) {
+            await syncHelpers.applyRemoteBodyUpdate(
+              this.backend,
+              this.filePath,
+              msg.payload,
+              true // writeToDisk
+            );
+          } else {
+            await this.rustApi.applyBodyUpdate(this.filePath, msg.payload);
+          }
 
           // Get content AFTER applying update
           const contentAfter = await this.rustApi.getBodyContent(this.filePath);
@@ -227,6 +249,7 @@ export class BodySyncBridge {
           // Check if content actually changed
           if (contentAfter !== contentBefore) {
             console.log(`[BodySyncBridge] Content changed for ${this.filePath}: ${contentBefore.length} -> ${contentAfter.length} chars`);
+            this.lastNotifiedContent = contentAfter;
             this.onBodyChange?.(contentAfter);
           } else if (msg.payload.length > 10) {
             // Update was applied but content didn't change - this likely means
@@ -245,8 +268,11 @@ export class BodySyncBridge {
       // This ensures the UI gets updated with server content
       // Wait for content notification to complete before calling onSynced
       this.rustApi.getBodyContent(this.filePath).then((content) => {
-        if (content.length > 0) {
+        // Only notify if content differs from what we've already notified
+        // This prevents duplicate notifications when local edits were just synced
+        if (content.length > 0 && content !== this.lastNotifiedContent) {
           console.log(`[BodySyncBridge] Notifying body change after sync for ${this.filePath}: ${content.length} chars`);
+          this.lastNotifiedContent = content;
           this.onBodyChange?.(content);
         }
         // Call onSynced AFTER content notification completes

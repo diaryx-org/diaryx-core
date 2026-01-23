@@ -11,7 +11,7 @@
 import { shareSessionStore } from '../stores/shareSessionStore.svelte';
 import { collaborationStore } from '../stores/collaborationStore.svelte';
 import { workspaceStore } from '../stores/workspaceStore.svelte';
-import { startSessionSync, stopSessionSync, setBackendApi, setActiveSessionCode } from '$lib/crdt';
+import { startSessionSync, stopSessionSync, setBackendApi, setBackend, setActiveSessionCode } from '$lib/crdt';
 import { createGuestBackend, type WorkerBackendNew } from '$lib/backend/workerBackendNew';
 import { createApi, type Api } from '$lib/backend/api';
 import { isTauri, type Backend } from '$lib/backend/interface';
@@ -324,8 +324,9 @@ export async function joinShareSession(joinCode: string): Promise<string> {
       // Clear the tree - it will be populated from CRDT sync
       workspaceStore.setTree(null);
 
-      // Set the guest API for the CRDT bridge to use for file operations
+      // Set the guest API and backend for the CRDT bridge to use for file operations
       setBackendApi(guestApi);
+      setBackend(guestBackend);
 
       console.log('[ShareService] In-memory guest backend ready');
     } catch (e) {
@@ -453,7 +454,7 @@ export async function endShareSession(): Promise<void> {
   }
 
   // Stop document sync
-  stopSessionSync();
+  await stopSessionSync();
 
   // Clear active session code for per-document sync
   setActiveSessionCode(null);
@@ -484,8 +485,9 @@ export async function endShareSession(): Promise<void> {
       // Restore the original backend in workspaceStore
       if (originalBackend) {
         workspaceStore.setBackend(originalBackend);
-        // Also restore the original API for the CRDT bridge
+        // Also restore the original API and backend for the CRDT bridge
         setBackendApi(createApi(originalBackend));
+        setBackend(originalBackend);
         console.log('[ShareService] Restored original backend');
       }
 

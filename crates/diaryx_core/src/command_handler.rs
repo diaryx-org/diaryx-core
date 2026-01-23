@@ -1884,11 +1884,40 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
 
             #[cfg(feature = "crdt")]
-            Command::HandleSyncMessage { doc_name, message } => {
+            Command::HandleSyncMessage {
+                doc_name,
+                message,
+                write_to_disk,
+            } => {
                 let crdt = self.crdt().ok_or_else(|| {
                     DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
                 })?;
-                let response = crdt.handle_sync_message(&doc_name, &message)?;
+
+                let (response, changed_files) =
+                    crdt.handle_sync_message_with_changes(&doc_name, &message)?;
+
+                // If write_to_disk is enabled and we have changed files, write them
+                if write_to_disk && !changed_files.is_empty() {
+                    if let Some(handler) = self.sync_handler() {
+                        // Get file metadata for changed files from the CRDT
+                        let files_to_sync: Vec<(String, crate::crdt::FileMetadata)> = changed_files
+                            .iter()
+                            .filter_map(|path| crdt.get_file(path).map(|m| (path.clone(), m)))
+                            .collect();
+
+                        if !files_to_sync.is_empty() {
+                            let body_mgr_ref = self.body_doc_manager().map(|arc| arc.as_ref());
+                            handler
+                                .handle_remote_metadata_update(files_to_sync, body_mgr_ref, true)
+                                .await?;
+                            log::debug!(
+                                "HandleSyncMessage: wrote {} changed files to disk",
+                                changed_files.len()
+                            );
+                        }
+                    }
+                }
+
                 match response {
                     Some(data) => Ok(Response::Binary(data)),
                     None => Ok(Response::Ok),
@@ -1935,22 +1964,26 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let sync_handler = self.sync_handler();
                 let body_manager = self.body_doc_manager();
 
-                // Apply the update to the CRDT
-                let update_id = crdt.apply_update(&update, crate::crdt::UpdateOrigin::Remote)?;
+                // Apply the update to the CRDT, tracking which files changed
+                let (update_id, changed_paths) =
+                    crdt.apply_update_tracking_changes(&update, crate::crdt::UpdateOrigin::Remote)?;
 
-                // If we have a sync handler and write_to_disk is enabled, write files
+                // If we have a sync handler and write_to_disk is enabled, write only changed files
                 if write_to_disk {
                     if let Some(handler) = sync_handler {
-                        // Get all files from CRDT and identify which ones changed
-                        // For now, write all non-deleted files (TODO: track diffs)
-                        let files = crdt.list_files();
+                        // Only get metadata for files that actually changed
+                        let files: Vec<(String, crate::crdt::FileMetadata)> = changed_paths
+                            .iter()
+                            .filter_map(|path| crdt.get_file(path).map(|m| (path.clone(), m)))
+                            .collect();
                         let body_mgr_ref = body_manager.map(|arc| arc.as_ref());
                         let files_synced = handler
                             .handle_remote_metadata_update(files, body_mgr_ref, true)
                             .await?;
                         log::debug!(
-                            "ApplyRemoteWorkspaceUpdateWithEffects: synced {} files",
-                            files_synced
+                            "ApplyRemoteWorkspaceUpdateWithEffects: synced {} files (out of {} changed)",
+                            files_synced,
+                            changed_paths.len()
                         );
                     }
                 }
@@ -1958,7 +1991,6 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 Ok(Response::UpdateId(update_id))
             }
 
-            #[cfg(feature = "crdt")]
             #[cfg(feature = "crdt")]
             Command::ApplyRemoteBodyUpdateWithEffects {
                 doc_name,

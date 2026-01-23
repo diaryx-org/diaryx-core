@@ -568,7 +568,11 @@ doc_name: string,
 /**
  * The incoming message bytes.
  */
-message: Array<number>, } } | { "type": "CreateUpdateMessage", "params": {
+message: Array<number>,
+/**
+ * If true, write changed files to disk after applying updates.
+ */
+write_to_disk: boolean, } } | { "type": "CreateUpdateMessage", "params": {
 /**
  * Document name (use "workspace" for workspace CRDT).
  */
@@ -576,4 +580,40 @@ doc_name: string,
 /**
  * The update bytes to send.
  */
-update: Array<number>, } };
+update: Array<number>, } } | { "type": "ConfigureSyncHandler", "params": {
+/**
+ * Guest join code (None to disable guest mode).
+ */
+guest_join_code: string | null,
+/**
+ * Whether the guest uses OPFS (requires path prefixing).
+ */
+uses_opfs: boolean, } } | { "type": "ApplyRemoteWorkspaceUpdateWithEffects", "params": {
+/**
+ * Binary update data.
+ */
+update: Array<number>,
+/**
+ * If true, write changed files to disk. If false, only apply to CRDT.
+ */
+write_to_disk: boolean, } } | { "type": "ApplyRemoteBodyUpdateWithEffects", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string,
+/**
+ * Binary update data.
+ */
+update: Array<number>,
+/**
+ * If true, write body to disk. If false, only apply to CRDT.
+ */
+write_to_disk: boolean, } } | { "type": "GetStoragePath", "params": {
+/**
+ * Canonical path (e.g., "notes/hello.md").
+ */
+canonical_path: string, } } | { "type": "GetCanonicalPath", "params": {
+/**
+ * Storage path (possibly with guest prefix).
+ */
+storage_path: string, } };

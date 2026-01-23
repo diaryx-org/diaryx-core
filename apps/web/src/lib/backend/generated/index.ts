@@ -55,5 +55,9 @@ export type { HistoryEntry } from './HistoryEntry';
 export type { BinaryRef } from './BinaryRef';
 export type { FileMetadata } from './FileMetadata';
 
+// Sync types
+export type { FileSystemEvent } from './FileSystemEvent';
+export type { GuestConfig } from './GuestConfig';
+
 // JSON value type
 export type { JsonValue } from './serde_json/JsonValue';

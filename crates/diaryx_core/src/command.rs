@@ -705,12 +705,16 @@ pub enum Command {
     /// Handle an incoming sync message.
     ///
     /// Returns an optional response message to send back.
+    /// If `write_to_disk` is true, writes changed files to disk after applying updates.
     #[cfg(feature = "crdt")]
     HandleSyncMessage {
         /// Document name (use "workspace" for workspace CRDT).
         doc_name: String,
         /// The incoming message bytes.
         message: Vec<u8>,
+        /// If true, write changed files to disk after applying updates.
+        #[serde(default)]
+        write_to_disk: bool,
     },
 
     /// Create an update message to broadcast local changes.

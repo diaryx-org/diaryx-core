@@ -163,11 +163,11 @@ export class RustCrdtApi {
       type: 'GetStateAt',
       params: { doc_name: docName, update_id: updateId },
     });
-    if (response.type === 'Ok') {
+    // Return null if response is not Binary (e.g., error, not found, or Ok with no data)
+    if (response.type !== 'Binary') {
       return null;
     }
-    const data = expectResponse(response, 'Binary').data;
-    return new Uint8Array(data);
+    return new Uint8Array(response.data);
   }
 
   // ===========================================================================
@@ -349,14 +349,19 @@ export class RustCrdtApi {
   /**
    * Handle an incoming sync message.
    * Returns an optional response message to send back, or null if no response needed.
+   *
+   * @param message - The incoming sync message bytes
+   * @param docName - The document name (defaults to 'workspace')
+   * @param writeToDisk - If true, write changed files to disk after applying updates
    */
   async handleSyncMessage(
     message: Uint8Array,
-    docName: string = 'workspace'
+    docName: string = 'workspace',
+    writeToDisk: boolean = false
   ): Promise<Uint8Array | null> {
     const response = await executeCrdt(this.backend, {
       type: 'HandleSyncMessage',
-      params: { doc_name: docName, message: Array.from(message) },
+      params: { doc_name: docName, message: Array.from(message), write_to_disk: writeToDisk },
     });
     if (response.type === 'Ok') {
       return null;

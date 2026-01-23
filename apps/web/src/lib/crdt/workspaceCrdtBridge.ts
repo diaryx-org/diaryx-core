@@ -17,7 +17,7 @@ import type { Api } from '../backend/api';
 import { shareSessionStore } from '@/models/stores/shareSessionStore.svelte';
 import { getClientOwnerId } from '@/models/services/shareService';
 import { getToken } from '$lib/auth/authStore.svelte';
-// New Rust sync helpers - can progressively replace TypeScript implementations
+// New Rust sync helpers - progressively replacing TypeScript implementations
 import * as syncHelpers from './syncHelpers';
 
 /**
@@ -41,6 +41,7 @@ function toWebSocketUrl(httpUrl: string): string {
 let rustApi: RustCrdtApi | null = null;
 let syncBridge: RustSyncBridge | null = null;
 let backendApi: Api | null = null;
+let _backend: Backend | null = null;
 
 // Workspace server sync - re-enabled after fixing incremental update issue.
 // The previous issue was caused by re-encoding full state instead of applying incremental updates.
@@ -166,6 +167,7 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
       docName: workspaceDocName,
       rustApi: rustApi,
       authToken: getToken() ?? undefined,
+      writeToDisk: true, // Rust handles disk writes automatically
       onStatusChange: (connected) => {
         console.log('[WorkspaceCrdtBridge] Connection status:', connected);
         notifySyncStatus(connected ? 'syncing' : 'idle');
@@ -173,17 +175,16 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
       onSynced: async () => {
         console.log('[WorkspaceCrdtBridge] Initial sync complete');
         notifySyncStatus('synced');
-        // With RustSyncBridge, the Rust CRDT is already updated by the sync.
-        // Notify UI to refresh from Rust CRDT.
+        // With RustSyncBridge + writeToDisk, Rust has already written files to disk.
+        // Just notify UI to refresh from Rust CRDT.
         notifyFileChange(null, null);
 
         // Update file index from Rust CRDT for persistence
         await updateFileIndexFromCrdt();
       },
       onRemoteUpdate: async () => {
-        // Remote update received - write metadata to disk for device sync
-        await processRemoteMetadataUpdates();
-        // Notify UI to refresh tree (FileSystemEvents don't fire for sync-originated changes)
+        // Rust has already written changed files to disk via writeToDisk.
+        // Just notify UI to refresh tree.
         notifyFileChange(null, null);
       },
     });
@@ -196,16 +197,6 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
 }
 
 
-
-/**
- * Write a file to disk with frontmatter and body content.
- * Delegates to the Rust backend which handles YAML frontmatter generation.
- */
-async function writeFileWithFrontmatter(path: string, metadata: FileMetadata, body: string): Promise<void> {
-  if (!backendApi) return;
-  // Delegate to Rust backend - it handles YAML frontmatter generation
-  await backendApi.writeFileWithMetadata(path, metadata as unknown as import('../backend/generated/serde_json/JsonValue').JsonValue, body);
-}
 
 /**
  * Get the current workspace server URL.
@@ -235,6 +226,14 @@ export function setWorkspaceId(id: string | null): void {
  */
 export function setBackendApi(api: Api): void {
   backendApi = api;
+}
+
+/**
+ * Set the backend for sync operations.
+ * This is used for Rust-backed sync helpers that need direct backend access.
+ */
+export function setBackend(backend: Backend): void {
+  _backend = backend;
 }
 
 /**
@@ -311,159 +310,8 @@ function getCanonicalPath(storagePath: string): string {
 // Session code for share sessions
 let _sessionCode: string | null = null;
 
-/**
- * Process remote updates for guests.
- * Writes all files from Rust CRDT to disk, and deletes files marked as deleted.
- */
-async function processRemoteUpdateForGuests(): Promise<void> {
-  const isGuest = shareSessionStore.isGuest;
-  if (!isGuest || !rustApi || !backendApi) return;
-
-  console.log('[WorkspaceCrdtBridge] Processing remote update for guest');
-
-  // Get ALL files from Rust CRDT including deleted ones
-  const allFiles = await rustApi.listFiles(true); // true = include deleted
-  for (const [path, metadata] of allFiles) {
-    const storagePath = getGuestStoragePath(path);
-
-    if (metadata.deleted) {
-      // File was deleted - remove from guest storage
-      try {
-        const exists = await backendApi.fileExists(storagePath);
-        if (exists) {
-          console.log('[WorkspaceCrdtBridge] Guest: Deleting file:', storagePath);
-          await backendApi.deleteEntry(storagePath);
-        }
-      } catch (err) {
-        console.warn('[WorkspaceCrdtBridge] Guest: Failed to delete file:', storagePath, err);
-      }
-    } else {
-      // File exists - write to disk
-      // Get body content from Rust CRDT BodyDocs (not extra._body which is deprecated)
-      const body = await rustApi.getBodyContent(path) ?? '';
-      await writeFileWithFrontmatter(storagePath, metadata, body);
-
-      // Notify body change callbacks so editor can reload if needed
-      if (body) {
-        notifyBodyChange(path, body);
-      }
-    }
-  }
-
-  // Note: UI notifications (notifySessionSync, notifyFileChange) are now handled
-  // by FileSystemEvents from the Rust CRDT, avoiding duplicate notifications
-}
-
 // Track last known body content to detect echo (our own changes coming back)
 const lastKnownBodyContent = new Map<string, string>();
-
-/**
- * Helper to check if an array-like value has actual content.
- * Returns true if the value is null, undefined, or an empty array.
- */
-function isEmptyOrNull(value: unknown[] | null | undefined): boolean {
-  return value == null || (Array.isArray(value) && value.length === 0);
-}
-
-/**
- * Process remote metadata updates for device sync (non-guest hosts).
- *
- * SIMPLIFIED: CRDT is the single source of truth.
- * Flow: CRDT → Files → UI (one direction only)
- *
- * With the BodyDoc architecture, body content is synced via per-file BodySyncBridges.
- * This function handles workspace metadata sync (title, part_of, contents, etc.)
- * and writes updated files to disk.
- *
- * SAFETY: Includes guards to prevent data loss when CRDT body is empty but disk has content.
- */
-async function processRemoteMetadataUpdates(): Promise<void> {
-  if (!rustApi || !backendApi) return;
-
-  // Skip for guests (handled by processRemoteUpdateForGuests)
-  if (shareSessionStore.isGuest) return;
-
-  console.log('[WorkspaceCrdtBridge] Processing remote metadata updates for device sync');
-
-  // Get ALL files from Rust CRDT including deleted ones
-  // We need to process deletions as well as updates
-  const allFiles = await rustApi.listFiles(true); // true = include deleted
-  let updatedCount = 0;
-  let deletedCount = 0;
-  let preservedCount = 0;
-
-  for (const [path, metadata] of allFiles) {
-    if (metadata.deleted) {
-      // File was deleted - remove from filesystem
-      try {
-        const exists = await backendApi.fileExists(path);
-        if (exists) {
-          console.log('[WorkspaceCrdtBridge] Deleting file from disk:', path);
-          await backendApi.deleteEntry(path);
-          deletedCount++;
-        }
-      } catch (err) {
-        console.warn('[WorkspaceCrdtBridge] Failed to delete file:', path, err);
-      }
-    } else {
-      // File exists - write to disk with CRDT metadata and body
-      let body = '';
-      try {
-        body = await rustApi.getBodyContent(path) || '';
-      } catch {
-        body = '';
-      }
-
-      // SAFETY: If CRDT body is empty but file exists on disk with content,
-      // preserve disk content instead of overwriting with empty.
-      // NOTE: We do NOT write body back to CRDT here to avoid CRDT duplication
-      // issues when Y.js merges independent operations.
-      if (!body) {
-        try {
-          const diskEntry = await backendApi.getEntry(path);
-          if (diskEntry?.content && diskEntry.content.length > 0) {
-            console.log(`[WorkspaceCrdtBridge] Preserving disk body for ${path} (${diskEntry.content.length} chars)`);
-            body = diskEntry.content;
-            preservedCount++;
-          }
-        } catch {
-          // File doesn't exist on disk - proceed with empty body (new file)
-        }
-      }
-
-      // Merge with disk metadata to preserve local values where CRDT has null/empty
-      let finalMetadata = metadata;
-      try {
-        const diskEntry = await backendApi.getEntry(path);
-        if (diskEntry?.frontmatter) {
-          const fm = diskEntry.frontmatter;
-          // Use disk values as fallback when CRDT values are null or empty arrays
-          finalMetadata = {
-            title: metadata.title ?? (fm.title as string | null) ?? null,
-            part_of: metadata.part_of ?? (fm.part_of as string | null) ?? null,
-            // For arrays, also fall back to disk if CRDT has empty array
-            contents: isEmptyOrNull(metadata.contents) ? (fm.contents as string[] | null) ?? null : metadata.contents,
-            attachments: isEmptyOrNull(metadata.attachments) ? (fm.attachments as any[] | null) ?? [] : metadata.attachments,
-            deleted: metadata.deleted,
-            audience: isEmptyOrNull(metadata.audience) ? (fm.audience as string[] | null) ?? null : metadata.audience,
-            description: metadata.description ?? (fm.description as string | null) ?? null,
-            extra: metadata.extra ?? {},
-            modified_at: metadata.modified_at,
-          };
-        }
-      } catch {
-        // File doesn't exist on disk - use CRDT metadata as-is
-      }
-
-      await writeFileWithFrontmatter(path, finalMetadata, body);
-      updatedCount++;
-    }
-  }
-
-  if (updatedCount > 0 || deletedCount > 0 || preservedCount > 0) {
-    console.log(`[WorkspaceCrdtBridge] Synced ${updatedCount} files, deleted ${deletedCount} files, preserved ${preservedCount} body contents`);
-  }
-}
 
 /**
  * Notify all body change callbacks.
@@ -501,6 +349,13 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
     return;
   }
 
+  // Configure sync handler for guests (path prefixing, etc.)
+  if (!isHost && _backend) {
+    const usesOpfs = !shareSessionStore.usesInMemoryStorage;
+    console.log('[WorkspaceCrdtBridge] Configuring sync handler for guest:', { sessionCode, usesOpfs });
+    await syncHelpers.configureSyncHandler(_backend, sessionCode, usesOpfs);
+  }
+
   const workspaceDocName = 'workspace';
   console.log('[WorkspaceCrdtBridge] Creating RustSyncBridge for session:', sessionServerUrl, 'doc:', workspaceDocName, 'session:', sessionCode);
 
@@ -517,6 +372,7 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
     sessionCode: sessionCode,
     sendInitialState: isHost, // Host sends their state to server
     ownerId: isHost ? getClientOwnerId() : undefined, // Pass ownerId for hosts (read-only enforcement)
+    writeToDisk: true, // Rust handles disk writes automatically (with guest path prefixing if configured)
     onStatusChange: (connected) => {
       console.log('[WorkspaceCrdtBridge] Session sync status:', connected);
       notifySyncStatus(connected ? 'syncing' : 'idle');
@@ -524,26 +380,20 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
     onSynced: async () => {
       console.log('[WorkspaceCrdtBridge] Session sync complete, isHost:', isHost);
       notifySyncStatus('synced');
-      // For guests, write files to disk after initial sync
+      // Rust has already written files to disk via writeToDisk.
+      // Just notify UI to refresh.
       if (!isHost) {
-        await processRemoteUpdateForGuests();
-        // Notify UI to refresh tree (triggers App.svelte to build tree from CRDT)
         notifySessionSync();
       }
       // Resolve the sync promise to signal completion
       syncResolve();
     },
     onRemoteUpdate: async () => {
-      // Remote update received - handle based on host/guest mode
+      // Rust has already written changed files to disk via writeToDisk.
+      // Just notify UI to refresh.
       if (shareSessionStore.isGuest) {
-        // Guests: write files to disk (in-memory storage)
-        await processRemoteUpdateForGuests();
-        // Notify UI to refresh tree (triggers App.svelte to rebuild)
         notifySessionSync();
       } else {
-        // Hosts: write metadata to disk for device sync
-        await processRemoteMetadataUpdates();
-        // Notify UI to refresh tree (FileSystemEvents don't fire for sync-originated changes)
         notifyFileChange(null, null);
       }
     },
@@ -567,10 +417,15 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
 /**
  * Stop syncing with a share session.
  */
-export function stopSessionSync(): void {
+export async function stopSessionSync(): Promise<void> {
   console.log('[WorkspaceCrdtBridge] Stopping session sync');
 
   _sessionCode = null;
+
+  // Clear sync handler guest configuration
+  if (_backend) {
+    await syncHelpers.configureSyncHandler(_backend, null, false);
+  }
 
   if (syncBridge) {
     syncBridge.destroy();
@@ -674,6 +529,7 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
           docName: workspaceDocName,
           rustApi: rustApi,
           authToken: getToken() ?? undefined,
+          writeToDisk: true, // Rust handles disk writes automatically
           onStatusChange: (connected) => {
             console.log('[WorkspaceCrdtBridge] Connection status:', connected);
           },
@@ -691,7 +547,8 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
               console.warn('[WorkspaceCrdtBridge] Could not list files after sync:', e);
             }
 
-            // With RustSyncBridge, the Rust CRDT is already updated by the sync.
+            // Rust has already written files to disk via writeToDisk.
+            // Just notify UI to refresh.
             notifyFileChange(null, null);
 
             // Update file index from Rust CRDT for persistence
@@ -701,9 +558,9 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
             markInitialSyncComplete();
           },
           onRemoteUpdate: async () => {
-            // Remote update received - write metadata to disk for device sync
-            // UI notifications are handled by FileSystemEvents from the Rust CRDT
-            await processRemoteMetadataUpdates();
+            // Rust has already written changed files to disk via writeToDisk.
+            // Just notify UI to refresh.
+            notifyFileChange(null, null);
           },
         });
 
@@ -1035,49 +892,57 @@ async function getOrCreateBodyBridge(filePath: string): Promise<BodySyncBridge |
     bodyBridges.delete(canonicalPath);
   }
 
-  // CRITICAL: Load body content from disk into CRDT BEFORE connecting sync bridge.
-  // Without this, the body CRDT is empty when sync starts, and the server's
-  // (possibly empty) state would overwrite local content.
+  // Track existing content for echo detection (but don't load from disk yet)
   try {
     const existingBodyContent = await rustApi.getBodyContent(canonicalPath);
     if (existingBodyContent && existingBodyContent.length > 0) {
       // Body CRDT already has content - just track for echo detection
       lastKnownBodyContent.set(canonicalPath, existingBodyContent);
       console.log(`[BodySyncBridge] Body CRDT already has ${existingBodyContent.length} chars for ${canonicalPath}`);
-    } else if (backendApi && !shareSessionStore.isGuest) {
-      // Body CRDT is empty - try to load content from disk (hosts only)
-      // Guests don't have files on disk, so skip this for them
-      try {
-        console.log(`[BodySyncBridge] Body CRDT empty for ${canonicalPath}, loading from disk...`);
-        const entry = await backendApi.getEntry(canonicalPath);
-        if (entry && entry.content && entry.content.length > 0) {
-          console.log(`[BodySyncBridge] Loading ${entry.content.length} chars from disk into CRDT for ${canonicalPath}`);
-          await rustApi.setBodyContent(canonicalPath, entry.content);
-          lastKnownBodyContent.set(canonicalPath, entry.content);
-        }
-      } catch (diskErr) {
-        // File might not exist on disk (e.g., remote-only file) - that's OK
-        console.log(`[BodySyncBridge] Could not load from disk for ${canonicalPath}:`, diskErr);
-      }
     }
   } catch (err) {
     console.warn(`[BodySyncBridge] Could not get body content for ${canonicalPath}:`, err);
   }
 
   // Create new bridge
+  // Hosts write to disk via Rust (writeToDisk: true), guests don't
   const bridge = createBodySyncBridge({
     serverUrl: _serverUrl,
     workspaceId: _workspaceId,
     filePath: canonicalPath,
     rustApi: rustApi,
+    backend: _backend ?? undefined,
+    writeToDisk: !shareSessionStore.isGuest, // Hosts write to disk, guests don't
     sessionCode: shareSessionStore.joinCode ?? undefined,
     guestId: shareSessionStore.isGuest ? getClientOwnerId() : undefined,
     authToken: getToken() ?? undefined,
     onStatusChange: (connected) => {
       console.log(`[BodySyncBridge] ${canonicalPath} connection:`, connected);
     },
-    onSynced: () => {
+    onSynced: async () => {
       console.log(`[BodySyncBridge] ${canonicalPath} synced`);
+
+      // AFTER sync completes, check if CRDT is still empty.
+      // If so, load from disk (hosts only). This prevents duplication:
+      // - If server had content, CRDT now has it from sync
+      // - If server was empty AND we have local content, load it now
+      if (backendApi && !shareSessionStore.isGuest && rustApi) {
+        try {
+          const contentAfterSync = await rustApi.getBodyContent(canonicalPath);
+          if (!contentAfterSync || contentAfterSync.length === 0) {
+            console.log(`[BodySyncBridge] CRDT still empty after sync for ${canonicalPath}, loading from disk...`);
+            const entry = await backendApi.getEntry(canonicalPath);
+            if (entry && entry.content && entry.content.length > 0) {
+              console.log(`[BodySyncBridge] Loading ${entry.content.length} chars from disk into CRDT for ${canonicalPath}`);
+              await rustApi.setBodyContent(canonicalPath, entry.content);
+              lastKnownBodyContent.set(canonicalPath, entry.content);
+            }
+          }
+        } catch (diskErr) {
+          // File might not exist on disk (e.g., remote-only file) - that's OK
+          console.log(`[BodySyncBridge] Could not load from disk for ${canonicalPath}:`, diskErr);
+        }
+      }
     },
     onBodyChange: async (content) => {
       // Skip if this matches our last known content (avoid processing our own echoed changes)
@@ -1089,16 +954,9 @@ async function getOrCreateBodyBridge(filePath: string): Promise<BodySyncBridge |
 
       console.log(`[BodySyncBridge] ${canonicalPath} received remote body update, length:`, content.length);
       // Track and notify UI
+      // Rust has already written to disk via writeToDisk if enabled
       lastKnownBodyContent.set(canonicalPath, content);
       notifyBodyChange(canonicalPath, content);
-
-      // Write body to disk (for non-guests)
-      if (!shareSessionStore.isGuest && backendApi) {
-        const metadata = await rustApi!.getFile(canonicalPath);
-        if (metadata) {
-          await writeFileWithFrontmatter(canonicalPath, metadata, content);
-        }
-      }
     },
   });
 

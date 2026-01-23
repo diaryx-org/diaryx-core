@@ -383,6 +383,76 @@ impl WorkspaceCrdt {
         Ok(Some(update_id))
     }
 
+    /// Apply an update from a remote peer and return the list of changed file paths.
+    ///
+    /// This is like `apply_update` but returns the paths of files that changed,
+    /// allowing callers to selectively write those files to disk.
+    ///
+    /// Returns (update_id, changed_paths) where changed_paths includes:
+    /// - Newly created files (non-deleted)
+    /// - Deleted files (marked as deleted)
+    /// - Files with changed metadata
+    pub fn apply_update_tracking_changes(
+        &self,
+        update: &[u8],
+        origin: UpdateOrigin,
+    ) -> StorageResult<(Option<i64>, Vec<String>)> {
+        // Capture state before the update
+        let files_before: HashMap<String, FileMetadata> = self.list_files().into_iter().collect();
+
+        // Decode and apply the update
+        let decoded = Update::decode_v1(update)
+            .map_err(|e| DiaryxError::Unsupported(format!("Failed to decode update: {}", e)))?;
+
+        {
+            let mut txn = self.doc.transact_mut();
+            txn.apply_update(decoded)
+                .map_err(|e| DiaryxError::Unsupported(format!("Failed to apply update: {}", e)))?;
+        }
+
+        // Capture state after the update
+        let files_after: HashMap<String, FileMetadata> = self.list_files().into_iter().collect();
+
+        // Compute changed paths
+        let mut changed_paths = Vec::new();
+
+        // Detect created files
+        for (path, metadata) in &files_after {
+            if !files_before.contains_key(path) && !metadata.deleted {
+                changed_paths.push(path.clone());
+            }
+        }
+
+        // Detect deleted files
+        for (path, old_meta) in &files_before {
+            let is_deleted = files_after.get(path).map(|m| m.deleted).unwrap_or(true);
+            if !old_meta.deleted && is_deleted {
+                changed_paths.push(path.clone());
+            }
+        }
+
+        // Detect metadata changes
+        for (path, new_meta) in &files_after {
+            if let Some(old_meta) = files_before.get(path) {
+                if old_meta != new_meta && !new_meta.deleted && !old_meta.deleted {
+                    // Only add if not already in the list
+                    if !changed_paths.contains(path) {
+                        changed_paths.push(path.clone());
+                    }
+                }
+            }
+        }
+
+        // Emit events if callback is set
+        if origin != UpdateOrigin::Local && self.event_callback.is_some() {
+            self.emit_diff_events(&files_before, &files_after);
+        }
+
+        // Persist the update to storage
+        let update_id = self.storage.append_update(&self.doc_name, update, origin)?;
+        Ok((Some(update_id), changed_paths))
+    }
+
     /// Emit filesystem events for changes between two states.
     ///
     /// This compares the before and after states and emits appropriate events:

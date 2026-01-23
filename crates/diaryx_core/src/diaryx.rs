@@ -706,6 +706,20 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         self.crdt.apply_update(update, origin)
     }
 
+    /// Apply an update from a remote peer, tracking which files changed.
+    ///
+    /// Returns (update_id, changed_paths) where changed_paths includes:
+    /// - Newly created files (non-deleted)
+    /// - Deleted files (marked as deleted)
+    /// - Files with changed metadata
+    pub fn apply_update_tracking_changes(
+        &self,
+        update: &[u8],
+        origin: crate::crdt::UpdateOrigin,
+    ) -> Result<(Option<i64>, Vec<String>)> {
+        self.crdt.apply_update_tracking_changes(update, origin)
+    }
+
     /// Get file metadata from CRDT.
     pub fn get_file(&self, path: &str) -> Option<crate::crdt::FileMetadata> {
         self.crdt.get_file(path)
@@ -908,6 +922,133 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         }
 
         Ok(response)
+    }
+
+    /// Handle an incoming sync message and track changed files.
+    ///
+    /// Returns (optional_response, changed_file_paths).
+    /// Only workspace documents track changes; body documents return an empty list.
+    pub fn handle_sync_message_with_changes(
+        &self,
+        doc_name: &str,
+        message: &[u8],
+    ) -> Result<(Option<Vec<u8>>, Vec<String>)> {
+        log::debug!(
+            "[Y-sync] handle_sync_message_with_changes for doc: {}, {} bytes",
+            doc_name,
+            message.len()
+        );
+
+        let messages = crate::crdt::SyncMessage::decode_all(message)?;
+        if messages.is_empty() {
+            log::debug!("[Y-sync] No messages decoded, returning None");
+            return Ok((None, Vec::new()));
+        }
+
+        log::debug!("[Y-sync] Decoded {} messages", messages.len());
+
+        let mut response: Option<Vec<u8>> = None;
+        let mut all_changed_files = Vec::new();
+
+        for sync_msg in messages {
+            if Self::is_workspace_doc(doc_name) {
+                let (msg_response, changed_files) =
+                    self.handle_workspace_sync_message_with_changes(sync_msg)?;
+                all_changed_files.extend(changed_files);
+                if let Some(resp) = msg_response {
+                    if let Some(ref mut existing) = response {
+                        existing.extend_from_slice(&resp);
+                    } else {
+                        response = Some(resp);
+                    }
+                }
+            } else {
+                // Body documents don't track file changes at the workspace level
+                let msg_response = self.handle_body_sync_message(doc_name, sync_msg)?;
+                if let Some(resp) = msg_response {
+                    if let Some(ref mut existing) = response {
+                        existing.extend_from_slice(&resp);
+                    } else {
+                        response = Some(resp);
+                    }
+                }
+            }
+        }
+
+        Ok((response, all_changed_files))
+    }
+
+    fn handle_workspace_sync_message_with_changes(
+        &self,
+        msg: crate::crdt::SyncMessage,
+    ) -> Result<(Option<Vec<u8>>, Vec<String>)> {
+        match msg {
+            crate::crdt::SyncMessage::SyncStep1(remote_sv) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received SyncStep1, remote_sv {} bytes",
+                    remote_sv.len()
+                );
+                let diff = self.crdt.encode_diff(&remote_sv)?;
+                log::debug!("[Y-sync] Workspace: Encoded diff {} bytes", diff.len());
+                let step2 = crate::crdt::SyncMessage::SyncStep2(diff).encode();
+
+                let our_sv = self.crdt.encode_state_vector();
+                log::debug!(
+                    "[Y-sync] Workspace: Our state_vector {} bytes",
+                    our_sv.len()
+                );
+                let step1 = crate::crdt::SyncMessage::SyncStep1(our_sv).encode();
+
+                let mut combined = step2;
+                combined.extend_from_slice(&step1);
+                log::debug!(
+                    "[Y-sync] Workspace: Returning combined response {} bytes (Step2 + Step1)",
+                    combined.len()
+                );
+                Ok((Some(combined), Vec::new()))
+            }
+            crate::crdt::SyncMessage::SyncStep2(update) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received SyncStep2, update {} bytes",
+                    update.len()
+                );
+                let mut changed_files = Vec::new();
+                if !update.is_empty() {
+                    let (_, files) = self
+                        .crdt
+                        .apply_update_tracking_changes(&update, crate::crdt::UpdateOrigin::Sync)?;
+                    changed_files = files;
+                    log::debug!(
+                        "[Y-sync] Workspace: Applied update successfully, {} files changed",
+                        changed_files.len()
+                    );
+                } else {
+                    log::debug!("[Y-sync] Workspace: Update is empty, skipping apply");
+                }
+                Ok((None, changed_files))
+            }
+            crate::crdt::SyncMessage::Update(update) => {
+                log::debug!(
+                    "[Y-sync] Workspace: Received Update, {} bytes",
+                    update.len()
+                );
+                let mut changed_files = Vec::new();
+                if !update.is_empty() {
+                    let (_, files) = self.crdt.apply_update_tracking_changes(
+                        &update,
+                        crate::crdt::UpdateOrigin::Remote,
+                    )?;
+                    changed_files = files;
+                    log::debug!(
+                        "[Y-sync] Workspace: Applied remote update successfully, {} files changed",
+                        changed_files.len()
+                    );
+                } else {
+                    log::debug!("[Y-sync] Workspace: Update is empty, skipping apply");
+                }
+                Ok((None, changed_files))
+            }
+        }
     }
 
     fn handle_workspace_sync_message(

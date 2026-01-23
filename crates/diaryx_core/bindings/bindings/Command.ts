@@ -568,7 +568,11 @@ doc_name: string,
 /**
  * The incoming message bytes.
  */
-message: Array<number>, } } | { "type": "CreateUpdateMessage", "params": {
+message: Array<number>,
+/**
+ * If true, write changed files to disk after applying updates.
+ */
+write_to_disk: boolean, } } | { "type": "CreateUpdateMessage", "params": {
 /**
  * Document name (use "workspace" for workspace CRDT).
  */
