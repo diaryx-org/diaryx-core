@@ -263,7 +263,9 @@ export type FileSystemEvent =
   | { type: 'SyncStarted'; doc_name: string }
   | { type: 'SyncCompleted'; doc_name: string; files_synced: number }
   | { type: 'SyncStatusChanged'; status: string; error?: string }
-  | { type: 'SyncProgress'; completed: number; total: number };
+  | { type: 'SyncProgress'; completed: number; total: number }
+  // Send sync message event - emitted by Rust after CRDT updates
+  | { type: 'SendSyncMessage'; doc_name: string; message: number[]; is_body: boolean };
 
 /**
  * Callback type for filesystem event subscriptions.

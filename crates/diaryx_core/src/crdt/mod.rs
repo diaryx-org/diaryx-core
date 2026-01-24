@@ -52,6 +52,7 @@ mod sqlite_storage;
 mod storage;
 mod sync;
 mod sync_handler;
+mod sync_manager;
 mod types;
 mod workspace_doc;
 
@@ -64,5 +65,6 @@ pub use sqlite_storage::SqliteStorage;
 pub use storage::{CrdtStorage, StorageResult};
 pub use sync::{BodySyncProtocol, SyncMessage, SyncProtocol};
 pub use sync_handler::{GuestConfig, SyncHandler};
+pub use sync_manager::{BodySyncResult, RustSyncManager, SyncMessageResult};
 pub use types::{BinaryRef, CrdtUpdate, FileMetadata, UpdateOrigin};
 pub use workspace_doc::WorkspaceCrdt;

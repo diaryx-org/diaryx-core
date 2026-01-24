@@ -67,6 +67,10 @@ pub enum Command {
     DeleteEntry {
         /// Path to the entry to delete.
         path: String,
+        /// If true, perform a hard delete (remove from filesystem).
+        /// If false (default), perform a soft delete (mark as deleted in CRDT).
+        #[serde(default)]
+        hard_delete: bool,
     },
 
     /// Move/rename an entry.
@@ -785,6 +789,141 @@ pub enum Command {
         /// Storage path (possibly with guest prefix).
         storage_path: String,
     },
+
+    // ==================== Sync Manager Commands ====================
+    // These commands use the unified RustSyncManager
+    /// Handle an incoming workspace sync message via RustSyncManager.
+    ///
+    /// This processes Y-sync protocol messages for workspace metadata sync.
+    /// Returns response bytes to send back, list of changed files, and sync status.
+    #[cfg(feature = "crdt")]
+    HandleWorkspaceSyncMessage {
+        /// The incoming message bytes.
+        message: Vec<u8>,
+        /// If true, write changed files to disk after applying updates.
+        #[serde(default)]
+        write_to_disk: bool,
+    },
+
+    /// Create a SyncStep1 message for initiating workspace sync.
+    ///
+    /// Returns the encoded Y-sync message to send to the server.
+    #[cfg(feature = "crdt")]
+    CreateWorkspaceSyncStep1,
+
+    /// Create a workspace update message for local changes.
+    ///
+    /// If `since_state_vector` is provided, returns only updates since that state.
+    /// Otherwise returns the full state as an update.
+    #[cfg(feature = "crdt")]
+    CreateWorkspaceUpdate {
+        /// Optional state vector to diff against (base64 or raw bytes).
+        since_state_vector: Option<Vec<u8>>,
+    },
+
+    /// Initialize body sync for a document via RustSyncManager.
+    #[cfg(feature = "crdt")]
+    InitBodySync {
+        /// Document name (file path).
+        doc_name: String,
+    },
+
+    /// Close body sync for a document via RustSyncManager.
+    #[cfg(feature = "crdt")]
+    CloseBodySync {
+        /// Document name (file path).
+        doc_name: String,
+    },
+
+    /// Handle an incoming body sync message via RustSyncManager.
+    ///
+    /// This processes Y-sync protocol messages for body content sync.
+    /// Returns response bytes, new content if changed, and echo detection status.
+    #[cfg(feature = "crdt")]
+    HandleBodySyncMessage {
+        /// Document name (file path).
+        doc_name: String,
+        /// The incoming message bytes.
+        message: Vec<u8>,
+        /// If true, write body to disk after applying updates.
+        #[serde(default)]
+        write_to_disk: bool,
+    },
+
+    /// Create a SyncStep1 message for initiating body sync.
+    #[cfg(feature = "crdt")]
+    CreateBodySyncStep1 {
+        /// Document name (file path).
+        doc_name: String,
+    },
+
+    /// Create a body update message for local changes.
+    #[cfg(feature = "crdt")]
+    CreateBodyUpdate {
+        /// Document name (file path).
+        doc_name: String,
+        /// New content to sync.
+        content: String,
+    },
+
+    /// Check if initial sync is complete via RustSyncManager.
+    #[cfg(feature = "crdt")]
+    IsSyncComplete,
+
+    /// Check if workspace sync is complete.
+    #[cfg(feature = "crdt")]
+    IsWorkspaceSynced,
+
+    /// Check if body sync is complete for a document.
+    #[cfg(feature = "crdt")]
+    IsBodySynced {
+        /// Document name (file path).
+        doc_name: String,
+    },
+
+    /// Mark initial sync as complete.
+    #[cfg(feature = "crdt")]
+    MarkSyncComplete,
+
+    /// Get list of active body syncs.
+    #[cfg(feature = "crdt")]
+    GetActiveSyncs,
+
+    /// Track content for echo detection.
+    #[cfg(feature = "crdt")]
+    TrackContent {
+        /// File path.
+        path: String,
+        /// Content to track.
+        content: String,
+    },
+
+    /// Check if content is an echo of a previous update.
+    #[cfg(feature = "crdt")]
+    IsEcho {
+        /// File path.
+        path: String,
+        /// Content to check.
+        content: String,
+    },
+
+    /// Clear tracked content for echo detection.
+    #[cfg(feature = "crdt")]
+    ClearTrackedContent {
+        /// File path.
+        path: String,
+    },
+
+    /// Reset all sync state in RustSyncManager.
+    #[cfg(feature = "crdt")]
+    ResetSyncState,
+
+    /// Trigger workspace sync by creating an update message for local changes.
+    ///
+    /// Returns a SyncMessage that can be sent to the sync server.
+    /// This is useful after batch operations to force a sync.
+    #[cfg(feature = "crdt")]
+    TriggerWorkspaceSync,
 }
 
 // ============================================================================
@@ -880,6 +1019,28 @@ pub enum Response {
     /// History entries response (newer format with more details).
     #[cfg(feature = "crdt")]
     HistoryEntries(Vec<crate::crdt::HistoryEntry>),
+
+    /// Workspace sync message result.
+    #[cfg(feature = "crdt")]
+    WorkspaceSyncResult {
+        /// Optional response bytes to send back.
+        response: Option<Vec<u8>>,
+        /// List of file paths that were changed.
+        changed_files: Vec<String>,
+        /// Whether sync is now complete.
+        sync_complete: bool,
+    },
+
+    /// Body sync message result.
+    #[cfg(feature = "crdt")]
+    BodySyncResult {
+        /// Optional response bytes to send back.
+        response: Option<Vec<u8>>,
+        /// New content if it changed.
+        content: Option<String>,
+        /// Whether this is an echo of our own update.
+        is_echo: bool,
+    },
 }
 
 // ============================================================================

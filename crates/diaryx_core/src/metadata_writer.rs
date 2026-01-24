@@ -123,12 +123,15 @@ impl FrontmatterMetadata {
             lines.push(format!("part_of: {}", yaml_string(part_of)));
         }
 
-        if let Some(contents) = &self.contents
-            && !contents.is_empty()
-        {
-            lines.push("contents:".to_string());
-            for item in contents {
-                lines.push(format!("  - {}", yaml_string(item)));
+        if let Some(contents) = &self.contents {
+            if contents.is_empty() {
+                // Write empty array explicitly to preserve index file identity
+                lines.push("contents: []".to_string());
+            } else {
+                lines.push("contents:".to_string());
+                for item in contents {
+                    lines.push(format!("  - {}", yaml_string(item)));
+                }
             }
         }
 
@@ -359,5 +362,48 @@ mod tests {
         assert!(yaml.contains("contents:"));
         assert!(yaml.contains("  - child1.md"));
         assert!(yaml.contains("description: A description"));
+    }
+
+    #[test]
+    fn test_empty_contents_written_as_empty_array() {
+        // Empty contents (Some([])) should be written as "contents: []"
+        // to preserve index file identity
+        let fm = FrontmatterMetadata {
+            title: Some("Root Index".to_string()),
+            part_of: None,
+            contents: Some(vec![]), // Empty but explicitly set
+            audience: None,
+            description: None,
+            attachments: None,
+            extra: HashMap::new(),
+        };
+
+        let yaml = fm.to_yaml();
+        assert!(
+            yaml.contains("contents: []"),
+            "Empty contents should be written as 'contents: []', got: {}",
+            yaml
+        );
+    }
+
+    #[test]
+    fn test_none_contents_not_written() {
+        // None contents should NOT be written at all
+        let fm = FrontmatterMetadata {
+            title: Some("Regular File".to_string()),
+            part_of: Some("parent.md".to_string()),
+            contents: None, // Not an index file
+            audience: None,
+            description: None,
+            attachments: None,
+            extra: HashMap::new(),
+        };
+
+        let yaml = fm.to_yaml();
+        assert!(
+            !yaml.contains("contents"),
+            "None contents should not be written, got: {}",
+            yaml
+        );
     }
 }

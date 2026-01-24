@@ -224,3 +224,372 @@ export function handleFileSystemEvent(
       break;
   }
 }
+
+// ============================================================================
+// Sync Manager Commands (new unified sync interface)
+// ============================================================================
+
+/**
+ * Result of handling a workspace sync message.
+ */
+export interface WorkspaceSyncResult {
+  /** Optional response bytes to send back. */
+  response: number[] | null;
+  /** List of file paths that were changed. */
+  changedFiles: string[];
+  /** Whether sync is now complete. */
+  syncComplete: boolean;
+}
+
+/**
+ * Result of handling a body sync message.
+ */
+export interface BodySyncResult {
+  /** Optional response bytes to send back. */
+  response: number[] | null;
+  /** New content if it changed. */
+  content: string | null;
+  /** Whether this is an echo of our own update. */
+  isEcho: boolean;
+}
+
+/**
+ * Handle an incoming workspace sync message.
+ *
+ * This processes Y-sync protocol messages for workspace metadata sync.
+ *
+ * @param backend - The backend instance
+ * @param message - The incoming message bytes
+ * @param writeToDisk - If true, write changed files to disk
+ * @returns The sync result
+ */
+export async function handleWorkspaceSyncMessage(
+  backend: Backend,
+  message: Uint8Array,
+  writeToDisk: boolean
+): Promise<WorkspaceSyncResult> {
+  const response = await backend.execute({
+    type: 'HandleWorkspaceSyncMessage' as any,
+    params: {
+      message: Array.from(message),
+      write_to_disk: writeToDisk,
+    },
+  } as any);
+
+  if ((response.type as string) === 'WorkspaceSyncResult') {
+    const data = (response as any).data;
+    return {
+      response: data.response,
+      changedFiles: data.changed_files,
+      syncComplete: data.sync_complete,
+    };
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Create a SyncStep1 message for initiating workspace sync.
+ *
+ * @param backend - The backend instance
+ * @returns The encoded Y-sync message
+ */
+export async function createWorkspaceSyncStep1(backend: Backend): Promise<Uint8Array> {
+  const response = await backend.execute({
+    type: 'CreateWorkspaceSyncStep1',
+  } as any);
+
+  if (response.type === 'Binary') {
+    return new Uint8Array((response as any).data);
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Create a workspace update message for local changes.
+ *
+ * @param backend - The backend instance
+ * @param sinceStateVector - Optional state vector to diff against
+ * @returns The encoded update message
+ */
+export async function createWorkspaceUpdate(
+  backend: Backend,
+  sinceStateVector?: Uint8Array
+): Promise<Uint8Array> {
+  const response = await backend.execute({
+    type: 'CreateWorkspaceUpdate' as any,
+    params: {
+      since_state_vector: sinceStateVector ? Array.from(sinceStateVector) : null,
+    },
+  } as any);
+
+  if (response.type === 'Binary') {
+    return new Uint8Array((response as any).data);
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Initialize body sync for a document.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ */
+export async function initBodySync(backend: Backend, docName: string): Promise<void> {
+  await backend.execute({
+    type: 'InitBodySync' as any,
+    params: {
+      doc_name: docName,
+    },
+  } as any);
+}
+
+/**
+ * Close body sync for a document.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ */
+export async function closeBodySync(backend: Backend, docName: string): Promise<void> {
+  await backend.execute({
+    type: 'CloseBodySync' as any,
+    params: {
+      doc_name: docName,
+    },
+  } as any);
+}
+
+/**
+ * Handle an incoming body sync message.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ * @param message - The incoming message bytes
+ * @param writeToDisk - If true, write body to disk
+ * @returns The sync result
+ */
+export async function handleBodySyncMessage(
+  backend: Backend,
+  docName: string,
+  message: Uint8Array,
+  writeToDisk: boolean
+): Promise<BodySyncResult> {
+  const response = await backend.execute({
+    type: 'HandleBodySyncMessage' as any,
+    params: {
+      doc_name: docName,
+      message: Array.from(message),
+      write_to_disk: writeToDisk,
+    },
+  } as any);
+
+  if ((response.type as string) === 'BodySyncResult') {
+    const data = (response as any).data;
+    return {
+      response: data.response,
+      content: data.content,
+      isEcho: data.is_echo,
+    };
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Create a SyncStep1 message for initiating body sync.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ * @returns The encoded Y-sync message
+ */
+export async function createBodySyncStep1(backend: Backend, docName: string): Promise<Uint8Array> {
+  const response = await backend.execute({
+    type: 'CreateBodySyncStep1' as any,
+    params: {
+      doc_name: docName,
+    },
+  } as any);
+
+  if (response.type === 'Binary') {
+    return new Uint8Array((response as any).data);
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Create a body update message for local changes.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ * @param content - New content to sync
+ * @returns The encoded update message
+ */
+export async function createBodyUpdate(
+  backend: Backend,
+  docName: string,
+  content: string
+): Promise<Uint8Array> {
+  const response = await backend.execute({
+    type: 'CreateBodyUpdate' as any,
+    params: {
+      doc_name: docName,
+      content,
+    },
+  } as any);
+
+  if (response.type === 'Binary') {
+    return new Uint8Array((response as any).data);
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Check if initial sync is complete.
+ *
+ * @param backend - The backend instance
+ * @returns Whether sync is complete
+ */
+export async function isSyncComplete(backend: Backend): Promise<boolean> {
+  const response = await backend.execute({
+    type: 'IsSyncComplete',
+  } as any);
+
+  if (response.type === 'Bool') {
+    return (response as any).data;
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Check if workspace sync is complete.
+ *
+ * @param backend - The backend instance
+ * @returns Whether workspace sync is complete
+ */
+export async function isWorkspaceSynced(backend: Backend): Promise<boolean> {
+  const response = await backend.execute({
+    type: 'IsWorkspaceSynced',
+  } as any);
+
+  if (response.type === 'Bool') {
+    return (response as any).data;
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Check if body sync is complete for a document.
+ *
+ * @param backend - The backend instance
+ * @param docName - The document name (file path)
+ * @returns Whether body sync is complete
+ */
+export async function isBodySynced(backend: Backend, docName: string): Promise<boolean> {
+  const response = await backend.execute({
+    type: 'IsBodySynced' as any,
+    params: {
+      doc_name: docName,
+    },
+  } as any);
+
+  if (response.type === 'Bool') {
+    return (response as any).data;
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Mark initial sync as complete.
+ *
+ * @param backend - The backend instance
+ */
+export async function markSyncComplete(backend: Backend): Promise<void> {
+  await backend.execute({
+    type: 'MarkSyncComplete',
+  } as any);
+}
+
+/**
+ * Get list of active body syncs.
+ *
+ * @param backend - The backend instance
+ * @returns List of document names being synced
+ */
+export async function getActiveSyncs(backend: Backend): Promise<string[]> {
+  const response = await backend.execute({
+    type: 'GetActiveSyncs',
+  } as any);
+
+  if (response.type === 'Strings') {
+    return (response as any).data;
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Track content for echo detection.
+ *
+ * @param backend - The backend instance
+ * @param path - The file path
+ * @param content - The content to track
+ */
+export async function trackContent(
+  backend: Backend,
+  path: string,
+  content: string
+): Promise<void> {
+  await backend.execute({
+    type: 'TrackContent' as any,
+    params: {
+      path,
+      content,
+    },
+  } as any);
+}
+
+/**
+ * Check if content is an echo of a previous update.
+ *
+ * @param backend - The backend instance
+ * @param path - The file path
+ * @param content - The content to check
+ * @returns Whether this is an echo
+ */
+export async function isEcho(backend: Backend, path: string, content: string): Promise<boolean> {
+  const response = await backend.execute({
+    type: 'IsEcho' as any,
+    params: {
+      path,
+      content,
+    },
+  } as any);
+
+  if (response.type === 'Bool') {
+    return (response as any).data;
+  }
+  throw new Error(`Unexpected response type: ${response.type}`);
+}
+
+/**
+ * Clear tracked content for echo detection.
+ *
+ * @param backend - The backend instance
+ * @param path - The file path
+ */
+export async function clearTrackedContent(backend: Backend, path: string): Promise<void> {
+  await backend.execute({
+    type: 'ClearTrackedContent' as any,
+    params: {
+      path,
+    },
+  } as any);
+}
+
+/**
+ * Reset all sync state.
+ *
+ * @param backend - The backend instance
+ */
+export async function resetSyncState(backend: Backend): Promise<void> {
+  await backend.execute({
+    type: 'ResetSyncState',
+  } as any);
+}

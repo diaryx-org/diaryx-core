@@ -170,6 +170,30 @@ pub trait AsyncFileSystem: Send + Sync {
     fn get_modified_time<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         Box::pin(async move { None })
     }
+
+    // ==================== Sync Write Markers ====================
+    // These methods support preventing CRDT feedback loops during sync operations.
+    // Default implementations are no-ops; CrdtFs overrides to actually track.
+
+    /// Mark a path as being written from sync (skip CRDT updates if applicable).
+    ///
+    /// Call this before writing a file from a remote sync operation to prevent
+    /// the CRDT layer from generating a new update for data that came FROM the CRDT.
+    /// This prevents infinite sync loops.
+    ///
+    /// Default implementation is a no-op. Override in CrdtFs to track sync writes.
+    fn mark_sync_write_start(&self, _path: &Path) {
+        // Default: no-op
+    }
+
+    /// Clear the sync write marker for a path.
+    ///
+    /// Call this after a sync write operation completes.
+    ///
+    /// Default implementation is a no-op. Override in CrdtFs to track sync writes.
+    fn mark_sync_write_end(&self, _path: &Path) {
+        // Default: no-op
+    }
 }
 
 /// Async abstraction over filesystem operations (WASM version).
@@ -292,6 +316,30 @@ pub trait AsyncFileSystem {
     /// cannot be determined (e.g., in WASM environments without real filesystem).
     fn get_modified_time<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         Box::pin(async move { None })
+    }
+
+    // ==================== Sync Write Markers ====================
+    // These methods support preventing CRDT feedback loops during sync operations.
+    // Default implementations are no-ops; CrdtFs overrides to actually track.
+
+    /// Mark a path as being written from sync (skip CRDT updates if applicable).
+    ///
+    /// Call this before writing a file from a remote sync operation to prevent
+    /// the CRDT layer from generating a new update for data that came FROM the CRDT.
+    /// This prevents infinite sync loops.
+    ///
+    /// Default implementation is a no-op. Override in CrdtFs to track sync writes.
+    fn mark_sync_write_start(&self, _path: &Path) {
+        // Default: no-op
+    }
+
+    /// Clear the sync write marker for a path.
+    ///
+    /// Call this after a sync write operation completes.
+    ///
+    /// Default implementation is a no-op. Override in CrdtFs to track sync writes.
+    fn mark_sync_write_end(&self, _path: &Path) {
+        // Default: no-op
     }
 }
 
@@ -506,6 +554,14 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
     fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         (*self).get_modified_time(path)
     }
+
+    fn mark_sync_write_start(&self, path: &Path) {
+        (*self).mark_sync_write_start(path)
+    }
+
+    fn mark_sync_write_end(&self, path: &Path) {
+        (*self).mark_sync_write_end(path)
+    }
 }
 
 // Blanket implementation for references to AsyncFileSystem (WASM)
@@ -561,6 +617,14 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
 
     fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         (*self).get_modified_time(path)
+    }
+
+    fn mark_sync_write_start(&self, path: &Path) {
+        (*self).mark_sync_write_start(path)
+    }
+
+    fn mark_sync_write_end(&self, path: &Path) {
+        (*self).mark_sync_write_end(path)
     }
 }
 

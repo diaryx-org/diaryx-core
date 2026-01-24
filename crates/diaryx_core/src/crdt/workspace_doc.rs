@@ -416,17 +416,37 @@ impl WorkspaceCrdt {
         // Compute changed paths
         let mut changed_paths = Vec::new();
 
-        // Detect created files
+        // Detect created files (new files that weren't in the previous state)
         for (path, metadata) in &files_after {
             if !files_before.contains_key(path) && !metadata.deleted {
                 changed_paths.push(path.clone());
             }
         }
 
-        // Detect deleted files
-        for (path, old_meta) in &files_before {
+        // Also detect files that were previously deleted but are now restored
+        for (path, metadata) in &files_after {
+            if let Some(old_meta) = files_before.get(path) {
+                if old_meta.deleted && !metadata.deleted && !changed_paths.contains(path) {
+                    changed_paths.push(path.clone());
+                }
+            }
+        }
+
+        // Detect deleted files (both newly deleted and already-deleted files that need disk cleanup)
+        for (path, _old_meta) in &files_before {
             let is_deleted = files_after.get(path).map(|m| m.deleted).unwrap_or(true);
-            if !old_meta.deleted && is_deleted {
+            // Include if: file is now deleted (whether or not it was before)
+            // This ensures disk cleanup happens even if CRDT state was persisted from a previous session
+            if is_deleted && !changed_paths.contains(path) {
+                changed_paths.push(path.clone());
+            }
+        }
+
+        // Also include files that only exist in files_after and are deleted
+        // (in case they weren't in files_before at all)
+        for (path, metadata) in &files_after {
+            if metadata.deleted && !files_before.contains_key(path) && !changed_paths.contains(path)
+            {
                 changed_paths.push(path.clone());
             }
         }
@@ -475,13 +495,42 @@ impl WorkspaceCrdt {
             }
         }
 
-        // Detect deleted files (was not deleted before, is deleted now or removed)
+        // Detect restored files (was deleted, now not deleted)
+        for (path, metadata) in after {
+            if let Some(old_meta) = before.get(path) {
+                if old_meta.deleted && !metadata.deleted {
+                    self.emit_event(FileSystemEvent::file_created_with_metadata(
+                        PathBuf::from(path),
+                        Some(self.metadata_to_frontmatter(metadata)),
+                        metadata.part_of.as_ref().map(PathBuf::from),
+                    ));
+                }
+            }
+        }
+
+        // Detect deleted files - emit for any file that is marked as deleted
+        // This ensures UI updates even if CRDT state was already persisted
         for (path, old_meta) in before {
             let is_deleted = after.get(path).map(|m| m.deleted).unwrap_or(true);
-            if !old_meta.deleted && is_deleted {
+            if is_deleted {
+                let parent = after
+                    .get(path)
+                    .and_then(|m| m.part_of.as_ref())
+                    .or(old_meta.part_of.as_ref())
+                    .map(PathBuf::from);
                 self.emit_event(FileSystemEvent::file_deleted_with_parent(
                     PathBuf::from(path),
-                    old_meta.part_of.as_ref().map(PathBuf::from),
+                    parent,
+                ));
+            }
+        }
+
+        // Also handle files that are only in 'after' and are deleted
+        for (path, metadata) in after {
+            if metadata.deleted && !before.contains_key(path) {
+                self.emit_event(FileSystemEvent::file_deleted_with_parent(
+                    PathBuf::from(path),
+                    metadata.part_of.as_ref().map(PathBuf::from),
                 ));
             }
         }

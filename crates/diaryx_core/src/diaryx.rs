@@ -120,6 +120,9 @@ pub struct Diaryx<FS: AsyncFileSystem> {
     /// Sync handler for processing remote CRDT updates (optional, requires `crdt` feature).
     #[cfg(feature = "crdt")]
     sync_handler: Option<Arc<crate::crdt::SyncHandler<FS>>>,
+    /// Sync manager for unified sync operations (optional, requires `crdt` feature).
+    #[cfg(feature = "crdt")]
+    sync_manager: Option<Arc<crate::crdt::RustSyncManager<FS>>>,
 }
 
 impl<FS: AsyncFileSystem> Diaryx<FS> {
@@ -133,6 +136,8 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
             body_doc_manager: None,
             #[cfg(feature = "crdt")]
             sync_handler: None,
+            #[cfg(feature = "crdt")]
+            sync_manager: None,
         }
     }
 
@@ -145,11 +150,19 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
         FS: Clone,
     {
         let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
+        let workspace_crdt = Arc::new(WorkspaceCrdt::new(Arc::clone(&storage)));
+        let body_doc_manager = Arc::new(BodyDocManager::new(storage));
+        let sync_manager = Arc::new(crate::crdt::RustSyncManager::new(
+            Arc::clone(&workspace_crdt),
+            Arc::clone(&body_doc_manager),
+            Arc::clone(&sync_handler),
+        ));
         Self {
             fs,
-            workspace_crdt: Some(Arc::new(WorkspaceCrdt::new(Arc::clone(&storage)))),
-            body_doc_manager: Some(Arc::new(BodyDocManager::new(storage))),
+            workspace_crdt: Some(workspace_crdt),
+            body_doc_manager: Some(body_doc_manager),
             sync_handler: Some(sync_handler),
+            sync_manager: Some(sync_manager),
         }
     }
 
@@ -165,11 +178,17 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
         let workspace_crdt = Arc::new(WorkspaceCrdt::load(Arc::clone(&storage))?);
         let body_doc_manager = Arc::new(BodyDocManager::new(storage));
         let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
+        let sync_manager = Arc::new(crate::crdt::RustSyncManager::new(
+            Arc::clone(&workspace_crdt),
+            Arc::clone(&body_doc_manager),
+            Arc::clone(&sync_handler),
+        ));
         Ok(Self {
             fs,
             workspace_crdt: Some(workspace_crdt),
             body_doc_manager: Some(body_doc_manager),
             sync_handler: Some(sync_handler),
+            sync_manager: Some(sync_manager),
         })
     }
 
@@ -189,11 +208,17 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
         FS: Clone,
     {
         let sync_handler = Arc::new(crate::crdt::SyncHandler::new(fs.clone()));
+        let sync_manager = Arc::new(crate::crdt::RustSyncManager::new(
+            Arc::clone(&workspace_crdt),
+            Arc::clone(&body_doc_manager),
+            Arc::clone(&sync_handler),
+        ));
         Self {
             fs,
             workspace_crdt: Some(workspace_crdt),
             body_doc_manager: Some(body_doc_manager),
             sync_handler: Some(sync_handler),
+            sync_manager: Some(sync_manager),
         }
     }
 
@@ -253,6 +278,30 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
     #[cfg(feature = "crdt")]
     pub(crate) fn sync_handler(&self) -> Option<&Arc<crate::crdt::SyncHandler<FS>>> {
         self.sync_handler.as_ref()
+    }
+
+    /// Get a reference to the sync manager (for internal use).
+    ///
+    /// Returns `None` if CRDT support is not enabled or sync manager not configured.
+    #[cfg(feature = "crdt")]
+    pub(crate) fn sync_manager(&self) -> Option<&Arc<crate::crdt::RustSyncManager<FS>>> {
+        self.sync_manager.as_ref()
+    }
+
+    /// Set the event callback on the sync manager.
+    ///
+    /// This callback is used to emit SendSyncMessage events to TypeScript,
+    /// which then sends the bytes over WebSocket to the sync server.
+    ///
+    /// Call this after creating the Diaryx instance to enable sync message emission.
+    #[cfg(feature = "crdt")]
+    pub fn set_sync_event_callback(
+        &self,
+        callback: Arc<dyn Fn(&crate::fs::FileSystemEvent) + Send + Sync>,
+    ) {
+        if let Some(ref sync_manager) = self.sync_manager {
+            sync_manager.set_event_callback(callback);
+        }
     }
 }
 

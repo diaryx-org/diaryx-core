@@ -13,23 +13,18 @@
 import { tick } from 'svelte';
 import type { EntryData, TreeNode, Api } from '../lib/backend';
 import type { JsonValue } from '../lib/backend/generated/serde_json/JsonValue';
-// FileMetadata type is used by workspaceCrdtBridge imports
-import { entryStore, uiStore, collaborationStore, workspaceStore, shareSessionStore } from '../models/stores';
+import { entryStore, uiStore, collaborationStore } from '../models/stores';
 import {
   revokeBlobUrls,
   transformAttachmentPaths,
   reverseBlobUrlsToAttachmentPaths,
-  updateCrdtFileMetadata,
-  addFileToCrdt,
 } from '../models/services';
 import {
-  isDeviceSyncActive,
-  renameFile,
-  deleteFile,
-  syncBodyContent,
   ensureBodySync,
+  closeBodySync,
 } from '../lib/crdt/workspaceCrdtBridge';
-// Note: Collaboration sync now happens at workspace level via workspaceCrdtBridge
+// Note: CRDT sync for entry operations (save, create, delete, rename) is now handled by Rust.
+// TypeScript only manages body sync bridges for real-time collaboration.
 
 /**
  * Helper to handle mixed frontmatter types (Map from WASM vs Object from JSON/Tauri).
@@ -174,6 +169,7 @@ export async function saveEntry(
 
 /**
  * Create a child entry under a parent.
+ * Note: CRDT sync is handled by Rust CreateEntry command.
  */
 export async function createChildEntry(
   api: Api,
@@ -182,10 +178,6 @@ export async function createChildEntry(
 ): Promise<string | null> {
   try {
     const newPath = await api.createChildEntry(parentPath);
-
-    // Update CRDT with new file
-    const entry = await api.getEntry(newPath);
-    addFileToCrdt(newPath, entry.frontmatter, parentPath);
 
     if (onSuccess) {
       await onSuccess();
@@ -200,6 +192,7 @@ export async function createChildEntry(
 
 /**
  * Create a new entry at a specific path.
+ * Note: CRDT sync is handled by Rust CreateEntry command.
  */
 export async function createEntry(
   api: Api,
@@ -209,10 +202,6 @@ export async function createEntry(
 ): Promise<string | null> {
   try {
     const newPath = await api.createEntry(path, options);
-
-    // Update CRDT with new file
-    const entry = await api.getEntry(newPath);
-    addFileToCrdt(newPath, entry.frontmatter, null);
 
     if (onSuccess) {
       await onSuccess();
@@ -336,8 +325,6 @@ export async function handlePropertyChange(
   onRefreshTree?: () => Promise<void>
 ): Promise<{ success: boolean; newPath?: string }> {
   try {
-    const path = currentEntry.path;
-
     // Special handling for title: need to check rename first
     if (key === 'title' && typeof value === 'string' && value.trim()) {
       const newFilename = slugifyTitle(value);
@@ -373,8 +360,7 @@ export async function handlePropertyChange(
             frontmatter: newFrontmatter,
           });
 
-          // Update CRDT with new path and frontmatter
-          updateCrdtFileMetadata(newPath, newFrontmatter);
+          // Note: CRDT sync is handled by Rust RenameEntry command
 
           if (onRefreshTree) {
             await onRefreshTree();
@@ -409,8 +395,7 @@ export async function handlePropertyChange(
           frontmatter: newFrontmatter,
         });
 
-        // Update CRDT with new frontmatter (not the old one)
-        updateCrdtFileMetadata(path, newFrontmatter);
+        // Note: CRDT sync for frontmatter is handled by Rust SetFrontmatterProperty
         entryStore.setTitleError(null);
 
         if (onRefreshTree) {
@@ -428,8 +413,7 @@ export async function handlePropertyChange(
         frontmatter: newFrontmatter,
       });
 
-      // Update CRDT with new frontmatter (not the old one)
-      updateCrdtFileMetadata(path, newFrontmatter);
+      // Note: CRDT sync for frontmatter is handled by Rust SetFrontmatterProperty
 
       // Refresh tree if contents or part_of changed (affects hierarchy)
       if ((key === 'contents' || key === 'part_of') && onRefreshTree) {
@@ -446,6 +430,7 @@ export async function handlePropertyChange(
 
 /**
  * Remove a property from the current entry.
+ * Note: CRDT sync is handled by Rust RemoveFrontmatterProperty command.
  */
 export async function removeProperty(
   api: Api,
@@ -453,16 +438,12 @@ export async function removeProperty(
   key: string
 ): Promise<boolean> {
   try {
-    const path = currentEntry.path;
     await api.removeFrontmatterProperty(currentEntry.path, key);
 
     // Update local state
     const newFrontmatter = { ...currentEntry.frontmatter };
     delete newFrontmatter[key];
     entryStore.setCurrentEntry({ ...currentEntry, frontmatter: newFrontmatter });
-
-    // Update CRDT
-    updateCrdtFileMetadata(path, newFrontmatter);
 
     return true;
   } catch (e) {
@@ -473,6 +454,7 @@ export async function removeProperty(
 
 /**
  * Add a property to the current entry.
+ * Note: CRDT sync is handled by Rust SetFrontmatterProperty command.
  */
 export async function addProperty(
   api: Api,
@@ -481,7 +463,6 @@ export async function addProperty(
   value: unknown
 ): Promise<boolean> {
   try {
-    const path = currentEntry.path;
     await api.setFrontmatterProperty(currentEntry.path, key, value as JsonValue);
 
     // Update local state
@@ -489,9 +470,6 @@ export async function addProperty(
       ...currentEntry,
       frontmatter: { ...currentEntry.frontmatter, [key]: value },
     });
-
-    // Update CRDT
-    updateCrdtFileMetadata(path, { ...currentEntry.frontmatter, [key]: value });
 
     return true;
   } catch (e) {
@@ -502,6 +480,7 @@ export async function addProperty(
 
 /**
  * Rename an entry.
+ * Note: CRDT sync is handled by Rust RenameEntry command.
  *
  * @param api - API instance
  * @param path - Current path of the entry
@@ -515,13 +494,13 @@ export async function renameEntry(
   newFilename: string,
   onSuccess?: () => Promise<void>
 ): Promise<string> {
+  // Close old body sync bridge before rename
+  closeBodySync(path);
+
   const newPath = await api.renameEntry(path, newFilename);
 
-  // Sync rename to Rust CRDT for device-to-device sync
-  // Note: Body doc migration is now handled by the Rust backend in command_handler.rs
-  if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
-    await renameFile(path, newPath); // Rust CRDT for device sync
-  }
+  // Create new body sync bridge for the new path
+  await ensureBodySync(newPath);
 
   if (onSuccess) {
     await onSuccess();
@@ -532,6 +511,7 @@ export async function renameEntry(
 
 /**
  * Duplicate an entry.
+ * Note: CRDT sync for the new file should be added via Rust DuplicateEntry command.
  *
  * @param api - API instance
  * @param path - Path of the entry to duplicate
@@ -545,13 +525,8 @@ export async function duplicateEntry(
 ): Promise<string> {
   const newPath = await api.duplicateEntry(path);
 
-  // Update CRDT with new file - get parent from workspace store
-  const entry = await api.getEntry(newPath);
-  const parentPath = workspaceStore.getParentNodePath(path);
-  addFileToCrdt(newPath, entry.frontmatter, parentPath || null);
-
-  // Sync body content through Rust CRDT for device-to-device sync
-  await syncBodyContent(newPath, entry.content);
+  // Ensure body sync bridge is created for the new file
+  await ensureBodySync(newPath);
 
   if (onSuccess) {
     await onSuccess();
@@ -562,7 +537,7 @@ export async function duplicateEntry(
 
 /**
  * Delete an entry with CRDT sync support.
- * This is an enhanced version that includes CRDT sync.
+ * Note: CRDT sync (soft delete) is now handled by Rust DeleteEntry command.
  *
  * @param api - API instance
  * @param path - Path of the entry to delete
@@ -582,13 +557,11 @@ export async function deleteEntryWithSync(
   if (!confirm) return false;
 
   try {
-    await api.deleteEntry(path);
+    // Close body sync bridge for the deleted file
+    closeBodySync(path);
 
-    // Sync delete to Rust CRDT for device-to-device sync
-    // Note: Body doc deletion is now handled by the Rust backend in command_handler.rs
-    if (isDeviceSyncActive() || (shareSessionStore.mode !== 'idle' && shareSessionStore.joinCode)) {
-      await deleteFile(path); // Rust CRDT for device sync
-    }
+    // Delete via Rust - handles CRDT soft delete automatically
+    await api.deleteEntry(path);
 
     // If we deleted the currently open entry, clear it
     if (currentEntryPath === path) {
@@ -622,6 +595,7 @@ export async function deleteEntryWithSync(
 
 /**
  * Create a child entry with CRDT sync support.
+ * Note: CRDT sync is now handled by Rust CreateEntry command.
  *
  * @param api - API instance
  * @param parentPath - Path of the parent entry
@@ -634,14 +608,11 @@ export async function createChildEntryWithSync(
   onSuccess?: (newPath: string) => Promise<void>
 ): Promise<string | null> {
   try {
+    // Create via Rust - handles CRDT sync automatically
     const newPath = await api.createChildEntry(parentPath);
 
-    // Update CRDT with new file
-    const entry = await api.getEntry(newPath);
-    addFileToCrdt(newPath, entry.frontmatter, parentPath);
-
-    // Sync body content through Rust CRDT for device-to-device sync
-    await syncBodyContent(newPath, entry.content);
+    // Ensure body sync bridge is created for the new file
+    await ensureBodySync(newPath);
 
     if (onSuccess) {
       await onSuccess(newPath);
@@ -656,6 +627,7 @@ export async function createChildEntryWithSync(
 
 /**
  * Create a new entry with CRDT sync support.
+ * Note: CRDT sync is now handled by Rust CreateEntry command.
  *
  * @param api - API instance
  * @param path - Path for the new entry
@@ -670,14 +642,11 @@ export async function createEntryWithSync(
   onSuccess?: () => Promise<void>
 ): Promise<string | null> {
   try {
+    // Create via Rust - handles CRDT sync automatically
     const newPath = await api.createEntry(path, options);
 
-    // Update CRDT with new file
-    const entry = await api.getEntry(newPath);
-    addFileToCrdt(newPath, entry.frontmatter, null);
-
-    // Sync body content through Rust CRDT for device-to-device sync
-    await syncBodyContent(newPath, entry.content);
+    // Ensure body sync bridge is created for the new file
+    await ensureBodySync(newPath);
 
     if (onSuccess) {
       await onSuccess();
@@ -694,6 +663,7 @@ export async function createEntryWithSync(
 
 /**
  * Save an entry with CRDT sync support.
+ * Note: CRDT sync is now handled by Rust SaveEntry command.
  *
  * @param api - API instance
  * @param currentEntry - The current entry being saved
@@ -713,12 +683,9 @@ export async function saveEntryWithSync(
     // Reverse-transform blob URLs back to attachment paths
     const markdown = reverseBlobUrlsToAttachmentPaths(markdownWithBlobUrls || '');
 
-    // Save to backend
+    // Save to backend - Rust handles CRDT sync automatically
     await api.saveEntry(currentEntry.path, markdown);
     entryStore.markClean();
-
-    // Sync body content through Rust CRDT for device-to-device sync
-    await syncBodyContent(currentEntry.path, markdown);
   } catch (e) {
     uiStore.setError(e instanceof Error ? e.message : String(e));
   } finally {

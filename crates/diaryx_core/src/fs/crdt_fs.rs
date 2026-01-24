@@ -64,8 +64,11 @@ pub struct CrdtFs<FS: AsyncFileSystem> {
     body_doc_manager: Arc<BodyDocManager>,
     /// Whether CRDT updates are enabled.
     enabled: AtomicBool,
-    /// Paths currently being written (for loop prevention).
+    /// Paths currently being written locally (for loop prevention).
     local_writes_in_progress: RwLock<HashSet<PathBuf>>,
+    /// Paths currently being written from sync (skip CRDT updates entirely).
+    /// This prevents feedback loops where remote sync writes trigger new CRDT updates.
+    sync_writes_in_progress: RwLock<HashSet<PathBuf>>,
 }
 
 impl<FS: AsyncFileSystem> CrdtFs<FS> {
@@ -81,6 +84,7 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
             body_doc_manager,
             enabled: AtomicBool::new(true),
             local_writes_in_progress: RwLock::new(HashSet::new()),
+            sync_writes_in_progress: RwLock::new(HashSet::new()),
         }
     }
 
@@ -127,6 +131,36 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
     fn mark_local_write_end(&self, path: &Path) {
         let mut writes = self.local_writes_in_progress.write().unwrap();
         writes.remove(&path.to_path_buf());
+    }
+
+    /// Check if a path is currently being written from sync.
+    ///
+    /// Sync writes should skip CRDT updates entirely to prevent feedback loops.
+    pub fn is_sync_write_in_progress(&self, path: &Path) -> bool {
+        let writes = self.sync_writes_in_progress.read().unwrap();
+        writes.contains(&path.to_path_buf())
+    }
+
+    /// Mark a path as being written from sync (internal implementation).
+    fn mark_sync_write_start_internal(&self, path: &Path) {
+        let mut writes = self.sync_writes_in_progress.write().unwrap();
+        writes.insert(path.to_path_buf());
+        log::debug!(
+            "CrdtFs: Marked sync write start for {:?} (total: {})",
+            path,
+            writes.len()
+        );
+    }
+
+    /// Clear the sync write marker for a path (internal implementation).
+    fn mark_sync_write_end_internal(&self, path: &Path) {
+        let mut writes = self.sync_writes_in_progress.write().unwrap();
+        writes.remove(&path.to_path_buf());
+        log::debug!(
+            "CrdtFs: Marked sync write end for {:?} (remaining: {})",
+            path,
+            writes.len()
+        );
     }
 
     /// Extract FileMetadata from file content.
@@ -206,8 +240,18 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
     }
 
     /// Update CRDT with metadata from a file.
+    ///
+    /// This is skipped if:
+    /// - CRDT updates are disabled globally
+    /// - The path is marked as a sync write (to prevent feedback loops)
     fn update_crdt_for_file(&self, path: &Path, content: &str) {
         if !self.is_enabled() {
+            return;
+        }
+
+        // Skip CRDT update if this is a sync write (prevents feedback loops)
+        if self.is_sync_write_in_progress(path) {
+            log::debug!("CrdtFs: Skipping CRDT update for sync write: {:?}", path);
             return;
         }
 
@@ -224,6 +268,55 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
         let body_doc = self.body_doc_manager.get_or_create(&path_str);
         let _ = body_doc.set_body(body);
     }
+
+    /// Update parent's contents array when a child is moved or deleted.
+    ///
+    /// For rename/move: `new_path` is Some with the new path.
+    /// For delete: `new_path` is None.
+    fn update_parent_contents(&self, old_path: &str, new_path: Option<&str>) {
+        if !self.is_enabled() {
+            return;
+        }
+
+        let old_metadata = match self.workspace_crdt.get_file(old_path) {
+            Some(m) => m,
+            None => return,
+        };
+
+        if let Some(ref parent_path) = old_metadata.part_of {
+            if let Some(mut parent) = self.workspace_crdt.get_file(parent_path) {
+                if let Some(ref mut contents) = parent.contents {
+                    // Find old filename in contents
+                    let old_filename = std::path::Path::new(old_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(old_path);
+
+                    if let Some(idx) = contents
+                        .iter()
+                        .position(|e| e == old_filename || e == old_path)
+                    {
+                        match new_path {
+                            Some(np) => {
+                                // Rename: replace with new filename
+                                let new_filename = std::path::Path::new(np)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(np);
+                                contents[idx] = new_filename.to_string();
+                            }
+                            None => {
+                                // Delete: remove from contents
+                                contents.remove(idx);
+                            }
+                        }
+                        parent.modified_at = chrono::Utc::now().timestamp_millis();
+                        let _ = self.workspace_crdt.set_file(parent_path, parent);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Implement Clone if the inner FS is Clone
@@ -235,6 +328,7 @@ impl<FS: AsyncFileSystem + Clone> Clone for CrdtFs<FS> {
             body_doc_manager: Arc::clone(&self.body_doc_manager),
             enabled: AtomicBool::new(self.enabled.load(Ordering::SeqCst)),
             local_writes_in_progress: RwLock::new(HashSet::new()),
+            sync_writes_in_progress: RwLock::new(HashSet::new()),
         }
     }
 }
@@ -297,6 +391,10 @@ impl<FS: AsyncFileSystem + Send + Sync> AsyncFileSystem for CrdtFs<FS> {
             // Mark as deleted in CRDT if deletion succeeded and enabled
             if result.is_ok() && self.is_enabled() {
                 let path_str = path.to_string_lossy().to_string();
+
+                // Update parent's contents to remove the deleted file
+                self.update_parent_contents(&path_str, None);
+
                 if let Err(e) = self.workspace_crdt.delete_file(&path_str) {
                     log::warn!(
                         "Failed to mark file as deleted in CRDT for {}: {}",
@@ -348,6 +446,10 @@ impl<FS: AsyncFileSystem + Send + Sync> AsyncFileSystem for CrdtFs<FS> {
             // Update CRDT if move succeeded
             if result.is_ok() && self.is_enabled() {
                 let from_str = from.to_string_lossy().to_string();
+                let to_str = to.to_string_lossy().to_string();
+
+                // Update parent's contents (replace old path with new path)
+                self.update_parent_contents(&from_str, Some(&to_str));
 
                 // Mark old path as deleted
                 if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
@@ -383,6 +485,15 @@ impl<FS: AsyncFileSystem + Send + Sync> AsyncFileSystem for CrdtFs<FS> {
 
     fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         self.inner.get_modified_time(path)
+    }
+
+    // Override sync write markers to track which paths are being written from sync
+    fn mark_sync_write_start(&self, path: &Path) {
+        self.mark_sync_write_start_internal(path);
+    }
+
+    fn mark_sync_write_end(&self, path: &Path) {
+        self.mark_sync_write_end_internal(path);
     }
 }
 
@@ -444,6 +555,10 @@ impl<FS: AsyncFileSystem> AsyncFileSystem for CrdtFs<FS> {
             // Mark as deleted in CRDT if deletion succeeded and enabled
             if result.is_ok() && self.is_enabled() {
                 let path_str = path.to_string_lossy().to_string();
+
+                // Update parent's contents to remove the deleted file
+                self.update_parent_contents(&path_str, None);
+
                 if let Err(e) = self.workspace_crdt.delete_file(&path_str) {
                     log::warn!(
                         "Failed to mark file as deleted in CRDT for {}: {}",
@@ -495,6 +610,10 @@ impl<FS: AsyncFileSystem> AsyncFileSystem for CrdtFs<FS> {
             // Update CRDT if move succeeded
             if result.is_ok() && self.is_enabled() {
                 let from_str = from.to_string_lossy().to_string();
+                let to_str = to.to_string_lossy().to_string();
+
+                // Update parent's contents (replace old path with new path)
+                self.update_parent_contents(&from_str, Some(&to_str));
 
                 // Mark old path as deleted
                 if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
@@ -530,6 +649,15 @@ impl<FS: AsyncFileSystem> AsyncFileSystem for CrdtFs<FS> {
 
     fn get_modified_time<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Option<i64>> {
         self.inner.get_modified_time(path)
+    }
+
+    // Override sync write markers to track which paths are being written from sync
+    fn mark_sync_write_start(&self, path: &Path) {
+        self.mark_sync_write_start_internal(path);
+    }
+
+    fn mark_sync_write_end(&self, path: &Path) {
+        self.mark_sync_write_end_internal(path);
     }
 }
 
@@ -624,5 +752,46 @@ mod tests {
 
         fs.mark_local_write_end(Path::new("test.md"));
         assert!(!fs.is_local_write_in_progress(Path::new("test.md")));
+    }
+
+    #[test]
+    fn test_sync_write_tracking() {
+        let fs = create_test_crdt_fs();
+
+        assert!(!fs.is_sync_write_in_progress(Path::new("test.md")));
+
+        fs.mark_sync_write_start(Path::new("test.md"));
+        assert!(fs.is_sync_write_in_progress(Path::new("test.md")));
+
+        fs.mark_sync_write_end(Path::new("test.md"));
+        assert!(!fs.is_sync_write_in_progress(Path::new("test.md")));
+    }
+
+    #[test]
+    fn test_sync_write_skips_crdt_update() {
+        let fs = create_test_crdt_fs();
+        let content = "---\ntitle: Sync Write Test\n---\nBody content";
+
+        // First, write without sync marker - should update CRDT
+        futures_lite::future::block_on(async {
+            fs.write_file(Path::new("test1.md"), content).await.unwrap();
+        });
+        assert!(fs.workspace_crdt.get_file("test1.md").is_some());
+
+        // Now, mark sync write and write - should NOT update CRDT
+        fs.mark_sync_write_start(Path::new("test2.md"));
+        futures_lite::future::block_on(async {
+            fs.write_file(Path::new("test2.md"), content).await.unwrap();
+        });
+        fs.mark_sync_write_end(Path::new("test2.md"));
+
+        // File should exist on disk but NOT in CRDT
+        assert!(futures_lite::future::block_on(
+            fs.exists(Path::new("test2.md"))
+        ));
+        assert!(
+            fs.workspace_crdt.get_file("test2.md").is_none(),
+            "CRDT should not have been updated for sync write"
+        );
     }
 }

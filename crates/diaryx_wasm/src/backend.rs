@@ -725,6 +725,10 @@ impl DiaryxBackend {
             Arc::clone(&self.body_doc_manager),
         );
 
+        // Set the sync manager's event callback to forward events to JS
+        // This enables SendSyncMessage events to be emitted after CRDT updates
+        diaryx.set_sync_event_callback(create_event_bridge());
+
         // Execute the command
         let result = diaryx
             .execute(cmd)
@@ -755,6 +759,10 @@ impl DiaryxBackend {
             Arc::clone(&self.workspace_crdt),
             Arc::clone(&self.body_doc_manager),
         );
+
+        // Set the sync manager's event callback to forward events to JS
+        // This enables SendSyncMessage events to be emitted after CRDT updates
+        diaryx.set_sync_event_callback(create_event_bridge());
 
         // Execute the command
         let result = diaryx

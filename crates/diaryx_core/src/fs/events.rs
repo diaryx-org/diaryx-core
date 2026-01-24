@@ -104,6 +104,17 @@ pub enum FileSystemEvent {
         /// Total number of files to sync.
         total: usize,
     },
+
+    /// Request to send sync message over WebSocket.
+    /// Emitted by command handler after CRDT updates.
+    SendSyncMessage {
+        /// Document name ("workspace" for workspace, file path for body)
+        doc_name: String,
+        /// Encoded sync message bytes to send (serialized as array of numbers)
+        message: Vec<u8>,
+        /// Whether this is a body doc (true) or workspace (false)
+        is_body: bool,
+    },
 }
 
 impl FileSystemEvent {
@@ -196,6 +207,15 @@ impl FileSystemEvent {
         Self::SyncProgress { completed, total }
     }
 
+    /// Create a SendSyncMessage event.
+    pub fn send_sync_message(doc_name: impl Into<String>, message: Vec<u8>, is_body: bool) -> Self {
+        Self::SendSyncMessage {
+            doc_name: doc_name.into(),
+            message,
+            is_body,
+        }
+    }
+
     /// Get the primary path associated with this event.
     /// Returns None for sync events which don't have a path.
     pub fn path(&self) -> Option<&PathBuf> {
@@ -211,6 +231,7 @@ impl FileSystemEvent {
             Self::SyncCompleted { .. } => None,
             Self::SyncStatusChanged { .. } => None,
             Self::SyncProgress { .. } => None,
+            Self::SendSyncMessage { .. } => None,
         }
     }
 
@@ -227,6 +248,7 @@ impl FileSystemEvent {
             Self::SyncCompleted { .. } => "SyncCompleted",
             Self::SyncStatusChanged { .. } => "SyncStatusChanged",
             Self::SyncProgress { .. } => "SyncProgress",
+            Self::SendSyncMessage { .. } => "SendSyncMessage",
         }
     }
 }

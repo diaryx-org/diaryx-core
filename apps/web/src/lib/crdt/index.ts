@@ -4,14 +4,22 @@
  * This module provides integration between the Rust CRDT backend
  * and the frontend, including:
  * - Type-safe API wrapper for CRDT operations
- * - Simple sync bridge for real-time sync
- * - Workspace CRDT bridge
+ * - Sync transport for real-time sync (WebSocket transport layer)
+ * - Sync helpers for Rust sync manager commands
+ * - Workspace CRDT bridge for UI integration
  */
 
 export { RustCrdtApi, createCrdtApi } from './rustCrdtApi';
-export { SimpleSyncBridge, createSimpleSyncBridge, type SimpleSyncBridgeOptions } from './simpleSyncBridge';
-export { RustSyncBridge, createRustSyncBridge, type RustSyncBridgeOptions } from './rustSyncBridge';
-export { HocuspocusBridge, createHocuspocusBridge, type HocuspocusBridgeOptions, type ConnectionStatus } from './hocuspocusBridge';
+export {
+  SyncTransport,
+  createWorkspaceSyncTransport,
+  createBodySyncTransport,
+  type SyncTransportOptions,
+} from './syncTransport';
+// Export sync helpers (low-level Rust command wrappers) with namespace to avoid conflicts
+export * as syncHelpers from './syncHelpers';
+
+// Export workspace CRDT bridge (high-level UI-facing API)
 export * from './workspaceCrdtBridge';
 
 // ============================================================================

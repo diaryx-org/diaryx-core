@@ -33,7 +33,12 @@ options: CreateEntryOptions, } } | { "type": "DeleteEntry", "params": {
 /**
  * Path to the entry to delete.
  */
-path: string, } } | { "type": "MoveEntry", "params": {
+path: string,
+/**
+ * If true, perform a hard delete (remove from filesystem).
+ * If false (default), perform a soft delete (mark as deleted in CRDT).
+ */
+hard_delete: boolean, } } | { "type": "MoveEntry", "params": {
 /**
  * Existing path to the entry file.
  */
@@ -616,4 +621,72 @@ canonical_path: string, } } | { "type": "GetCanonicalPath", "params": {
 /**
  * Storage path (possibly with guest prefix).
  */
-storage_path: string, } };
+storage_path: string, } } | { "type": "HandleWorkspaceSyncMessage", "params": {
+/**
+ * The incoming message bytes.
+ */
+message: Array<number>,
+/**
+ * If true, write changed files to disk after applying updates.
+ */
+write_to_disk: boolean, } } | { "type": "CreateWorkspaceSyncStep1" } | { "type": "CreateWorkspaceUpdate", "params": {
+/**
+ * Optional state vector to diff against (base64 or raw bytes).
+ */
+since_state_vector: Array<number> | null, } } | { "type": "InitBodySync", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string, } } | { "type": "CloseBodySync", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string, } } | { "type": "HandleBodySyncMessage", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string,
+/**
+ * The incoming message bytes.
+ */
+message: Array<number>,
+/**
+ * If true, write body to disk after applying updates.
+ */
+write_to_disk: boolean, } } | { "type": "CreateBodySyncStep1", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string, } } | { "type": "CreateBodyUpdate", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string,
+/**
+ * New content to sync.
+ */
+content: string, } } | { "type": "IsSyncComplete" } | { "type": "IsWorkspaceSynced" } | { "type": "IsBodySynced", "params": {
+/**
+ * Document name (file path).
+ */
+doc_name: string, } } | { "type": "MarkSyncComplete" } | { "type": "GetActiveSyncs" } | { "type": "TrackContent", "params": {
+/**
+ * File path.
+ */
+path: string,
+/**
+ * Content to track.
+ */
+content: string, } } | { "type": "IsEcho", "params": {
+/**
+ * File path.
+ */
+path: string,
+/**
+ * Content to check.
+ */
+content: string, } } | { "type": "ClearTrackedContent", "params": {
+/**
+ * File path.
+ */
+path: string, } } | { "type": "ResetSyncState" } | { "type": "TriggerWorkspaceSync" };

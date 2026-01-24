@@ -198,6 +198,10 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
                     let metadata_json = serde_json::to_value(&final_metadata)
                         .unwrap_or(serde_json::Value::Object(Default::default()));
 
+                    // Mark sync write start to prevent CRDT feedback loop
+                    // When CrdtFs sees this marker, it will skip generating a new CRDT update
+                    self.fs.mark_sync_write_start(&storage_path);
+
                     if let Err(e) = metadata_writer::write_file_with_metadata(
                         &self.fs,
                         &storage_path,
@@ -206,6 +210,8 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
                     )
                     .await
                     {
+                        // Clear marker even on failure
+                        self.fs.mark_sync_write_end(&storage_path);
                         log::warn!(
                             "SyncHandler: Failed to write file {:?}: {}",
                             storage_path,
@@ -214,6 +220,8 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
                         continue;
                     }
 
+                    // Clear sync write marker
+                    self.fs.mark_sync_write_end(&storage_path);
                     log::debug!("SyncHandler: Wrote file to disk: {:?}", storage_path);
                 }
 
@@ -272,8 +280,21 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
         let metadata_json = serde_json::to_value(&final_metadata)
             .unwrap_or(serde_json::Value::Object(Default::default()));
 
-        metadata_writer::write_file_with_metadata(&self.fs, &storage_path, &metadata_json, body)
-            .await?;
+        // Mark sync write start to prevent CRDT feedback loop
+        self.fs.mark_sync_write_start(&storage_path);
+
+        let write_result = metadata_writer::write_file_with_metadata(
+            &self.fs,
+            &storage_path,
+            &metadata_json,
+            body,
+        )
+        .await;
+
+        // Clear sync write marker (even on failure)
+        self.fs.mark_sync_write_end(&storage_path);
+
+        write_result?;
 
         // Emit contents changed event
         self.emit_event(FileSystemEvent::contents_changed(

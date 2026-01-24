@@ -19,6 +19,7 @@
     initEventSubscription,
     waitForInitialSync,
     proactivelySyncBodies,
+    getCanonicalPath,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -168,6 +169,10 @@
   // Auto-save timer (component-local, not needed in global store)
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const AUTO_SAVE_DELAY_MS = 2500; // 2.5 seconds
+
+  // Tree refresh debounce timer (prevents rapid refreshes during sync)
+  let refreshTreeTimeout: ReturnType<typeof setTimeout> | null = null;
+  const REFRESH_TREE_DEBOUNCE_MS = 100;
 
   // Event subscription cleanup (for filesystem events from Rust backend)
   let cleanupEventSubscription: (() => void) | null = null;
@@ -392,12 +397,15 @@
 
       // Register callback to reload editor when remote body changes arrive
       onBodyChange(async (path, body) => {
-        console.log('[App] Body change received for:', path, 'current entry:', currentEntry?.path);
+        // path is canonical (e.g., "file.md"), but currentEntry.path may be storage path
+        // (e.g., "guest/abc123/file.md" for guests). Normalize for comparison.
+        const currentCanonical = currentEntry ? getCanonicalPath(currentEntry.path) : null;
+        console.log('[App] Body change received for:', path, 'current entry canonical:', currentCanonical);
         // Only update if this is the currently open file
-        if (currentEntry && path === currentEntry.path) {
+        if (currentEntry && path === currentCanonical) {
           console.log('[App] Updating display content with remote body, length:', body.length);
           // Transform attachment paths to blob URLs for display
-          const transformed = await transformAttachmentPaths(body, path, api);
+          const transformed = await transformAttachmentPaths(body, currentEntry.path, api);
           entryStore.setDisplayContent(transformed);
         }
       });
@@ -405,8 +413,10 @@
       // Register callback to reload entry when remote metadata changes arrive
       // This ensures the RightSidebar shows updated properties from sync
       onFileChange(async (path, metadata) => {
+        // path is canonical, but currentEntry.path may be storage path. Normalize for comparison.
+        const currentCanonical = currentEntry ? getCanonicalPath(currentEntry.path) : null;
         // Only update if this is the currently open file and we have valid metadata
-        if (currentEntry && api && metadata && path === currentEntry.path) {
+        if (currentEntry && api && metadata && path === currentCanonical) {
           console.log('[App] Metadata change received for current entry:', path);
           try {
             // Reload the entry to get the updated frontmatter from disk
@@ -422,9 +432,10 @@
         // Refresh tree when:
         // 1. contents changed (local file added to parent)
         // 2. path is null (remote sync completed - we don't know what changed)
+        // Use debounced version to prevent rapid refreshes during sync
         if ((metadata && metadata.contents) || path === null) {
-          console.log('[App] File change detected - refreshing tree');
-          await refreshTree();
+          console.log('[App] File change detected - scheduling debounced tree refresh');
+          debouncedRefreshTree();
         }
       });
 
@@ -956,6 +967,15 @@
   async function refreshTree() {
     if (!api || !backend) return;
     await refreshTreeController(api, backend, showUnlinkedFiles, showHiddenFiles);
+  }
+
+  // Debounced version of refreshTree to prevent rapid refreshes during sync
+  function debouncedRefreshTree() {
+    if (refreshTreeTimeout) clearTimeout(refreshTreeTimeout);
+    refreshTreeTimeout = setTimeout(async () => {
+      refreshTreeTimeout = null;
+      await refreshTree();
+    }, REFRESH_TREE_DEBOUNCE_MS);
   }
 
   async function loadNodeChildren(nodePath: string) {
