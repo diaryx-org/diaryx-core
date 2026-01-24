@@ -131,21 +131,13 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
 
             Command::SaveEntry { path, content } => {
-                // Save to filesystem
+                // Save to filesystem (CrdtFs automatically updates body CRDT via its write hook)
                 self.entry().save_content(&path, &content).await?;
 
-                // Update body CRDT and track for echo detection if CRDT is enabled
+                // Track for echo detection and emit sync message if CRDT is enabled
                 #[cfg(feature = "crdt")]
                 {
                     let canonical_path = self.get_canonical_path(&path);
-
-                    // Update body CRDT if available
-                    if let Some(body_manager) = self.body_doc_manager() {
-                        let body_doc = body_manager.get_or_create(&canonical_path);
-                        if let Err(e) = body_doc.set_body(&content) {
-                            log::warn!("Failed to update body CRDT for {}: {}", canonical_path, e);
-                        }
-                    }
 
                     // Track for echo detection
                     self.track_content_for_sync(&canonical_path, &content);

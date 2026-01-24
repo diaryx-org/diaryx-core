@@ -319,7 +319,7 @@ mod tests {
         let manager = create_manager();
 
         let doc1 = manager.get_or_create("test.md");
-        doc1.set_body("Hello");
+        let _ = doc1.set_body("Hello");
 
         let doc2 = manager.get("test.md").unwrap();
         assert_eq!(doc2.get_body(), "Hello");
@@ -339,7 +339,7 @@ mod tests {
         let manager = create_manager();
 
         let doc1 = manager.get_or_create("test.md");
-        doc1.set_body("Original");
+        let _ = doc1.set_body("Original");
 
         let doc2 = manager.create("test.md");
         assert_eq!(doc2.get_body(), "");
@@ -388,7 +388,7 @@ mod tests {
 
         // Create and populate a document
         let doc = manager.get_or_create("test.md");
-        doc.set_body("Persistent content");
+        let _ = doc.set_body("Persistent content");
         manager.save_all().unwrap();
 
         // Clear cache and reload
@@ -405,7 +405,7 @@ mod tests {
 
         // Create a source document with content
         let source_doc = BodyDoc::new(Arc::clone(&storage), "source.md".to_string());
-        source_doc.set_body("Synced content");
+        let _ = source_doc.set_body("Synced content");
         let update = source_doc.encode_state_as_update();
 
         // Apply to manager (creates new doc)
@@ -469,7 +469,7 @@ mod tests {
 
         // Edit on manager1
         let doc1 = manager1.get_or_create("shared.md");
-        doc1.set_body("Hello from manager1");
+        let _ = doc1.set_body("Hello from manager1");
 
         // Sync to manager2
         let update = manager1.get_full_state("shared.md").unwrap();
@@ -489,7 +489,7 @@ mod tests {
 
         // Create and populate a document
         let doc = manager.get_or_create("old_name.md");
-        doc.set_body("Important content");
+        let _ = doc.set_body("Important content");
         let _ = doc.save();
 
         // Rename
@@ -513,7 +513,7 @@ mod tests {
 
         // Create document, save it, then clear cache
         let doc = manager.get_or_create("old_name.md");
-        doc.set_body("Persisted content");
+        let _ = doc.set_body("Persisted content");
         let _ = doc.save();
         manager.clear();
         assert!(!manager.is_loaded("old_name.md"));
@@ -535,7 +535,7 @@ mod tests {
 
         // Create and save a document
         let doc = manager.get_or_create("to_delete.md");
-        doc.set_body("Soon to be deleted");
+        let _ = doc.set_body("Soon to be deleted");
         let _ = doc.save();
 
         // Verify it exists
