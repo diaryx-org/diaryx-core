@@ -117,26 +117,133 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
     /// Handle remote metadata updates by writing files to disk.
     ///
     /// This method processes a list of updated files from a remote sync and:
-    /// 1. For each file, merges CRDT metadata with disk metadata
-    /// 2. Gets body content from the BodyDocManager
-    /// 3. Writes the file to disk with merged frontmatter
-    /// 4. Emits appropriate FileSystemEvents
+    /// 1. Handles renames first (moves files to preserve body content)
+    /// 2. For each non-renamed file, merges CRDT metadata with disk metadata
+    /// 3. Gets body content from the BodyDocManager
+    /// 4. Writes the file to disk with merged frontmatter
+    /// 5. Emits appropriate FileSystemEvents
     ///
     /// Files marked as deleted are removed from disk.
     ///
     /// # Arguments
     /// * `files` - List of (canonical_path, metadata) tuples from the CRDT
+    /// * `renames` - List of (old_path, new_path) for detected renames
     /// * `body_manager` - Manager for per-file body CRDTs
     /// * `write_to_disk` - If true, perform disk writes; if false, only emit events
     pub async fn handle_remote_metadata_update(
         &self,
         files: Vec<(String, FileMetadata)>,
+        renames: Vec<(String, String)>,
         body_manager: Option<&BodyDocManager>,
         write_to_disk: bool,
     ) -> Result<usize> {
         let mut synced_count = 0;
 
+        // Track which renames actually succeeded (old file existed and was moved)
+        let mut successful_old_paths: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut successful_new_paths: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Handle renames first (atomic operation preserves body content)
+        for (old_canonical, new_canonical) in &renames {
+            let old_storage = self.get_storage_path(old_canonical);
+            let new_storage = self.get_storage_path(new_canonical);
+
+            if write_to_disk && self.fs.exists(&old_storage).await {
+                log::debug!(
+                    "SyncHandler: Renaming file {:?} -> {:?}",
+                    old_storage,
+                    new_storage
+                );
+
+                // Ensure parent directory exists
+                if let Some(parent) = new_storage.parent() {
+                    if let Err(e) = self.fs.create_dir_all(parent).await {
+                        log::warn!(
+                            "SyncHandler: Failed to create parent directory for {:?}: {}",
+                            new_storage,
+                            e
+                        );
+                    }
+                }
+
+                // Mark sync write to prevent CRDT feedback loop
+                self.fs.mark_sync_write_start(&old_storage);
+                self.fs.mark_sync_write_start(&new_storage);
+
+                if let Err(e) = self.fs.move_file(&old_storage, &new_storage).await {
+                    log::warn!(
+                        "SyncHandler: Failed to rename {:?} -> {:?}: {}",
+                        old_storage,
+                        new_storage,
+                        e
+                    );
+                    self.fs.mark_sync_write_end(&old_storage);
+                    self.fs.mark_sync_write_end(&new_storage);
+                } else {
+                    self.fs.mark_sync_write_end(&old_storage);
+                    self.fs.mark_sync_write_end(&new_storage);
+
+                    // Track this rename as successful
+                    successful_old_paths.insert(old_canonical.clone());
+                    successful_new_paths.insert(new_canonical.clone());
+
+                    self.emit_event(FileSystemEvent::file_renamed(
+                        old_storage,
+                        new_storage.clone(),
+                    ));
+                    synced_count += 1;
+
+                    // Update frontmatter with new metadata after rename
+                    if let Some((_, metadata)) = files.iter().find(|(p, _)| p == new_canonical) {
+                        let metadata_json = serde_json::to_value(metadata)
+                            .unwrap_or(serde_json::Value::Object(Default::default()));
+
+                        // Read existing body content
+                        let body = match self.read_disk_body(&new_storage).await {
+                            Ok(b) => b,
+                            Err(_) => String::new(),
+                        };
+
+                        self.fs.mark_sync_write_start(&new_storage);
+                        if let Err(e) = metadata_writer::write_file_with_metadata(
+                            &self.fs,
+                            &new_storage,
+                            &metadata_json,
+                            &body,
+                        )
+                        .await
+                        {
+                            log::warn!(
+                                "SyncHandler: Failed to update metadata after rename {:?}: {}",
+                                new_storage,
+                                e
+                            );
+                        }
+                        self.fs.mark_sync_write_end(&new_storage);
+                    }
+                }
+            } else if write_to_disk {
+                // Old file doesn't exist - this rename can't be executed as a move
+                // The new file will be created normally in the files loop below
+                log::debug!(
+                    "SyncHandler: Old file doesn't exist for rename {:?} -> {:?}, will create new file",
+                    old_storage,
+                    new_storage
+                );
+            }
+        }
+
         for (canonical_path, crdt_metadata) in files {
+            // Skip OLD paths from SUCCESSFUL renames (they're deleted, handled by the rename move)
+            if successful_old_paths.contains(&canonical_path) {
+                continue;
+            }
+
+            // For SUCCESSFUL renamed NEW paths, the file was already moved, so just update metadata
+            let is_renamed_new_path = successful_new_paths.contains(&canonical_path);
+
             let storage_path = self.get_storage_path(&canonical_path);
 
             if crdt_metadata.deleted {
@@ -227,11 +334,22 @@ impl<FS: AsyncFileSystem> SyncHandler<FS> {
 
                 // Emit appropriate event
                 let metadata_json = serde_json::to_value(&final_metadata).ok();
-                self.emit_event(FileSystemEvent::file_created_with_metadata(
-                    storage_path,
-                    metadata_json,
-                    None,
-                ));
+                if is_renamed_new_path {
+                    // File was renamed - emit MetadataChanged since file already exists
+                    if let Some(fm) = metadata_json {
+                        self.emit_event(FileSystemEvent::metadata_changed(
+                            storage_path.clone(),
+                            fm,
+                        ));
+                    }
+                } else {
+                    // New file - emit FileCreated
+                    self.emit_event(FileSystemEvent::file_created_with_metadata(
+                        storage_path.clone(),
+                        metadata_json,
+                        None,
+                    ));
+                }
 
                 synced_count += 1;
             }

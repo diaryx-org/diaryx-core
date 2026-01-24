@@ -1,5 +1,6 @@
 ---
-title: Diaryx Tauri
+title: tauri
+description: Web app + native backend
 author: adammharris
 audience:
   - public

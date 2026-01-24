@@ -1,5 +1,7 @@
 ---
-title: Diaryx CLI
+title: diaryx
+
+description: CLI frontend
 
 author: adammharris
 

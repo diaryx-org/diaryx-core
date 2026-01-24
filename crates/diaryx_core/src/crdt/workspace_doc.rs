@@ -375,7 +375,8 @@ impl WorkspaceCrdt {
         if should_emit {
             let files_after: HashMap<String, FileMetadata> =
                 self.list_files().into_iter().collect();
-            self.emit_diff_events(&files_before, &files_after);
+            // Note: apply_update doesn't detect renames, so pass empty slice
+            self.emit_diff_events(&files_before, &files_after, &[]);
         }
 
         // Persist the update to storage
@@ -388,15 +389,14 @@ impl WorkspaceCrdt {
     /// This is like `apply_update` but returns the paths of files that changed,
     /// allowing callers to selectively write those files to disk.
     ///
-    /// Returns (update_id, changed_paths) where changed_paths includes:
-    /// - Newly created files (non-deleted)
-    /// - Deleted files (marked as deleted)
-    /// - Files with changed metadata
+    /// Returns (update_id, changed_paths, renames) where:
+    /// - changed_paths includes newly created, deleted, and modified files
+    /// - renames is a list of (old_path, new_path) pairs for detected renames
     pub fn apply_update_tracking_changes(
         &self,
         update: &[u8],
         origin: UpdateOrigin,
-    ) -> StorageResult<(Option<i64>, Vec<String>)> {
+    ) -> StorageResult<(Option<i64>, Vec<String>, Vec<(String, String)>)> {
         // Capture state before the update
         let files_before: HashMap<String, FileMetadata> = self.list_files().into_iter().collect();
 
@@ -463,30 +463,180 @@ impl WorkspaceCrdt {
             }
         }
 
+        // Detect renames: a file deleted + a file created with same part_of
+        // We use multiple matching strategies in order of confidence:
+        // 1. Same parent AND same title (highest confidence)
+        // 2. Same parent AND similar modified_at timestamp (within 5 seconds)
+        // 3. Same parent with only ONE candidate pair (fallback)
+        let mut renames: Vec<(String, String)> = Vec::new(); // (old_path, new_path)
+        let mut matched_created: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut matched_deleted: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+        // Get files that are now deleted (were not deleted before, now deleted)
+        let deleted_files: Vec<(&String, &FileMetadata)> = files_before
+            .iter()
+            .filter(|(path, old_meta)| {
+                // File must not have been deleted before
+                if old_meta.deleted {
+                    return false;
+                }
+                // And must now be deleted (or removed entirely)
+                files_after.get(*path).map(|m| m.deleted).unwrap_or(true)
+            })
+            .collect();
+
+        let created_files: Vec<(&String, &FileMetadata)> = files_after
+            .iter()
+            .filter(|(path, meta)| !files_before.contains_key(*path) && !meta.deleted)
+            .collect();
+
+        log::debug!(
+            "[WorkspaceCrdt] Rename detection: {} deleted files, {} created files",
+            deleted_files.len(),
+            created_files.len()
+        );
+
+        // Strategy 1: Match by title (highest confidence)
+        for (deleted_path, deleted_meta) in &deleted_files {
+            for (created_path, _) in &created_files {
+                if matched_created.contains(created_path.as_str()) {
+                    continue;
+                }
+
+                let created_meta = files_after.get(*created_path);
+                let same_part_of =
+                    deleted_meta.part_of == created_meta.and_then(|m| m.part_of.clone());
+                let same_title = deleted_meta.title.is_some()
+                    && deleted_meta.title == created_meta.and_then(|m| m.title.clone());
+
+                if same_part_of && same_title {
+                    log::debug!(
+                        "[WorkspaceCrdt] Rename by title match: {} -> {}",
+                        deleted_path,
+                        created_path
+                    );
+                    renames.push(((*deleted_path).clone(), (*created_path).clone()));
+                    matched_created.insert(created_path.as_str());
+                    matched_deleted.insert(deleted_path.as_str());
+                    break;
+                }
+            }
+        }
+
+        // Strategy 2: Match by modified_at timestamp (within 5 seconds)
+        const TIMESTAMP_THRESHOLD_MS: i64 = 5000;
+        for (deleted_path, deleted_meta) in &deleted_files {
+            if matched_deleted.contains(deleted_path.as_str()) {
+                continue;
+            }
+            for (created_path, _) in &created_files {
+                if matched_created.contains(created_path.as_str()) {
+                    continue;
+                }
+
+                let created_meta = files_after.get(*created_path);
+                let same_part_of =
+                    deleted_meta.part_of == created_meta.and_then(|m| m.part_of.clone());
+                let similar_timestamp = created_meta
+                    .map(|m| {
+                        (deleted_meta.modified_at - m.modified_at).abs() < TIMESTAMP_THRESHOLD_MS
+                    })
+                    .unwrap_or(false);
+
+                if same_part_of && similar_timestamp {
+                    log::debug!(
+                        "[WorkspaceCrdt] Rename by timestamp match: {} -> {} (delta: {}ms)",
+                        deleted_path,
+                        created_path,
+                        created_meta
+                            .map(|m| (deleted_meta.modified_at - m.modified_at).abs())
+                            .unwrap_or(0)
+                    );
+                    renames.push(((*deleted_path).clone(), (*created_path).clone()));
+                    matched_created.insert(created_path.as_str());
+                    matched_deleted.insert(deleted_path.as_str());
+                    break;
+                }
+            }
+        }
+
+        // Strategy 3: If there's exactly ONE unmatched created file with a parent that has
+        // exactly ONE unmatched deleted file, assume it's a rename
+        for (created_path, _) in &created_files {
+            if matched_created.contains(created_path.as_str()) {
+                continue;
+            }
+
+            let created_meta = files_after.get(*created_path);
+            let created_parent = created_meta.and_then(|m| m.part_of.clone());
+
+            // Find all unmatched deleted files with the same parent
+            let matching_deleted: Vec<_> = deleted_files
+                .iter()
+                .filter(|(dp, dm)| {
+                    !matched_deleted.contains(dp.as_str()) && dm.part_of == created_parent
+                })
+                .collect();
+
+            // If exactly one match, it's likely a rename
+            if matching_deleted.len() == 1 {
+                let (deleted_path, _) = matching_deleted[0];
+                log::debug!(
+                    "[WorkspaceCrdt] Rename by single-pair fallback: {} -> {}",
+                    deleted_path,
+                    created_path
+                );
+                renames.push(((*deleted_path).clone(), (*created_path).clone()));
+                matched_created.insert(created_path.as_str());
+                matched_deleted.insert(deleted_path.as_str());
+            }
+        }
+
+        log::debug!("[WorkspaceCrdt] Final renames detected: {:?}", renames);
+
         // Emit events if callback is set
         if origin != UpdateOrigin::Local && self.event_callback.is_some() {
-            self.emit_diff_events(&files_before, &files_after);
+            self.emit_diff_events(&files_before, &files_after, &renames);
         }
 
         // Persist the update to storage
         let update_id = self.storage.append_update(&self.doc_name, update, origin)?;
-        Ok((Some(update_id), changed_paths))
+        Ok((Some(update_id), changed_paths, renames))
     }
 
     /// Emit filesystem events for changes between two states.
     ///
     /// This compares the before and after states and emits appropriate events:
-    /// - `FileCreated` for new, non-deleted files
-    /// - `FileDeleted` for files that were deleted (or newly marked as deleted)
+    /// - `FileRenamed` for files that were renamed (detected as delete+create with same parent)
+    /// - `FileCreated` for new, non-deleted files (excluding renames)
+    /// - `FileDeleted` for files that were deleted (excluding renames)
     /// - `MetadataChanged` for files whose metadata changed
     fn emit_diff_events(
         &self,
         before: &HashMap<String, FileMetadata>,
         after: &HashMap<String, FileMetadata>,
+        renames: &[(String, String)],
     ) {
-        // Detect created files (in after but not in before, and not deleted)
+        // Collect paths involved in renames to exclude from delete/create events
+        let renamed_old_paths: std::collections::HashSet<&str> =
+            renames.iter().map(|(old, _)| old.as_str()).collect();
+        let renamed_new_paths: std::collections::HashSet<&str> =
+            renames.iter().map(|(_, new)| new.as_str()).collect();
+
+        // Emit FileRenamed events first
+        for (old_path, new_path) in renames {
+            self.emit_event(FileSystemEvent::file_renamed(
+                PathBuf::from(old_path),
+                PathBuf::from(new_path),
+            ));
+        }
+
+        // Detect created files (in after but not in before, and not deleted, excluding renames)
         for (path, metadata) in after {
-            if !before.contains_key(path) && !metadata.deleted {
+            if !before.contains_key(path)
+                && !metadata.deleted
+                && !renamed_new_paths.contains(path.as_str())
+            {
                 self.emit_event(FileSystemEvent::file_created_with_metadata(
                     PathBuf::from(path),
                     Some(self.metadata_to_frontmatter(metadata)),
@@ -508,9 +658,12 @@ impl WorkspaceCrdt {
             }
         }
 
-        // Detect deleted files - emit for any file that is marked as deleted
+        // Detect deleted files - emit for any file that is marked as deleted (excluding renames)
         // This ensures UI updates even if CRDT state was already persisted
         for (path, old_meta) in before {
+            if renamed_old_paths.contains(path.as_str()) {
+                continue; // Skip - this was a rename, not a delete
+            }
             let is_deleted = after.get(path).map(|m| m.deleted).unwrap_or(true);
             if is_deleted {
                 let parent = after

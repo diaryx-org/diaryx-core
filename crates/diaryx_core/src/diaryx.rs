@@ -757,15 +757,14 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
 
     /// Apply an update from a remote peer, tracking which files changed.
     ///
-    /// Returns (update_id, changed_paths) where changed_paths includes:
-    /// - Newly created files (non-deleted)
-    /// - Deleted files (marked as deleted)
-    /// - Files with changed metadata
+    /// Returns (update_id, changed_paths, renames) where:
+    /// - changed_paths includes newly created, deleted, and modified files
+    /// - renames is a list of (old_path, new_path) pairs for detected renames
     pub fn apply_update_tracking_changes(
         &self,
         update: &[u8],
         origin: crate::crdt::UpdateOrigin,
-    ) -> Result<(Option<i64>, Vec<String>)> {
+    ) -> Result<(Option<i64>, Vec<String>, Vec<(String, String)>)> {
         self.crdt.apply_update_tracking_changes(update, origin)
     }
 
@@ -1063,7 +1062,7 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
                 );
                 let mut changed_files = Vec::new();
                 if !update.is_empty() {
-                    let (_, files) = self
+                    let (_, files, _renames) = self
                         .crdt
                         .apply_update_tracking_changes(&update, crate::crdt::UpdateOrigin::Sync)?;
                     changed_files = files;
@@ -1083,7 +1082,7 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
                 );
                 let mut changed_files = Vec::new();
                 if !update.is_empty() {
-                    let (_, files) = self.crdt.apply_update_tracking_changes(
+                    let (_, files, _renames) = self.crdt.apply_update_tracking_changes(
                         &update,
                         crate::crdt::UpdateOrigin::Remote,
                     )?;

@@ -1,5 +1,6 @@
 ---
-title: Diaryx Sync Server
+title: diaryx_sync_server
+description: Sync server used by frontends
 author: adammharris
 audience:
   - public

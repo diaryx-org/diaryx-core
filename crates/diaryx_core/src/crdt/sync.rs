@@ -434,7 +434,7 @@ impl SyncProtocol {
                     // Remote is sending updates we don't have
                     if !update.is_empty() {
                         log::debug!("[Y-sync] Applying SyncStep2 update, {} bytes", update.len());
-                        let (_, changed_files) = self
+                        let (_, changed_files, _renames) = self
                             .workspace
                             .apply_update_tracking_changes(&update, UpdateOrigin::Sync)?;
                         all_changed_files.extend(changed_files);
@@ -446,7 +446,7 @@ impl SyncProtocol {
                     // Remote is sending a live update
                     if !update.is_empty() {
                         log::debug!("[Y-sync] Applying Update, {} bytes", update.len());
-                        let (_, changed_files) = self
+                        let (_, changed_files, _renames) = self
                             .workspace
                             .apply_update_tracking_changes(&update, UpdateOrigin::Remote)?;
                         all_changed_files.extend(changed_files);

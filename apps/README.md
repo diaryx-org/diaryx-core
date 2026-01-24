@@ -1,5 +1,6 @@
 ---
-title: Diaryx Apps
+title: apps
+description: GUI frontends for Diaryx
 author: adammharris
 audience:
   - public
@@ -92,8 +93,7 @@ Uses WASM backend with IndexedDB for persistence.
 
 ```bash
 cd apps/tauri
-bun install
-bun run tauri dev
+cargo tauri dev
 ```
 
 Uses Tauri IPC backend with real filesystem.
@@ -111,7 +111,7 @@ bun run build    # Output: apps/web/dist/
 
 ```bash
 cd apps/tauri
-bun run tauri build
+cargo tauri build
 ```
 
 ## Adding New Backend Operations

@@ -1,5 +1,6 @@
 ---
-title: Instructions for AI Agents
+title: AGENTS
+description: Instructions for AI Agents
 author: adammharris
 updated: 2026-01-02T13:06:25-05:00
 part_of: README.md

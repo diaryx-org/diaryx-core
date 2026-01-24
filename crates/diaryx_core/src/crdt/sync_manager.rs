@@ -235,13 +235,15 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
         }
 
         let mut response: Option<Vec<u8>> = None;
-        let mut all_changed_files = Vec::new();
+        let mut all_changed_files: Vec<String> = Vec::new();
+        let mut all_renames: Vec<(String, String)> = Vec::new();
 
         for sync_msg in messages {
-            let (msg_response, changed_files) =
+            let (msg_response, changed_files, renames) =
                 self.handle_single_workspace_message(sync_msg).await?;
 
             all_changed_files.extend(changed_files);
+            all_renames.extend(renames);
 
             // Combine responses
             if let Some(resp) = msg_response {
@@ -254,7 +256,7 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
         }
 
         // Write changed files to disk if requested
-        if write_to_disk && !all_changed_files.is_empty() {
+        if write_to_disk && (!all_changed_files.is_empty() || !all_renames.is_empty()) {
             let files_to_sync: Vec<_> = all_changed_files
                 .iter()
                 .filter_map(|path| {
@@ -270,10 +272,10 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
                 })
                 .collect();
 
-            if !files_to_sync.is_empty() {
+            if !files_to_sync.is_empty() || !all_renames.is_empty() {
                 let body_mgr_ref = Some(self.body_manager.as_ref());
                 self.sync_handler
-                    .handle_remote_metadata_update(files_to_sync, body_mgr_ref, true)
+                    .handle_remote_metadata_update(files_to_sync, all_renames, body_mgr_ref, true)
                     .await?;
             }
         }
@@ -298,10 +300,11 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
     }
 
     /// Handle a single workspace sync message.
+    /// Returns (response, changed_files, renames).
     async fn handle_single_workspace_message(
         &self,
         msg: SyncMessage,
-    ) -> Result<(Option<Vec<u8>>, Vec<String>)> {
+    ) -> Result<(Option<Vec<u8>>, Vec<String>, Vec<(String, String)>)> {
         match msg {
             SyncMessage::SyncStep1(remote_sv) => {
                 log::debug!(
@@ -320,7 +323,7 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
                 let mut combined = step2;
                 combined.extend_from_slice(&step1);
 
-                Ok((Some(combined), Vec::new()))
+                Ok((Some(combined), Vec::new(), Vec::new()))
             }
 
             SyncMessage::SyncStep2(update) => {
@@ -330,14 +333,16 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
                 );
 
                 let mut changed_files = Vec::new();
+                let mut renames = Vec::new();
                 if !update.is_empty() {
-                    let (_, files) = self
+                    let (_, files, detected_renames) = self
                         .workspace_crdt
                         .apply_update_tracking_changes(&update, UpdateOrigin::Sync)?;
                     changed_files = files;
+                    renames = detected_renames;
                 }
 
-                Ok((None, changed_files))
+                Ok((None, changed_files, renames))
             }
 
             SyncMessage::Update(update) => {
@@ -347,14 +352,16 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
                 );
 
                 let mut changed_files = Vec::new();
+                let mut renames = Vec::new();
                 if !update.is_empty() {
-                    let (_, files) = self
+                    let (_, files, detected_renames) = self
                         .workspace_crdt
                         .apply_update_tracking_changes(&update, UpdateOrigin::Remote)?;
                     changed_files = files;
+                    renames = detected_renames;
                 }
 
-                Ok((None, changed_files))
+                Ok((None, changed_files, renames))
             }
         }
     }

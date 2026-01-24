@@ -1,5 +1,6 @@
 ---
-title: Cargo crates for Diaryx
+title: crates
+description: Cargo crates for Diaryx
 author: adammharris
 contents:
   - diaryx/README.md

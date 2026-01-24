@@ -329,6 +329,18 @@ export async function startSessionSync(sessionServerUrl: string, sessionCode: st
 
   _sessionCode = sessionCode;
 
+  // IMPORTANT: Set module-level server URL and workspace ID for body sync bridges
+  // For guests, these aren't set via initWorkspace, so we set them here
+  if (!isHost) {
+    _serverUrl = toWebSocketUrl(sessionServerUrl);
+    // Use session code as workspace ID for body sync (server routes based on this)
+    _workspaceId = sessionCode;
+    console.log('[WorkspaceCrdtBridge] Guest: set _serverUrl and _workspaceId for body sync:', {
+      _serverUrl,
+      _workspaceId,
+    });
+  }
+
   // Disconnect existing bridge if any
   if (syncBridge) {
     syncBridge.destroy();
@@ -889,8 +901,9 @@ async function getOrCreateBodyBridge(filePath: string): Promise<SyncTransport | 
             const entry = await backendApi.getEntry(canonicalPath);
             if (entry && entry.content && entry.content.length > 0) {
               console.log(`[BodySyncBridge] Loading ${entry.content.length} chars from disk into CRDT for ${canonicalPath}`);
-              await rustApi.setBodyContent(canonicalPath, entry.content);
+              // FIX: Track BEFORE set so echo detection works when onContentChange fires
               await syncHelpers.trackContent(_backend, canonicalPath, entry.content);
+              await rustApi.setBodyContent(canonicalPath, entry.content);
             }
           }
         } catch (diskErr) {

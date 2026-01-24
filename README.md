@@ -1,5 +1,5 @@
 ---
-title: Diaryx
+title: README
 description: Repository for the Diaryx project
 author: adammharris
 version: v0.11.0

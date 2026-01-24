@@ -1,5 +1,7 @@
 ---
-title: Diaryx Core Library
+title: diaryx_core
+
+description: Core library shared by Diaryx clients
 
 author: adammharris
 

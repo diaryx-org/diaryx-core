@@ -1,5 +1,6 @@
 ---
-title: Diaryx Web
+title: web
+description: Svelte + Tiptap frontend for Diaryx
 author: adammharris
 audience:
   - public

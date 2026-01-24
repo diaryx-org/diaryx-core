@@ -2583,8 +2583,14 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                         if !files_to_sync.is_empty() {
                             let body_mgr_ref = self.body_doc_manager().map(|arc| arc.as_ref());
+                            // Note: This path doesn't track renames, pass empty vec
                             handler
-                                .handle_remote_metadata_update(files_to_sync, body_mgr_ref, true)
+                                .handle_remote_metadata_update(
+                                    files_to_sync,
+                                    Vec::new(),
+                                    body_mgr_ref,
+                                    true,
+                                )
                                 .await?;
                             log::debug!(
                                 "HandleSyncMessage: wrote {} changed files to disk",
@@ -2641,7 +2647,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let body_manager = self.body_doc_manager();
 
                 // Apply the update to the CRDT, tracking which files changed
-                let (update_id, changed_paths) =
+                let (update_id, changed_paths, renames) =
                     crdt.apply_update_tracking_changes(&update, crate::crdt::UpdateOrigin::Remote)?;
 
                 // If we have a sync handler and write_to_disk is enabled, write only changed files
@@ -2654,7 +2660,7 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                             .collect();
                         let body_mgr_ref = body_manager.map(|arc| arc.as_ref());
                         let files_synced = handler
-                            .handle_remote_metadata_update(files, body_mgr_ref, true)
+                            .handle_remote_metadata_update(files, renames, body_mgr_ref, true)
                             .await?;
                         log::debug!(
                             "ApplyRemoteWorkspaceUpdateWithEffects: synced {} files (out of {} changed)",
