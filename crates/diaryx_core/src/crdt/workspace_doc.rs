@@ -3,18 +3,33 @@
 //! This module provides [`WorkspaceCrdt`], which wraps a yrs [`Doc`] to manage
 //! the workspace's file hierarchy as a conflict-free replicated data type.
 //!
-//! # Structure
+//! # Doc-ID Based Architecture
 //!
-//! The workspace document contains a single Y.Map called "files" that maps
-//! file paths to their metadata:
+//! Files are keyed by stable document IDs (UUIDs) rather than file paths.
+//! This makes renames and moves trivial property updates rather than
+//! delete+create operations. The actual filesystem path is derived from the
+//! `filename` field and the parent chain via `get_path()`.
 //!
 //! ```text
 //! Y.Doc
 //! └── Y.Map "files"
-//!     ├── "workspace/index.md" → FileMetadata { title: "Home", ... }
-//!     ├── "workspace/Daily/index.md" → FileMetadata { title: "Daily", ... }
+//!     ├── "abc123-uuid" → FileMetadata { filename: "index.md", part_of: None, ... }
+//!     ├── "def456-uuid" → FileMetadata { filename: "daily.md", part_of: "abc123-uuid", ... }
 //!     └── ...
 //! ```
+//!
+//! ## Key Operations
+//!
+//! - `create_file()` - Create a new file with auto-generated UUID
+//! - `get_path(doc_id)` - Derive filesystem path from doc_id chain
+//! - `find_by_path(path)` - Find doc_id for a given path
+//! - `rename_file(doc_id, new_name)` - Just update filename property
+//! - `move_file(doc_id, new_parent)` - Just update part_of property
+//!
+//! ## Migration
+//!
+//! For workspaces using the legacy path-based format, `needs_migration()` checks
+//! if migration is needed, and `migrate_to_doc_ids()` performs the conversion.
 //!
 //! # Synchronization
 //!
@@ -309,6 +324,399 @@ impl WorkspaceCrdt {
         self.files_map.len(&txn) as usize
     }
 
+    // ==================== Doc-ID Based Operations ====================
+
+    /// Create a new file with a generated UUID as the key.
+    ///
+    /// This is the primary method for creating files in the doc-ID based system.
+    /// Returns the generated doc_id that can be used to reference this file.
+    ///
+    /// # Arguments
+    /// * `metadata` - File metadata (must have `filename` set)
+    ///
+    /// # Returns
+    /// The generated doc_id (UUID) for the new file.
+    pub fn create_file(&self, metadata: FileMetadata) -> StorageResult<String> {
+        let doc_id = uuid::Uuid::new_v4().to_string();
+        self.set_file(&doc_id, metadata)?;
+        Ok(doc_id)
+    }
+
+    /// Derive the filesystem path from a doc_id by walking the parent chain.
+    ///
+    /// This reconstructs the full path by traversing the `part_of` references
+    /// up to the root and then joining the filenames.
+    ///
+    /// # Arguments
+    /// * `doc_id` - The document ID to get the path for
+    ///
+    /// # Returns
+    /// The derived path, or None if the doc_id doesn't exist or the chain is broken.
+    pub fn get_path(&self, doc_id: &str) -> Option<PathBuf> {
+        let mut parts = Vec::new();
+        let mut current = doc_id.to_string();
+        let mut visited = std::collections::HashSet::new();
+
+        // Walk up the parent chain, collecting filenames
+        loop {
+            // Prevent infinite loops from circular references
+            if visited.contains(&current) {
+                log::warn!("Circular reference detected in get_path for {}", doc_id);
+                return None;
+            }
+            visited.insert(current.clone());
+
+            let meta = self.get_file(&current)?;
+
+            // For deleted files, we still want to derive the path
+            if meta.filename.is_empty() {
+                // Legacy entry or corrupted - can't derive path
+                log::warn!("Empty filename for doc_id {}", current);
+                return None;
+            }
+
+            parts.push(meta.filename.clone());
+
+            match meta.part_of {
+                Some(parent_id) => {
+                    // Check if parent is a UUID (doc-ID system) or a path (legacy)
+                    if parent_id.contains('/') || parent_id.ends_with(".md") {
+                        // Legacy path-based reference - this is a migration state
+                        // For now, we can't fully resolve this
+                        log::debug!(
+                            "Legacy path reference in part_of: {} for {}",
+                            parent_id,
+                            current
+                        );
+                        // Try to find the parent by path
+                        if let Some(parent_doc_id) = self.find_by_path_legacy(&parent_id) {
+                            current = parent_doc_id;
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        current = parent_id;
+                    }
+                }
+                None => break, // Reached root
+            }
+        }
+
+        // Reverse to get path from root to leaf
+        parts.reverse();
+        Some(PathBuf::from_iter(parts))
+    }
+
+    /// Derive a filesystem path from a doc_id using a provided snapshot of files.
+    ///
+    /// This is similar to `get_path` but uses a pre-captured snapshot instead of
+    /// the current CRDT state. This is critical for rename detection where we need
+    /// to derive the OLD path using the old state and the NEW path using the new state.
+    ///
+    /// # Arguments
+    /// * `doc_id` - The document ID to derive the path for
+    /// * `meta` - The metadata for this doc_id from the snapshot
+    /// * `snapshot` - A HashMap of all files from the snapshot
+    ///
+    /// # Returns
+    /// The derived path as a String, or None if the chain is broken.
+    fn derive_path_from_snapshot(
+        &self,
+        doc_id: &str,
+        meta: &FileMetadata,
+        snapshot: &HashMap<String, FileMetadata>,
+    ) -> Option<String> {
+        let mut parts = Vec::new();
+        let mut current_id = doc_id.to_string();
+        let mut current_meta = meta;
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            if visited.contains(&current_id) {
+                log::warn!(
+                    "Circular reference in derive_path_from_snapshot for {}",
+                    doc_id
+                );
+                return None;
+            }
+            visited.insert(current_id.clone());
+
+            if current_meta.filename.is_empty() {
+                return None;
+            }
+
+            parts.push(current_meta.filename.clone());
+
+            match &current_meta.part_of {
+                Some(parent_id) => {
+                    // Check if parent is a UUID or path
+                    if parent_id.contains('/') || parent_id.ends_with(".md") {
+                        // Legacy path - can't resolve in snapshot mode
+                        return None;
+                    }
+                    // Look up parent in snapshot
+                    match snapshot.get(parent_id) {
+                        Some(parent_meta) => {
+                            current_id = parent_id.clone();
+                            current_meta = parent_meta;
+                        }
+                        None => return None,
+                    }
+                }
+                None => break, // Reached root
+            }
+        }
+
+        parts.reverse();
+        Some(parts.join("/"))
+    }
+
+    /// Find a doc_id by filesystem path.
+    ///
+    /// This walks the tree to find a file with the matching path.
+    /// The path is matched by traversing from root files down through
+    /// the `contents` hierarchy.
+    ///
+    /// # Arguments
+    /// * `path` - The path to search for
+    ///
+    /// # Returns
+    /// The doc_id if found, or None.
+    pub fn find_by_path(&self, path: &std::path::Path) -> Option<String> {
+        let path_components: Vec<&str> = path
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => s.to_str(),
+                _ => None,
+            })
+            .collect();
+
+        if path_components.is_empty() {
+            return None;
+        }
+
+        // Get all files
+        let files = self.list_files();
+
+        // First, find root files (no part_of or part_of is None/empty)
+        let root_files: Vec<_> = files
+            .iter()
+            .filter(|(_, meta)| !meta.deleted && meta.part_of.is_none())
+            .collect();
+
+        // Start search from root files
+        for (doc_id, meta) in root_files {
+            if let Some(found) =
+                self.find_by_path_recursive(doc_id, meta, &path_components, 0, &files)
+            {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    /// Recursive helper for find_by_path.
+    fn find_by_path_recursive(
+        &self,
+        doc_id: &str,
+        meta: &FileMetadata,
+        path_components: &[&str],
+        depth: usize,
+        all_files: &[(String, FileMetadata)],
+    ) -> Option<String> {
+        if depth >= path_components.len() {
+            return None;
+        }
+
+        // Check if this file's filename matches the current path component
+        if meta.filename != path_components[depth] {
+            return None;
+        }
+
+        // If we've matched all components, this is the file
+        if depth == path_components.len() - 1 {
+            return Some(doc_id.to_string());
+        }
+
+        // Otherwise, search children
+        if let Some(ref contents) = meta.contents {
+            for child_id in contents {
+                // Find the child in all_files
+                if let Some((_, child_meta)) = all_files
+                    .iter()
+                    .find(|(id, m)| id == child_id && !m.deleted)
+                {
+                    if let Some(found) = self.find_by_path_recursive(
+                        child_id,
+                        child_meta,
+                        path_components,
+                        depth + 1,
+                        all_files,
+                    ) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find a doc_id by legacy path format.
+    ///
+    /// This is used during migration to resolve path-based `part_of` references.
+    fn find_by_path_legacy(&self, path: &str) -> Option<String> {
+        // In legacy mode, the keys ARE paths
+        let files = self.list_files();
+        for (key, meta) in files {
+            if key == path && !meta.deleted {
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    /// Rename a file by updating its filename.
+    ///
+    /// In the doc-ID system, renames are trivial - just update the filename property.
+    /// The doc_id remains stable.
+    ///
+    /// # Arguments
+    /// * `doc_id` - The document ID of the file to rename
+    /// * `new_filename` - The new filename (e.g., "new-name.md")
+    pub fn rename_file(&self, doc_id: &str, new_filename: &str) -> StorageResult<()> {
+        if let Some(mut meta) = self.get_file(doc_id) {
+            meta.filename = new_filename.to_string();
+            meta.modified_at = chrono::Utc::now().timestamp_millis();
+            self.set_file(doc_id, meta)?;
+        }
+        Ok(())
+    }
+
+    /// Move a file by updating its parent reference.
+    ///
+    /// In the doc-ID system, moves are trivial - just update the part_of property.
+    /// The doc_id remains stable.
+    ///
+    /// # Arguments
+    /// * `doc_id` - The document ID of the file to move
+    /// * `new_parent_id` - The doc_id of the new parent, or None for root
+    pub fn move_file(&self, doc_id: &str, new_parent_id: Option<&str>) -> StorageResult<()> {
+        if let Some(mut meta) = self.get_file(doc_id) {
+            meta.part_of = new_parent_id.map(String::from);
+            meta.modified_at = chrono::Utc::now().timestamp_millis();
+            self.set_file(doc_id, meta)?;
+        }
+        Ok(())
+    }
+
+    // ==================== Migration ====================
+
+    /// Check if the workspace needs migration from path-based to doc-ID-based format.
+    ///
+    /// Returns true if any file key contains a path separator ('/').
+    pub fn needs_migration(&self) -> bool {
+        self.list_files().iter().any(|(key, _)| key.contains('/'))
+    }
+
+    /// Migrate the workspace from path-based to doc-ID-based format.
+    ///
+    /// This performs the following steps:
+    /// 1. Generate UUIDs for all existing files
+    /// 2. Extract filename from each path
+    /// 3. Convert part_of paths to doc_ids
+    /// 4. Convert contents paths to doc_ids
+    /// 5. Delete old path-based entries
+    /// 6. Create new UUID-based entries
+    ///
+    /// # Returns
+    /// Number of files migrated, or an error.
+    pub fn migrate_to_doc_ids(&self) -> StorageResult<usize> {
+        use std::collections::HashMap;
+
+        let old_files = self.list_files();
+
+        if old_files.is_empty() {
+            return Ok(0);
+        }
+
+        // Generate UUIDs for all existing files
+        let mut path_to_id: HashMap<String, String> = HashMap::new();
+        for (path, _) in &old_files {
+            path_to_id.insert(path.clone(), uuid::Uuid::new_v4().to_string());
+        }
+
+        // Migrate each file
+        for (old_path, mut metadata) in old_files.clone() {
+            let new_id = match path_to_id.get(&old_path) {
+                Some(id) => id.clone(),
+                None => continue,
+            };
+
+            // Extract filename from path
+            metadata.filename = std::path::Path::new(&old_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Convert part_of path to doc_id
+            if let Some(ref parent_path) = metadata.part_of {
+                // Try to find the parent in our path_to_id mapping
+                if let Some(parent_id) = path_to_id.get(parent_path) {
+                    metadata.part_of = Some(parent_id.clone());
+                } else {
+                    // Parent might be a relative path - try to resolve it
+                    let parent_dir = std::path::Path::new(&old_path).parent();
+                    if let Some(dir) = parent_dir {
+                        let absolute_parent = dir.join(parent_path);
+                        let absolute_str = absolute_parent.to_string_lossy().to_string();
+                        if let Some(parent_id) = path_to_id.get(&absolute_str) {
+                            metadata.part_of = Some(parent_id.clone());
+                        }
+                        // If still not found, leave as-is (will be cleaned up later)
+                    }
+                }
+            }
+
+            // Convert contents paths to doc_ids
+            if let Some(ref contents) = metadata.contents {
+                let parent_dir = std::path::Path::new(&old_path).parent();
+                let new_contents: Vec<String> = contents
+                    .iter()
+                    .filter_map(|rel_path| {
+                        // Resolve relative path to absolute
+                        let abs_path = if let Some(dir) = parent_dir {
+                            dir.join(rel_path).to_string_lossy().to_string()
+                        } else {
+                            rel_path.clone()
+                        };
+                        path_to_id.get(&abs_path).cloned()
+                    })
+                    .collect();
+                metadata.contents = if new_contents.is_empty() {
+                    None
+                } else {
+                    Some(new_contents)
+                };
+            }
+
+            // Create new entry with UUID key
+            self.set_file(&new_id, metadata)?;
+
+            // Remove old path-based entry
+            self.remove_file(&old_path)?;
+        }
+
+        log::info!(
+            "Migrated {} files from path-based to doc-ID-based format",
+            path_to_id.len()
+        );
+
+        Ok(path_to_id.len())
+    }
+
     // ==================== Sync Operations ====================
 
     /// Encode the current state vector for sync handshake.
@@ -413,6 +821,34 @@ impl WorkspaceCrdt {
         // Capture state after the update
         let files_after: HashMap<String, FileMetadata> = self.list_files().into_iter().collect();
 
+        // Detect doc-ID based renames: same key with different filename
+        // In doc-ID mode, the key is a UUID and renames are just filename property updates
+        let mut renames: Vec<(String, String)> = Vec::new();
+        for (doc_id, new_meta) in &files_after {
+            if let Some(old_meta) = files_before.get(doc_id) {
+                // Same doc_id, different filename = rename in doc-ID mode
+                if old_meta.filename != new_meta.filename
+                    && !old_meta.filename.is_empty()
+                    && !new_meta.filename.is_empty()
+                    && !old_meta.deleted
+                    && !new_meta.deleted
+                {
+                    // Derive old and new paths using the respective snapshots
+                    let old_path = self.derive_path_from_snapshot(doc_id, old_meta, &files_before);
+                    let new_path = self.derive_path_from_snapshot(doc_id, new_meta, &files_after);
+
+                    if let (Some(old_p), Some(new_p)) = (old_path, new_path) {
+                        log::debug!(
+                            "[WorkspaceCrdt] Doc-ID rename detected: {} -> {}",
+                            old_p,
+                            new_p
+                        );
+                        renames.push((old_p, new_p));
+                    }
+                }
+            }
+        }
+
         // Compute changed paths
         let mut changed_paths = Vec::new();
 
@@ -468,7 +904,7 @@ impl WorkspaceCrdt {
         // 1. Same parent AND same title (highest confidence)
         // 2. Same parent AND similar modified_at timestamp (within 5 seconds)
         // 3. Same parent with only ONE candidate pair (fallback)
-        let mut renames: Vec<(String, String)> = Vec::new(); // (old_path, new_path)
+        // Note: renames vector was already initialized above with doc-ID based renames
         let mut matched_created: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut matched_deleted: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
@@ -1048,5 +1484,196 @@ mod tests {
         let captured = changes.borrow();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].0, "test.md");
+    }
+
+    // ==================== Doc-ID Based Tests ====================
+
+    #[test]
+    fn test_create_file_returns_uuid() {
+        let crdt = create_test_crdt();
+        let metadata = FileMetadata::with_filename("test.md".to_string(), Some("Test".to_string()));
+
+        let doc_id = crdt.create_file(metadata.clone()).unwrap();
+
+        // Doc ID should be a valid UUID format (36 chars with dashes)
+        assert_eq!(doc_id.len(), 36);
+        assert!(doc_id.contains('-'));
+
+        // File should be retrievable by doc_id
+        let retrieved = crdt.get_file(&doc_id).unwrap();
+        assert_eq!(retrieved.filename, "test.md");
+        assert_eq!(retrieved.title, Some("Test".to_string()));
+    }
+
+    #[test]
+    fn test_get_path_simple() {
+        let crdt = create_test_crdt();
+
+        // Create a root file
+        let root_meta =
+            FileMetadata::with_filename("root.md".to_string(), Some("Root".to_string()));
+        let root_id = crdt.create_file(root_meta).unwrap();
+
+        let path = crdt.get_path(&root_id).unwrap();
+        assert_eq!(path, PathBuf::from("root.md"));
+    }
+
+    #[test]
+    fn test_get_path_nested() {
+        let crdt = create_test_crdt();
+
+        // Create parent
+        let parent_meta =
+            FileMetadata::with_filename("parent".to_string(), Some("Parent".to_string()));
+        let parent_id = crdt.create_file(parent_meta).unwrap();
+
+        // Create child with parent reference
+        let mut child_meta =
+            FileMetadata::with_filename("child.md".to_string(), Some("Child".to_string()));
+        child_meta.part_of = Some(parent_id.clone());
+        let child_id = crdt.create_file(child_meta).unwrap();
+
+        let path = crdt.get_path(&child_id).unwrap();
+        assert_eq!(path, PathBuf::from("parent/child.md"));
+    }
+
+    #[test]
+    fn test_get_path_deeply_nested() {
+        let crdt = create_test_crdt();
+
+        // Create: grandparent/parent/child.md
+        let gp_meta = FileMetadata::with_filename("grandparent".to_string(), None);
+        let gp_id = crdt.create_file(gp_meta).unwrap();
+
+        let mut p_meta = FileMetadata::with_filename("parent".to_string(), None);
+        p_meta.part_of = Some(gp_id.clone());
+        let p_id = crdt.create_file(p_meta).unwrap();
+
+        let mut child_meta =
+            FileMetadata::with_filename("child.md".to_string(), Some("Child".to_string()));
+        child_meta.part_of = Some(p_id.clone());
+        let child_id = crdt.create_file(child_meta).unwrap();
+
+        let path = crdt.get_path(&child_id).unwrap();
+        assert_eq!(path, PathBuf::from("grandparent/parent/child.md"));
+    }
+
+    #[test]
+    fn test_rename_file() {
+        let crdt = create_test_crdt();
+
+        let meta = FileMetadata::with_filename("old-name.md".to_string(), Some("Test".to_string()));
+        let doc_id = crdt.create_file(meta).unwrap();
+
+        // Rename
+        crdt.rename_file(&doc_id, "new-name.md").unwrap();
+
+        // Check filename updated
+        let retrieved = crdt.get_file(&doc_id).unwrap();
+        assert_eq!(retrieved.filename, "new-name.md");
+        assert_eq!(retrieved.title, Some("Test".to_string())); // Title preserved
+
+        // Path should reflect new filename
+        let path = crdt.get_path(&doc_id).unwrap();
+        assert_eq!(path, PathBuf::from("new-name.md"));
+    }
+
+    #[test]
+    fn test_move_file() {
+        let crdt = create_test_crdt();
+
+        // Create two parent folders
+        let parent1_meta = FileMetadata::with_filename("folder1".to_string(), None);
+        let parent1_id = crdt.create_file(parent1_meta).unwrap();
+
+        let parent2_meta = FileMetadata::with_filename("folder2".to_string(), None);
+        let parent2_id = crdt.create_file(parent2_meta).unwrap();
+
+        // Create file in folder1
+        let mut file_meta =
+            FileMetadata::with_filename("file.md".to_string(), Some("Test".to_string()));
+        file_meta.part_of = Some(parent1_id.clone());
+        let file_id = crdt.create_file(file_meta).unwrap();
+
+        // Move to folder2
+        crdt.move_file(&file_id, Some(&parent2_id)).unwrap();
+
+        // Check parent updated
+        let retrieved = crdt.get_file(&file_id).unwrap();
+        assert_eq!(retrieved.part_of, Some(parent2_id.clone()));
+
+        // Path should reflect new parent
+        let path = crdt.get_path(&file_id).unwrap();
+        assert_eq!(path, PathBuf::from("folder2/file.md"));
+    }
+
+    #[test]
+    fn test_needs_migration_false_for_uuids() {
+        let crdt = create_test_crdt();
+
+        // Create file with UUID key (doc-ID based)
+        let meta = FileMetadata::with_filename("test.md".to_string(), Some("Test".to_string()));
+        let _ = crdt.create_file(meta).unwrap();
+
+        // Should not need migration since keys are UUIDs
+        assert!(!crdt.needs_migration());
+    }
+
+    #[test]
+    fn test_needs_migration_true_for_paths() {
+        let crdt = create_test_crdt();
+
+        // Simulate legacy path-based entry
+        let meta = FileMetadata::with_filename("test.md".to_string(), Some("Test".to_string()));
+        crdt.set_file("workspace/notes/test.md", meta).unwrap();
+
+        // Should need migration since key contains '/'
+        assert!(crdt.needs_migration());
+    }
+
+    #[test]
+    fn test_migrate_to_doc_ids() {
+        let crdt = create_test_crdt();
+
+        // Create legacy path-based entries
+        let mut parent_meta = FileMetadata::new(Some("Parent".to_string()));
+        parent_meta.contents = Some(vec!["child.md".to_string()]);
+        crdt.set_file("workspace/parent.md", parent_meta).unwrap();
+
+        let mut child_meta = FileMetadata::new(Some("Child".to_string()));
+        child_meta.part_of = Some("workspace/parent.md".to_string());
+        crdt.set_file("workspace/child.md", child_meta).unwrap();
+
+        // Run migration
+        let count = crdt.migrate_to_doc_ids().unwrap();
+        assert_eq!(count, 2);
+
+        // Should no longer need migration
+        assert!(!crdt.needs_migration());
+
+        // Files should now have filenames set
+        let files = crdt.list_files();
+        for (doc_id, meta) in &files {
+            // Keys should be UUIDs (no slashes)
+            assert!(!doc_id.contains('/'), "Key should be UUID: {}", doc_id);
+            // Filenames should be set
+            assert!(!meta.filename.is_empty(), "Filename should be set");
+        }
+    }
+
+    #[test]
+    fn test_normalize_title_to_filename() {
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("My Note"),
+            "my-note.md"
+        );
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("Hello World!"),
+            "hello-world.md"
+        );
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("Test_File Name"),
+            "test-file-name.md"
+        );
     }
 }

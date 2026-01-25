@@ -25,6 +25,7 @@ thiserror.workspace = true
 
 # CRDT support
 yrs = { version = "0.25", optional = true }
+uuid = { version = "1", features = ["v4", "js"], optional = true }
 
 # TypeScript bindings generation
 ts-rs = { version = "10", features = ["serde-json-impl", "indexmap-impl"] }
@@ -53,7 +54,7 @@ markdown = ["dep:comrak"]
 
 # Enable CRDT-based sync and version history (works on all platforms)
 # On native, also enables SqliteStorage via rusqlite
-crdt = ["dep:yrs"]
+crdt = ["dep:yrs", "dep:uuid"]
 
 # Enable SQLite storage for CRDT (native only, automatically enabled with crdt on non-WASM)
 crdt-sqlite = ["crdt", "dep:rusqlite"]

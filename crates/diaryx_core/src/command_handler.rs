@@ -280,6 +280,16 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_broken_part_of(Path::new(&path))
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!("Failed to emit workspace sync for FixBrokenPartOf: {}", e);
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -289,6 +299,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_broken_contents_ref(Path::new(&index_path), &target)
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!(
+                                "Failed to emit workspace sync for FixBrokenContentsRef: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -561,6 +584,34 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                             let mut metadata = crdt_ops
                                 .get_file(&canonical_path)
                                 .unwrap_or_else(|| FileMetadata::default());
+
+                            // Update parent's contents to remove the deleted file
+                            if let Some(ref parent_path) = metadata.part_of {
+                                if let Some(mut parent) = crdt_ops.get_file(parent_path) {
+                                    if let Some(ref mut contents) = parent.contents {
+                                        // Find the deleted file in contents by filename
+                                        let filename = std::path::Path::new(&canonical_path)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(&canonical_path);
+
+                                        if let Some(idx) = contents
+                                            .iter()
+                                            .position(|e| e == filename || e == &canonical_path)
+                                        {
+                                            contents.remove(idx);
+                                            parent.modified_at =
+                                                chrono::Utc::now().timestamp_millis();
+                                            if let Err(e) = crdt_ops.set_file(parent_path, parent) {
+                                                log::warn!(
+                                                    "Failed to update parent contents for delete: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                             // Mark as deleted
                             metadata.deleted = true;
@@ -853,6 +904,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 self.entry()
                     .set_frontmatter_property(&path, "contents", Value::Sequence(vec![]))
                     .await?;
+
+                // Emit workspace sync for hierarchy change
+                #[cfg(feature = "crdt")]
+                if let Some(ref sync_manager) = self.sync_manager() {
+                    if let Err(e) = sync_manager.emit_workspace_update() {
+                        log::warn!("Failed to emit workspace sync for ConvertToIndex: {}", e);
+                    }
+                }
+
                 Ok(Response::String(path))
             }
 
@@ -861,6 +921,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 self.entry()
                     .remove_frontmatter_property(&path, "contents")
                     .await?;
+
+                // Emit workspace sync for hierarchy change
+                #[cfg(feature = "crdt")]
+                if let Some(ref sync_manager) = self.sync_manager() {
+                    if let Err(e) = sync_manager.emit_workspace_update() {
+                        log::warn!("Failed to emit workspace sync for ConvertToLeaf: {}", e);
+                    }
+                }
+
                 Ok(Response::String(path))
             }
 
@@ -1291,6 +1360,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_broken_attachment(Path::new(&path), &attachment)
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!(
+                                "Failed to emit workspace sync for FixBrokenAttachment: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -1305,6 +1387,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_non_portable_path(Path::new(&path), &property, &old_value, &new_value)
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!(
+                                "Failed to emit workspace sync for FixNonPortablePath: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -1317,6 +1412,16 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_unlisted_file(Path::new(&index_path), Path::new(&file_path))
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!("Failed to emit workspace sync for FixUnlistedFile: {}", e);
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -1329,6 +1434,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_orphan_binary_file(Path::new(&index_path), Path::new(&file_path))
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!(
+                                "Failed to emit workspace sync for FixOrphanBinaryFile: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -1341,6 +1459,16 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_missing_part_of(Path::new(&file_path), Path::new(&index_path))
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!("Failed to emit workspace sync for FixMissingPartOf: {}", e);
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -1352,6 +1480,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     + warning_fixes.iter().filter(|r| r.success).count();
                 let total_failed = error_fixes.iter().filter(|r| !r.success).count()
                     + warning_fixes.iter().filter(|r| !r.success).count();
+
+                #[cfg(feature = "crdt")]
+                if total_fixed > 0 {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!("Failed to emit workspace sync for FixAll: {}", e);
+                        }
+                    }
+                }
 
                 Ok(Response::FixSummary(crate::command::FixSummary {
                     error_fixes,
@@ -1370,6 +1507,19 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     .fixer()
                     .fix_circular_reference(Path::new(&file_path), &part_of_value)
                     .await;
+
+                #[cfg(feature = "crdt")]
+                if result.success {
+                    if let Some(ref sync_manager) = self.sync_manager() {
+                        if let Err(e) = sync_manager.emit_workspace_update() {
+                            log::warn!(
+                                "Failed to emit workspace sync for FixCircularReference: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
                 Ok(Response::FixResult(result))
             }
 
@@ -2216,7 +2366,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     let modified_at =
                         file_mtime.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
 
+                    // Extract filename from path
+                    let filename = std::path::Path::new(&path_str)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+
                     let metadata = crate::crdt::FileMetadata {
+                        filename,
                         title,
                         part_of: parent_path.clone(),
                         contents,
@@ -2424,6 +2582,14 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let file_metadata: crate::crdt::FileMetadata = serde_json::from_value(metadata)
                     .map_err(|e| DiaryxError::Unsupported(format!("Invalid metadata: {}", e)))?;
                 crdt.set_file(&path, file_metadata)?;
+
+                // Emit workspace sync (observe_updates should handle this, but emit explicitly for safety)
+                if let Some(ref sync_manager) = self.sync_manager() {
+                    if let Err(e) = sync_manager.emit_workspace_update() {
+                        log::warn!("Failed to emit workspace sync for SetCrdtFile: {}", e);
+                    }
+                }
+
                 Ok(Response::Ok)
             }
 
@@ -2467,6 +2633,14 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
                 })?;
                 crdt.set_body_content(&doc_name, &content)?;
+
+                // Emit body sync message
+                if let Some(ref sync_manager) = self.sync_manager() {
+                    if let Err(e) = sync_manager.emit_body_update(&doc_name, &content) {
+                        log::warn!("Failed to emit body sync for SetBodyContent: {}", e);
+                    }
+                }
+
                 Ok(Response::Ok)
             }
 

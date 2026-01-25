@@ -4,6 +4,17 @@
  * This module provides the same API surface as the original workspaceCrdt.ts
  * but delegates all operations to the Rust CRDT via RustCrdtApi.
  *
+ * ## Doc-ID Based Architecture
+ *
+ * Files are keyed by stable document IDs (UUIDs) rather than file paths.
+ * This makes renames trivial property updates rather than delete+create operations.
+ *
+ * Key changes:
+ * - `bodyBridges` are keyed by doc_id (stable across renames)
+ * - Use `getPathForDocId()` to derive filesystem paths
+ * - Use `findDocIdByPath()` to look up doc_ids from paths
+ * - The `filename` field in FileMetadata contains the filename on disk
+ *
  * Supports Hocuspocus server-based sync for device-to-device synchronization.
  */
 
@@ -671,6 +682,7 @@ export async function populateCrdtFromFiles(
 
   for (const { path, metadata } of files) {
     const fullMetadata: FileMetadata = {
+      filename: path.split('/').pop() ?? '',
       title: metadata.title ?? null,
       part_of: metadata.part_of ?? null,
       contents: metadata.contents ?? null,
@@ -1170,6 +1182,7 @@ export async function updateFileMetadata(
     }
 
     const updated: FileMetadata = {
+      filename: existing?.filename ?? path.split('/').pop() ?? '',
       title: newTitle,
       part_of: newPartOf,
       contents: newContents,
@@ -1222,6 +1235,7 @@ export async function purgeFile(path: string): Promise<void> {
   }
 
   const metadata: FileMetadata = {
+    filename: '',
     title: null,
     part_of: null,
     contents: null,

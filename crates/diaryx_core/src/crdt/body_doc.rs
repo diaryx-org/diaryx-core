@@ -78,22 +78,45 @@ impl BodyDoc {
     }
 
     /// Load a body document from storage, or create a new one if it doesn't exist.
+    ///
+    /// This loads both the base snapshot (if any) and all incremental updates
+    /// to reconstruct the current state. This is critical for WASM where updates
+    /// are stored but snapshots may not be saved.
     pub fn load(storage: Arc<dyn CrdtStorage>, doc_name: String) -> StorageResult<Self> {
         let doc = Doc::new();
         let body_text = doc.get_or_insert_text(BODY_TEXT_NAME);
         let frontmatter_map = doc.get_or_insert_map(FRONTMATTER_MAP_NAME);
 
-        // Try to load existing state
-        if let Some(state) = storage.load_doc(&doc_name)?
-            && let Ok(update) = Update::decode_v1(&state)
         {
             let mut txn = doc.transact_mut();
-            if let Err(e) = txn.apply_update(update) {
-                log::warn!(
-                    "Failed to apply stored state for body doc {}: {}",
-                    doc_name,
-                    e
-                );
+
+            // Try to load base snapshot from storage
+            if let Some(state) = storage.load_doc(&doc_name)?
+                && let Ok(update) = Update::decode_v1(&state)
+            {
+                if let Err(e) = txn.apply_update(update) {
+                    log::warn!(
+                        "Failed to apply stored snapshot for body doc {}: {}",
+                        doc_name,
+                        e
+                    );
+                }
+            }
+
+            // Apply all incremental updates from storage
+            // This is critical for WASM where updates are stored but snapshots may not be saved
+            let updates = storage.get_all_updates(&doc_name)?;
+            for crdt_update in updates {
+                if let Ok(update) = Update::decode_v1(&crdt_update.data) {
+                    if let Err(e) = txn.apply_update(update) {
+                        log::warn!(
+                            "Failed to apply stored update {} for body doc {}: {}",
+                            crdt_update.update_id,
+                            doc_name,
+                            e
+                        );
+                    }
+                }
             }
         }
 

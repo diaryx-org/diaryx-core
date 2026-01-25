@@ -159,6 +159,7 @@ export async function addFileToCrdt(
     }
 
     const metadata: FileMetadata = {
+      filename: path.split('/').pop() ?? '',
       title: (frontmatter.title as string) ?? null,
       // Use absolute path to parent (per CRDT spec: part_of is absolute, contents is relative)
       part_of: parentPath ?? (frontmatter.part_of as string) ?? null,

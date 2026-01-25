@@ -32,17 +32,38 @@ where
 ///
 /// This represents the synchronized state of a file's frontmatter properties,
 /// stored in a Y.Map within the workspace document.
+///
+/// ## Doc-ID Based Architecture
+///
+/// Files are keyed by stable document IDs (UUIDs) rather than file paths.
+/// This makes renames trivial property updates rather than delete+create operations.
+///
+/// The actual filesystem path is derived from the `filename` field and the parent chain:
+/// - `filename`: The file's name on disk (e.g., "my-note.md")
+/// - `part_of`: Document ID of the parent (or None for root files)
+///
+/// Use `WorkspaceCrdt::get_path()` to derive the full path from a doc_id.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "bindings/")]
 pub struct FileMetadata {
+    /// Filename on disk (e.g., "my-note.md"). Required for non-deleted files.
+    /// For files created before the doc-ID migration, this may be empty and
+    /// should be derived from the path key during migration.
+    #[serde(default)]
+    pub filename: String,
+
     /// Display title from frontmatter
     #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub title: Option<String>,
 
-    /// Absolute path to parent index file (e.g., "workspace/Daily/index.md")
+    /// Document ID of parent file (e.g., "abc123-uuid"), or None for root files.
+    /// Note: For backward compatibility during migration, this may temporarily
+    /// contain absolute paths which will be converted to doc_ids.
     pub part_of: Option<String>,
 
-    /// Relative paths to child files (e.g., ["2026/index.md", "notes.md"])
+    /// Document IDs of child files.
+    /// Note: For backward compatibility during migration, this may temporarily
+    /// contain relative paths which will be converted to doc_ids.
     pub contents: Option<Vec<String>>,
 
     /// Binary attachment references
@@ -75,6 +96,16 @@ impl FileMetadata {
         }
     }
 
+    /// Create new FileMetadata with filename and title
+    pub fn with_filename(filename: String, title: Option<String>) -> Self {
+        Self {
+            filename,
+            title,
+            modified_at: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
+        }
+    }
+
     /// Mark this file as deleted (soft delete)
     pub fn mark_deleted(&mut self) {
         self.deleted = true;
@@ -84,6 +115,57 @@ impl FileMetadata {
     /// Check if this file is an index (has contents)
     pub fn is_index(&self) -> bool {
         self.contents.as_ref().is_some_and(|c| !c.is_empty())
+    }
+
+    /// Convert a title to a normalized filename.
+    ///
+    /// Rules:
+    /// - Lowercase
+    /// - Replace spaces and underscores with hyphens
+    /// - Remove non-alphanumeric characters (except hyphens)
+    /// - Collapse multiple hyphens
+    /// - Append .md extension
+    ///
+    /// Example: "My Note Title" → "my-note-title.md"
+    pub fn normalize_title_to_filename(title: &str) -> String {
+        let normalized: String = title
+            .to_lowercase()
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c
+                } else if c == ' ' || c == '_' {
+                    '-'
+                } else if c == '-' {
+                    c
+                } else {
+                    // Skip other characters
+                    '-'
+                }
+            })
+            .collect();
+
+        // Collapse multiple hyphens and trim leading/trailing hyphens
+        let collapsed: String = normalized
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+
+        if collapsed.is_empty() {
+            "untitled.md".to_string()
+        } else {
+            format!("{}.md", collapsed)
+        }
+    }
+
+    /// Check if this metadata uses the legacy path-based format.
+    ///
+    /// Returns true if part_of contains a path (has '/') rather than a UUID.
+    pub fn is_legacy_format(&self) -> bool {
+        self.part_of
+            .as_ref()
+            .is_some_and(|p| p.contains('/') || p.ends_with(".md"))
     }
 }
 
@@ -213,6 +295,7 @@ mod tests {
     fn test_file_metadata_default() {
         let meta = FileMetadata::default();
         assert!(meta.title.is_none());
+        assert!(meta.filename.is_empty());
         assert!(!meta.deleted);
         assert!(meta.attachments.is_empty());
     }
@@ -225,6 +308,14 @@ mod tests {
     }
 
     #[test]
+    fn test_file_metadata_with_filename() {
+        let meta = FileMetadata::with_filename("test.md".to_string(), Some("Test".to_string()));
+        assert_eq!(meta.filename, "test.md");
+        assert_eq!(meta.title, Some("Test".to_string()));
+        assert!(meta.modified_at > 0);
+    }
+
+    #[test]
     fn test_file_metadata_mark_deleted() {
         let mut meta = FileMetadata::default();
         let original_time = meta.modified_at;
@@ -232,6 +323,46 @@ mod tests {
         meta.mark_deleted();
         assert!(meta.deleted);
         assert!(meta.modified_at > original_time);
+    }
+
+    #[test]
+    fn test_normalize_title_to_filename() {
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("My Note Title"),
+            "my-note-title.md"
+        );
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("Hello World!"),
+            "hello-world.md"
+        );
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("Test_File Name"),
+            "test-file-name.md"
+        );
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("  Multiple   Spaces  "),
+            "multiple-spaces.md"
+        );
+        assert_eq!(FileMetadata::normalize_title_to_filename(""), "untitled.md");
+        assert_eq!(
+            FileMetadata::normalize_title_to_filename("!!!"),
+            "untitled.md"
+        );
+    }
+
+    #[test]
+    fn test_is_legacy_format() {
+        let mut meta = FileMetadata::default();
+        assert!(!meta.is_legacy_format()); // No part_of
+
+        meta.part_of = Some("abc123-uuid".to_string());
+        assert!(!meta.is_legacy_format()); // UUID format
+
+        meta.part_of = Some("workspace/index.md".to_string());
+        assert!(meta.is_legacy_format()); // Path format
+
+        meta.part_of = Some("index.md".to_string());
+        assert!(meta.is_legacy_format()); // Filename with .md
     }
 
     #[test]

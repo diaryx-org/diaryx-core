@@ -3,6 +3,14 @@
 //! This module provides `BodyDocManager`, which coordinates multiple `BodyDoc`
 //! instances for a workspace. It handles loading, caching, and lifecycle
 //! management of document CRDTs.
+//!
+//! # Doc-ID Based Keying
+//!
+//! Body documents are keyed by stable document IDs (UUIDs) rather than file paths.
+//! This means:
+//! - Renames don't require renaming body documents (doc_id is stable)
+//! - The `rename` method becomes a legacy compatibility wrapper
+//! - Use `get_or_create(doc_id)` with the file's doc_id from WorkspaceCrdt
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

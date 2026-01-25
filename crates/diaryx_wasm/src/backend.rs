@@ -39,7 +39,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use diaryx_core::crdt::{BodyDocManager, CrdtStorage, MemoryStorage, WorkspaceCrdt};
+use diaryx_core::crdt::{BodyDocManager, CrdtStorage, MemoryStorage, SyncMessage, WorkspaceCrdt};
 use diaryx_core::diaryx::Diaryx;
 use diaryx_core::frontmatter;
 use diaryx_core::fs::{
@@ -291,6 +291,21 @@ thread_local! {
     static WASM_EVENT_REGISTRY: RefCell<Option<Rc<WasmCallbackRegistry>>> = RefCell::new(None);
 }
 
+// Thread-local storage for CRDT update sync callback.
+// This allows observe_updates() callbacks to emit sync messages without complex lifetimes.
+// Safe because WASM is single-threaded.
+thread_local! {
+    static CRDT_SYNC_CALLBACK: RefCell<Option<Box<dyn Fn(&[u8])>>> = RefCell::new(None);
+}
+
+// Thread-local flag to track when we're handling a remote update.
+// This prevents the observe_updates callback from emitting sync messages for
+// updates that came from the server (which would cause an infinite loop).
+// Safe because WASM is single-threaded.
+thread_local! {
+    static IS_HANDLING_REMOTE_UPDATE: RefCell<bool> = const { RefCell::new(false) };
+}
+
 /// Create a bridge callback that forwards events from Rust's CallbackRegistry
 /// to the WASM-specific WasmCallbackRegistry (which holds JS functions).
 fn create_event_bridge() -> Arc<dyn Fn(&FileSystemEvent) + Send + Sync> {
@@ -298,6 +313,74 @@ fn create_event_bridge() -> Arc<dyn Fn(&FileSystemEvent) + Send + Sync> {
         WASM_EVENT_REGISTRY.with(|reg| {
             if let Some(registry) = reg.borrow().as_ref() {
                 registry.emit(event);
+            }
+        });
+    })
+}
+
+/// Set up the CRDT sync callback that will be called on any CRDT update.
+/// This enables automatic sync emission whenever the workspace CRDT changes.
+fn setup_crdt_sync_callback(wasm_registry: &Rc<WasmCallbackRegistry>) {
+    let registry = Rc::clone(wasm_registry);
+    CRDT_SYNC_CALLBACK.with(|cb| {
+        *cb.borrow_mut() = Some(Box::new(move |update: &[u8]| {
+            // Skip emitting if we're handling a remote update (prevents feedback loop)
+            let is_remote = IS_HANDLING_REMOTE_UPDATE.with(|flag| *flag.borrow());
+            if is_remote {
+                return;
+            }
+
+            // Only emit if there are subscribers (i.e., sync is connected)
+            if registry.subscriber_count() > 0 {
+                // Wrap the update in Y-sync message format and emit
+                let encoded = SyncMessage::Update(update.to_vec()).encode();
+                let event = FileSystemEvent::send_sync_message("workspace", encoded, false);
+                registry.emit(&event);
+            }
+        }));
+    });
+}
+
+/// RAII guard to set/clear the IS_HANDLING_REMOTE_UPDATE flag.
+struct RemoteUpdateGuard;
+
+impl RemoteUpdateGuard {
+    fn new() -> Self {
+        IS_HANDLING_REMOTE_UPDATE.with(|flag| {
+            *flag.borrow_mut() = true;
+        });
+        Self
+    }
+}
+
+impl Drop for RemoteUpdateGuard {
+    fn drop(&mut self) {
+        IS_HANDLING_REMOTE_UPDATE.with(|flag| {
+            *flag.borrow_mut() = false;
+        });
+    }
+}
+
+/// Check if a command is a sync-related command that handles remote updates.
+/// These commands apply updates from the server to our local CRDT, and we
+/// should NOT emit sync messages for these (to avoid feedback loops).
+fn is_remote_sync_command(cmd: &diaryx_core::Command) -> bool {
+    use diaryx_core::Command;
+    matches!(
+        cmd,
+        Command::HandleSyncMessage { .. }
+            | Command::HandleWorkspaceSyncMessage { .. }
+            | Command::HandleBodySyncMessage { .. }
+    )
+}
+
+/// Create a subscription to workspace CRDT updates that emits sync messages.
+/// The subscription callback accesses the thread-local CRDT_SYNC_CALLBACK.
+fn subscribe_to_crdt_updates(workspace_crdt: &Arc<WorkspaceCrdt>) -> yrs::Subscription {
+    workspace_crdt.observe_updates(|update| {
+        CRDT_SYNC_CALLBACK.with(|cb| {
+            if let Some(ref callback) = *cb.borrow() {
+                callback(update);
             }
         });
     })
@@ -341,6 +424,10 @@ pub struct DiaryxBackend {
     wasm_event_registry: Rc<WasmCallbackRegistry>,
     /// Rust event registry that bridges to WASM registry.
     rust_event_registry: Arc<CallbackRegistry>,
+    /// Subscription to CRDT updates for automatic sync emission.
+    /// Must be stored to prevent the subscription from being dropped.
+    #[allow(dead_code)]
+    crdt_update_subscription: Option<yrs::Subscription>,
 }
 
 #[wasm_bindgen]
@@ -426,6 +513,12 @@ impl DiaryxBackend {
         let event_fs = EventEmittingFs::with_registry(crdt_fs, Arc::clone(&rust_event_registry));
         let fs = Rc::new(event_fs);
 
+        // Set up CRDT sync callback to automatically emit sync messages on any CRDT change
+        setup_crdt_sync_callback(&wasm_event_registry);
+
+        // Subscribe to CRDT updates to trigger sync emission
+        let crdt_update_subscription = subscribe_to_crdt_updates(&workspace_crdt);
+
         Ok(Self {
             fs,
             crdt_storage,
@@ -433,6 +526,7 @@ impl DiaryxBackend {
             body_doc_manager,
             wasm_event_registry,
             rust_event_registry,
+            crdt_update_subscription: Some(crdt_update_subscription),
         })
     }
 
@@ -503,6 +597,12 @@ impl DiaryxBackend {
         let event_fs = EventEmittingFs::with_registry(crdt_fs, Arc::clone(&rust_event_registry));
         let fs = Rc::new(event_fs);
 
+        // Set up CRDT sync callback to automatically emit sync messages on any CRDT change
+        setup_crdt_sync_callback(&wasm_event_registry);
+
+        // Subscribe to CRDT updates to trigger sync emission
+        let crdt_update_subscription = subscribe_to_crdt_updates(&workspace_crdt);
+
         Ok(Self {
             fs,
             crdt_storage,
@@ -510,6 +610,7 @@ impl DiaryxBackend {
             body_doc_manager,
             wasm_event_registry,
             rust_event_registry,
+            crdt_update_subscription: Some(crdt_update_subscription),
         })
     }
 
@@ -592,6 +693,12 @@ impl DiaryxBackend {
         let event_fs = EventEmittingFs::with_registry(crdt_fs, Arc::clone(&rust_event_registry));
         let fs = Rc::new(event_fs);
 
+        // Set up CRDT sync callback to automatically emit sync messages on any CRDT change
+        setup_crdt_sync_callback(&wasm_event_registry);
+
+        // Subscribe to CRDT updates to trigger sync emission
+        let crdt_update_subscription = subscribe_to_crdt_updates(&workspace_crdt);
+
         Ok(Self {
             fs,
             crdt_storage,
@@ -599,6 +706,7 @@ impl DiaryxBackend {
             body_doc_manager,
             wasm_event_registry,
             rust_event_registry,
+            crdt_update_subscription: Some(crdt_update_subscription),
         })
     }
 
@@ -683,6 +791,12 @@ impl DiaryxBackend {
         let event_fs = EventEmittingFs::with_registry(crdt_fs, Arc::clone(&rust_event_registry));
         let fs = Rc::new(event_fs);
 
+        // Set up CRDT sync callback to automatically emit sync messages on any CRDT change
+        setup_crdt_sync_callback(&wasm_event_registry);
+
+        // Subscribe to CRDT updates to trigger sync emission
+        let crdt_update_subscription = subscribe_to_crdt_updates(&workspace_crdt);
+
         Ok(Self {
             fs,
             crdt_storage,
@@ -690,6 +804,7 @@ impl DiaryxBackend {
             body_doc_manager,
             wasm_event_registry,
             rust_event_registry,
+            crdt_update_subscription: Some(crdt_update_subscription),
         })
     }
 
@@ -714,6 +829,14 @@ impl DiaryxBackend {
         // Parse the command from JSON
         let cmd: Command = serde_json::from_str(command_json)
             .map_err(|e| JsValue::from_str(&format!("Invalid command JSON: {}", e)))?;
+
+        // Check if this is a sync message command that handles remote updates.
+        // If so, set a guard to prevent feedback loops in the CRDT observer.
+        let _guard = if is_remote_sync_command(&cmd) {
+            Some(RemoteUpdateGuard::new())
+        } else {
+            None
+        };
 
         // Use stored CRDT instances with event callbacks configured.
         // This is critical for remote CRDT updates to trigger UI notifications.
@@ -749,6 +872,14 @@ impl DiaryxBackend {
 
         // Parse command from JS object
         let cmd: Command = serde_wasm_bindgen::from_value(command)?;
+
+        // Check if this is a sync message command that handles remote updates.
+        // If so, set a guard to prevent feedback loops in the CRDT observer.
+        let _guard = if is_remote_sync_command(&cmd) {
+            Some(RemoteUpdateGuard::new())
+        } else {
+            None
+        };
 
         // Use stored CRDT instances with event callbacks configured.
         // This is critical for remote CRDT updates to trigger UI notifications.

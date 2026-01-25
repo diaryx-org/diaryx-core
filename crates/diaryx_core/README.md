@@ -285,22 +285,55 @@ Both document types support:
 
 ### WorkspaceCrdt
 
-Manages the workspace file hierarchy as a CRDT:
+Manages the workspace file hierarchy as a CRDT.
+
+#### Doc-ID Based Architecture
+
+Files are keyed by stable document IDs (UUIDs) rather than file paths. This makes renames and moves trivial property updates rather than delete+create operations:
 
 ```rust,ignore
 use diaryx_core::crdt::{WorkspaceCrdt, MemoryStorage, FileMetadata};
 use std::sync::Arc;
 
 let storage = Arc::new(MemoryStorage::new());
-let workspace = WorkspaceCrdt::new("workspace", storage);
+let workspace = WorkspaceCrdt::new(storage);
 
-// Set file metadata
+// Create a file with auto-generated UUID
+let metadata = FileMetadata::with_filename("my-note.md".to_string(), Some("My Note".to_string()));
+let doc_id = workspace.create_file(metadata).unwrap();
+
+// Derive filesystem path from doc_id (walks parent chain)
+let path = workspace.get_path(&doc_id); // Some("my-note.md")
+
+// Find doc_id by path
+let found_id = workspace.find_by_path(Path::new("my-note.md"));
+
+// Renames are trivial - just update filename (doc_id is stable!)
+workspace.rename_file(&doc_id, "new-name.md").unwrap();
+
+// Moves are trivial - just update part_of (doc_id is stable!)
+workspace.move_file(&doc_id, Some(&parent_doc_id)).unwrap();
+```
+
+#### Legacy Path-Based API
+
+For backward compatibility, the path-based API still works:
+
+```rust,ignore
+use diaryx_core::crdt::{WorkspaceCrdt, MemoryStorage, FileMetadata};
+use std::sync::Arc;
+
+let storage = Arc::new(MemoryStorage::new());
+let workspace = WorkspaceCrdt::new(storage);
+
+// Set file metadata by path
 let metadata = FileMetadata {
+    filename: "my-note.md".to_string(),
     title: Some("My Note".to_string()),
     audience: Some(vec!["public".to_string()]),
     part_of: Some("README.md".to_string()),
     contents: None,
-    attachments: None,
+    ..Default::default()
 };
 workspace.set_file("notes/my-note.md", metadata);
 
@@ -314,6 +347,18 @@ let files = workspace.list_files();
 
 // Remove a file
 workspace.remove_file("notes/my-note.md");
+```
+
+#### Migration
+
+Workspaces using the legacy path-based format can be migrated to doc-IDs:
+
+```rust,ignore
+// Check if migration is needed
+if workspace.needs_migration() {
+    let count = workspace.migrate_to_doc_ids().unwrap();
+    println!("Migrated {} files to doc-ID based format", count);
+}
 ```
 
 ### BodyDoc

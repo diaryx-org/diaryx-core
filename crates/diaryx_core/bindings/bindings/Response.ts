@@ -2,11 +2,15 @@
 import type { AncestorAttachmentsResult } from "./AncestorAttachmentsResult";
 import type { BinaryExportFile } from "./BinaryExportFile";
 import type { BinaryFileInfo } from "./BinaryFileInfo";
+import type { CrdtHistoryEntry } from "./CrdtHistoryEntry";
 import type { EntryData } from "./EntryData";
 import type { ExportPlan } from "./ExportPlan";
 import type { ExportedFile } from "./ExportedFile";
+import type { FileDiff } from "./FileDiff";
+import type { FileMetadata } from "./FileMetadata";
 import type { FixResult } from "./FixResult";
 import type { FixSummary } from "./FixSummary";
+import type { HistoryEntry } from "./HistoryEntry";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { SearchResults } from "./SearchResults";
 import type { StorageInfo } from "./StorageInfo";
@@ -17,4 +21,28 @@ import type { ValidationResultWithMeta } from "./ValidationResultWithMeta";
 /**
  * Response from a command execution.
  */
-export type Response = { "type": "Ok" } | { "type": "String", "data": string } | { "type": "Bool", "data": boolean } | { "type": "Entry", "data": EntryData } | { "type": "Tree", "data": TreeNode } | { "type": "Frontmatter", "data": { [key in string]?: JsonValue } } | { "type": "SearchResults", "data": SearchResults } | { "type": "ValidationResult", "data": ValidationResultWithMeta } | { "type": "FixResult", "data": FixResult } | { "type": "FixSummary", "data": FixSummary } | { "type": "ExportPlan", "data": ExportPlan } | { "type": "ExportedFiles", "data": Array<ExportedFile> } | { "type": "BinaryFiles", "data": Array<BinaryExportFile> } | { "type": "BinaryFilePaths", "data": Array<BinaryFileInfo> } | { "type": "Templates", "data": Array<TemplateInfo> } | { "type": "Strings", "data": Array<string> } | { "type": "Bytes", "data": Array<number> } | { "type": "StorageInfo", "data": StorageInfo } | { "type": "AncestorAttachments", "data": AncestorAttachmentsResult };
+export type Response = { "type": "Ok" } | { "type": "String", "data": string } | { "type": "Bool", "data": boolean } | { "type": "Entry", "data": EntryData } | { "type": "Tree", "data": TreeNode } | { "type": "Frontmatter", "data": { [key in string]?: JsonValue } } | { "type": "SearchResults", "data": SearchResults } | { "type": "ValidationResult", "data": ValidationResultWithMeta } | { "type": "FixResult", "data": FixResult } | { "type": "FixSummary", "data": FixSummary } | { "type": "ExportPlan", "data": ExportPlan } | { "type": "ExportedFiles", "data": Array<ExportedFile> } | { "type": "BinaryFiles", "data": Array<BinaryExportFile> } | { "type": "BinaryFilePaths", "data": Array<BinaryFileInfo> } | { "type": "Templates", "data": Array<TemplateInfo> } | { "type": "Strings", "data": Array<string> } | { "type": "Bytes", "data": Array<number> } | { "type": "StorageInfo", "data": StorageInfo } | { "type": "AncestorAttachments", "data": AncestorAttachmentsResult } | { "type": "Binary", "data": Array<number> } | { "type": "CrdtFile", "data": FileMetadata | null } | { "type": "CrdtFiles", "data": Array<[string, FileMetadata]> } | { "type": "CrdtHistory", "data": Array<CrdtHistoryEntry> } | { "type": "UpdateId", "data": bigint | null } | { "type": "VersionDiff", "data": Array<FileDiff> } | { "type": "HistoryEntries", "data": Array<HistoryEntry> } | { "type": "WorkspaceSyncResult", "data": {
+/**
+ * Optional response bytes to send back.
+ */
+response: Array<number> | null,
+/**
+ * List of file paths that were changed.
+ */
+changed_files: Array<string>,
+/**
+ * Whether sync is now complete.
+ */
+sync_complete: boolean, } } | { "type": "BodySyncResult", "data": {
+/**
+ * Optional response bytes to send back.
+ */
+response: Array<number> | null,
+/**
+ * New content if it changed.
+ */
+content: string | null,
+/**
+ * Whether this is an echo of our own update.
+ */
+is_echo: boolean, } };

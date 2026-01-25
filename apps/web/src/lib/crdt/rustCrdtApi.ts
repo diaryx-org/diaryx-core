@@ -175,7 +175,8 @@ export class RustCrdtApi {
   // ===========================================================================
 
   /**
-   * Get file metadata from the CRDT.
+   * Get file metadata from the CRDT by key (doc_id or path).
+   * @deprecated Use getFileById() for doc-ID based access
    */
   async getFile(path: string): Promise<FileMetadata | null> {
     const response = await executeCrdt(this.backend, {
@@ -186,7 +187,16 @@ export class RustCrdtApi {
   }
 
   /**
+   * Get file metadata from the CRDT by doc_id.
+   * In the doc-ID based system, this is the primary way to access files.
+   */
+  async getFileById(docId: string): Promise<FileMetadata | null> {
+    return this.getFile(docId);
+  }
+
+  /**
    * Set file metadata in the CRDT.
+   * @deprecated Use setFileById() for doc-ID based access
    */
   async setFile(path: string, metadata: FileMetadata): Promise<void> {
     console.log('[RustCrdtApi] setFile:', path);
@@ -198,7 +208,31 @@ export class RustCrdtApi {
   }
 
   /**
+   * Set file metadata in the CRDT by doc_id.
+   * In the doc-ID based system, this is the primary way to update files.
+   */
+  async setFileById(docId: string, metadata: FileMetadata): Promise<void> {
+    return this.setFile(docId, metadata);
+  }
+
+  /**
+   * Create a new file with a generated UUID as the key.
+   * Returns the generated doc_id.
+   *
+   * Note: The metadata should have `filename` set to the desired filename.
+   */
+  async createFile(metadata: FileMetadata): Promise<string> {
+    // For now, we generate the UUID on the client side and use setFile
+    // In the future, this could be a dedicated command on the Rust side
+    const docId = crypto.randomUUID();
+    await this.setFile(docId, metadata);
+    console.log('[RustCrdtApi] createFile: generated doc_id', docId);
+    return docId;
+  }
+
+  /**
    * List all files in the CRDT.
+   * Returns tuples of [key, metadata] where key is either doc_id or path.
    */
   async listFiles(includeDeleted: boolean = false): Promise<[string, FileMetadata][]> {
     const response = await executeCrdt(this.backend, {
@@ -206,6 +240,104 @@ export class RustCrdtApi {
       params: { include_deleted: includeDeleted },
     });
     return expectResponse(response, 'CrdtFiles').data;
+  }
+
+  /**
+   * Find a doc_id by filesystem path.
+   * Walks the tree to find a file with the matching path.
+   *
+   * Note: This is a client-side implementation. For better performance,
+   * consider caching the path-to-docId mapping.
+   */
+  async findDocIdByPath(path: string): Promise<string | null> {
+    const files = await this.listFiles(false);
+    const pathParts = path.split('/').filter(p => p.length > 0);
+
+    if (pathParts.length === 0) return null;
+
+    // Build a map of filename -> [docId, metadata]
+    const filesByFilename = new Map<string, [string, FileMetadata][]>();
+    for (const [docId, meta] of files) {
+      const existing = filesByFilename.get(meta.filename) || [];
+      existing.push([docId, meta]);
+      filesByFilename.set(meta.filename, existing);
+    }
+
+    // Try to match the full path by walking from root
+    const targetFilename = pathParts[pathParts.length - 1];
+    const candidates = filesByFilename.get(targetFilename) || [];
+
+    for (const [docId] of candidates) {
+      // Reconstruct path and compare
+      const derivedPath = await this.getPathForDocId(docId);
+      if (derivedPath === path) {
+        return docId;
+      }
+    }
+
+    // Fallback: check if path is used directly as key (legacy mode)
+    const legacyMatch = files.find(([key]) => key === path);
+    if (legacyMatch) {
+      return legacyMatch[0];
+    }
+
+    return null;
+  }
+
+  /**
+   * Derive the filesystem path from a doc_id by walking the parent chain.
+   *
+   * Returns the path as a string (e.g., "workspace/notes/my-note.md").
+   */
+  async getPathForDocId(docId: string): Promise<string | null> {
+    const files = await this.listFiles(false);
+    const fileMap = new Map(files);
+
+    const parts: string[] = [];
+    let current = docId;
+    const visited = new Set<string>();
+
+    while (current) {
+      if (visited.has(current)) {
+        console.warn('[RustCrdtApi] Circular reference in getPathForDocId:', docId);
+        return null;
+      }
+      visited.add(current);
+
+      const meta = fileMap.get(current);
+      if (!meta) {
+        // Key might be a legacy path
+        if (current.includes('/')) {
+          parts.unshift(...current.split('/'));
+          break;
+        }
+        return null;
+      }
+
+      if (!meta.filename) {
+        console.warn('[RustCrdtApi] Empty filename for doc_id:', current);
+        return null;
+      }
+
+      parts.unshift(meta.filename);
+
+      if (meta.part_of) {
+        // Check if part_of is a UUID or a path
+        if (meta.part_of.includes('/') || meta.part_of.endsWith('.md')) {
+          // Legacy path reference - prepend the directory portion
+          const parentDir = meta.part_of.split('/').slice(0, -1).join('/');
+          if (parentDir) {
+            parts.unshift(...parentDir.split('/'));
+          }
+          break;
+        }
+        current = meta.part_of;
+      } else {
+        break;
+      }
+    }
+
+    return parts.join('/');
   }
 
   /**
@@ -224,6 +356,8 @@ export class RustCrdtApi {
 
   /**
    * Get body content from a document CRDT.
+   * @param docName - The document name (doc_id or path)
+   * @deprecated Use getBodyContentById() for doc-ID based access
    */
   async getBodyContent(docName: string): Promise<string> {
     const response = await executeCrdt(this.backend, {
@@ -234,13 +368,30 @@ export class RustCrdtApi {
   }
 
   /**
+   * Get body content by doc_id.
+   * In the doc-ID based system, body documents are keyed by the file's doc_id.
+   */
+  async getBodyContentById(docId: string): Promise<string> {
+    return this.getBodyContent(docId);
+  }
+
+  /**
    * Set body content in a document CRDT.
+   * @deprecated Use setBodyContentById() for doc-ID based access
    */
   async setBodyContent(docName: string, content: string): Promise<void> {
     await executeCrdt(this.backend, {
       type: 'SetBodyContent',
       params: { doc_name: docName, content },
     });
+  }
+
+  /**
+   * Set body content by doc_id.
+   * In the doc-ID based system, body documents are keyed by the file's doc_id.
+   */
+  async setBodyContentById(docId: string, content: string): Promise<void> {
+    return this.setBodyContent(docId, content);
   }
 
   /**

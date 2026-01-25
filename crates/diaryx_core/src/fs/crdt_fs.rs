@@ -4,6 +4,20 @@
 //! workspace CRDT when filesystem operations occur. This ensures that local file
 //! changes are automatically synchronized to the CRDT layer.
 //!
+//! # Doc-ID Bridge Layer
+//!
+//! CrdtFs bridges path-based filesystem operations to the doc-ID-based CRDT:
+//!
+//! ```text
+//! Path Operation → CrdtFs → find_by_path() → doc_id → CRDT Update
+//!                         ↘ or create_file() ↗
+//! ```
+//!
+//! - For writes: Look up doc_id by path, or create new file with UUID if not found
+//! - For renames: Just update the `filename` property (doc_id is stable!)
+//! - For moves: Just update the `part_of` property (doc_id is stable!)
+//! - For deletes: Mark the file as deleted (tombstone)
+//!
 //! # Architecture
 //!
 //! ```text
@@ -163,14 +177,48 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
         );
     }
 
-    /// Extract FileMetadata from file content.
+    /// Extract FileMetadata from file content, including the filename.
     ///
     /// Parses frontmatter and converts known fields to FileMetadata.
-    fn extract_metadata(&self, content: &str) -> FileMetadata {
-        match frontmatter::parse_or_empty(content) {
+    fn extract_metadata(&self, path: &Path, content: &str) -> FileMetadata {
+        let mut metadata = match frontmatter::parse_or_empty(content) {
             Ok(parsed) => self.frontmatter_to_metadata(&parsed.frontmatter),
             Err(_) => FileMetadata::default(),
-        }
+        };
+
+        // Set the filename from the path
+        metadata.filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        metadata
+    }
+
+    /// Look up a doc_id by path, returning the path as the key for backward compatibility.
+    ///
+    /// This maintains backward compatibility with existing code that expects
+    /// path-based CRDT keys. The doc-ID based system is used when:
+    /// 1. The workspace has been migrated (needs_migration() returns false)
+    /// 2. A file is explicitly created with create_file()
+    ///
+    /// For now, this returns the path as the key, which maintains compatibility
+    /// with all existing tests and functionality. The migration to doc-IDs
+    /// will be triggered explicitly via migrate_to_doc_ids().
+    fn path_to_doc_id(&self, path: &Path, _metadata: &FileMetadata) -> Option<String> {
+        let path_str = path.to_string_lossy().to_string();
+
+        // For backward compatibility, always use path as the key
+        // The doc-ID based system is opt-in via explicit migration
+        //
+        // In the future, after migration:
+        // 1. Try find_by_path() to get existing doc_id
+        // 2. If not found, create_file() to generate new UUID
+        //
+        // But for now, maintain compatibility with existing code
+
+        Some(path_str)
     }
 
     /// Convert frontmatter to FileMetadata.
@@ -279,24 +327,31 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
             is_new_file,
             body.chars().take(50).collect::<String>()
         );
-        let metadata = self.extract_metadata(content);
+        let metadata = self.extract_metadata(path, content);
 
-        // Update workspace CRDT
-        if let Err(e) = self.workspace_crdt.set_file(&path_str, metadata) {
-            log::warn!("Failed to update CRDT for {}: {}", path_str, e);
+        // Get or create doc_id for this path
+        // In doc-ID mode, this finds existing doc_id or creates new UUID
+        // In legacy mode, this just returns the path as the key
+        let doc_key = self
+            .path_to_doc_id(path, &metadata)
+            .unwrap_or(path_str.clone());
+
+        // Update workspace CRDT with the doc_key (doc_id or path)
+        if let Err(e) = self.workspace_crdt.set_file(&doc_key, metadata) {
+            log::warn!("Failed to update CRDT for {}: {}", doc_key, e);
         }
 
-        // Update body doc
+        // Update body doc using the same key
         let body = frontmatter::extract_body(content);
 
         // For new files, delete any stale storage and create a fresh doc
         // to prevent concatenation with old content from deleted files
         let body_doc = if is_new_file {
             // Delete stale storage first, then create fresh doc
-            let _ = self.body_doc_manager.delete(&path_str);
-            self.body_doc_manager.create(&path_str)
+            let _ = self.body_doc_manager.delete(&doc_key);
+            self.body_doc_manager.create(&doc_key)
         } else {
-            self.body_doc_manager.get_or_create(&path_str)
+            self.body_doc_manager.get_or_create(&doc_key)
         };
 
         let _ = body_doc.set_body(body);
@@ -463,36 +518,93 @@ impl<FS: AsyncFileSystem + Send + Sync> AsyncFileSystem for CrdtFs<FS> {
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            // Read content before move (for CRDT update)
-            let content = if self.is_enabled() {
-                self.inner.read_to_string(from).await.ok()
-            } else {
-                None
-            };
-
             // Mark both paths as local writes in progress
             self.mark_local_write_start(from);
             self.mark_local_write_start(to);
 
-            // Perform the move
+            // Perform the physical move
             let result = self.inner.move_file(from, to).await;
 
             // Update CRDT if move succeeded
             if result.is_ok() && self.is_enabled() {
                 let from_str = from.to_string_lossy().to_string();
-                let to_str = to.to_string_lossy().to_string();
 
-                // Update parent's contents (replace old path with new path)
-                self.update_parent_contents(&from_str, Some(&to_str));
+                // Find the doc_id for the file being moved
+                if let Some(doc_id) = self.workspace_crdt.find_by_path(from) {
+                    let new_filename = to
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                // Mark old path as deleted
-                if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
-                    log::warn!("Failed to mark old path as deleted in CRDT: {}", e);
-                }
+                    // Detect rename (same directory) vs move (different directory)
+                    let from_parent = from.parent();
+                    let to_parent = to.parent();
+                    let is_rename = from_parent == to_parent;
 
-                // Create entry at new path with preserved metadata
-                if let Some(content) = content {
-                    self.update_crdt_for_file(to, &content);
+                    if is_rename {
+                        // Rename: Just update the filename property - doc_id stays stable
+                        log::debug!(
+                            "CrdtFs: Renaming doc_id={} from {:?} to {}",
+                            doc_id,
+                            from,
+                            new_filename
+                        );
+                        if let Err(e) = self.workspace_crdt.rename_file(&doc_id, &new_filename) {
+                            log::warn!("Failed to rename file in CRDT: {}", e);
+                        }
+                    } else {
+                        // Move: Update the parent reference - doc_id stays stable
+                        // Find the new parent's doc_id
+                        let new_parent_id =
+                            to_parent.and_then(|p| self.workspace_crdt.find_by_path(p));
+
+                        log::debug!(
+                            "CrdtFs: Moving doc_id={} to parent={:?}, new_filename={}",
+                            doc_id,
+                            new_parent_id,
+                            new_filename
+                        );
+
+                        // Update parent reference
+                        if let Err(e) = self
+                            .workspace_crdt
+                            .move_file(&doc_id, new_parent_id.as_deref())
+                        {
+                            log::warn!("Failed to move file in CRDT: {}", e);
+                        }
+
+                        // Also update filename if it changed
+                        if let Some(meta) = self.workspace_crdt.get_file(&doc_id) {
+                            if meta.filename != new_filename {
+                                if let Err(e) =
+                                    self.workspace_crdt.rename_file(&doc_id, &new_filename)
+                                {
+                                    log::warn!("Failed to rename file during move in CRDT: {}", e);
+                                }
+                            }
+                        }
+                    }
+
+                    // Update parent's contents list (replace old path with new path)
+                    let to_str = to.to_string_lossy().to_string();
+                    self.update_parent_contents(&from_str, Some(&to_str));
+                } else {
+                    // Fallback for legacy path-based entries: use old delete+create behavior
+                    log::debug!(
+                        "CrdtFs: No doc_id found for {:?}, using legacy move behavior",
+                        from
+                    );
+                    let to_str = to.to_string_lossy().to_string();
+                    self.update_parent_contents(&from_str, Some(&to_str));
+
+                    if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
+                        log::warn!("Failed to mark old path as deleted in CRDT: {}", e);
+                    }
+
+                    if let Ok(content) = self.inner.read_to_string(to).await {
+                        self.update_crdt_for_file(to, &content);
+                    }
                 }
             }
 
@@ -628,36 +740,93 @@ impl<FS: AsyncFileSystem> AsyncFileSystem for CrdtFs<FS> {
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            // Read content before move (for CRDT update)
-            let content = if self.is_enabled() {
-                self.inner.read_to_string(from).await.ok()
-            } else {
-                None
-            };
-
             // Mark both paths as local writes in progress
             self.mark_local_write_start(from);
             self.mark_local_write_start(to);
 
-            // Perform the move
+            // Perform the physical move
             let result = self.inner.move_file(from, to).await;
 
             // Update CRDT if move succeeded
             if result.is_ok() && self.is_enabled() {
                 let from_str = from.to_string_lossy().to_string();
-                let to_str = to.to_string_lossy().to_string();
 
-                // Update parent's contents (replace old path with new path)
-                self.update_parent_contents(&from_str, Some(&to_str));
+                // Find the doc_id for the file being moved
+                if let Some(doc_id) = self.workspace_crdt.find_by_path(from) {
+                    let new_filename = to
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                // Mark old path as deleted
-                if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
-                    log::warn!("Failed to mark old path as deleted in CRDT: {}", e);
-                }
+                    // Detect rename (same directory) vs move (different directory)
+                    let from_parent = from.parent();
+                    let to_parent = to.parent();
+                    let is_rename = from_parent == to_parent;
 
-                // Create entry at new path with preserved metadata
-                if let Some(content) = content {
-                    self.update_crdt_for_file(to, &content);
+                    if is_rename {
+                        // Rename: Just update the filename property - doc_id stays stable
+                        log::debug!(
+                            "CrdtFs: Renaming doc_id={} from {:?} to {}",
+                            doc_id,
+                            from,
+                            new_filename
+                        );
+                        if let Err(e) = self.workspace_crdt.rename_file(&doc_id, &new_filename) {
+                            log::warn!("Failed to rename file in CRDT: {}", e);
+                        }
+                    } else {
+                        // Move: Update the parent reference - doc_id stays stable
+                        // Find the new parent's doc_id
+                        let new_parent_id =
+                            to_parent.and_then(|p| self.workspace_crdt.find_by_path(p));
+
+                        log::debug!(
+                            "CrdtFs: Moving doc_id={} to parent={:?}, new_filename={}",
+                            doc_id,
+                            new_parent_id,
+                            new_filename
+                        );
+
+                        // Update parent reference
+                        if let Err(e) = self
+                            .workspace_crdt
+                            .move_file(&doc_id, new_parent_id.as_deref())
+                        {
+                            log::warn!("Failed to move file in CRDT: {}", e);
+                        }
+
+                        // Also update filename if it changed
+                        if let Some(meta) = self.workspace_crdt.get_file(&doc_id) {
+                            if meta.filename != new_filename {
+                                if let Err(e) =
+                                    self.workspace_crdt.rename_file(&doc_id, &new_filename)
+                                {
+                                    log::warn!("Failed to rename file during move in CRDT: {}", e);
+                                }
+                            }
+                        }
+                    }
+
+                    // Update parent's contents list (replace old path with new path)
+                    let to_str = to.to_string_lossy().to_string();
+                    self.update_parent_contents(&from_str, Some(&to_str));
+                } else {
+                    // Fallback for legacy path-based entries: use old delete+create behavior
+                    log::debug!(
+                        "CrdtFs: No doc_id found for {:?}, using legacy move behavior",
+                        from
+                    );
+                    let to_str = to.to_string_lossy().to_string();
+                    self.update_parent_contents(&from_str, Some(&to_str));
+
+                    if let Err(e) = self.workspace_crdt.delete_file(&from_str) {
+                        log::warn!("Failed to mark old path as deleted in CRDT: {}", e);
+                    }
+
+                    if let Ok(content) = self.inner.read_to_string(to).await {
+                        self.update_crdt_for_file(to, &content);
+                    }
                 }
             }
 
