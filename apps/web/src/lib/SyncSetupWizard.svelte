@@ -38,6 +38,11 @@
   } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
   import { getBackend, createApi } from "./backend";
+  import {
+    waitForInitialSync,
+    onSyncProgress,
+    onSyncStatus,
+  } from "$lib/crdt/workspaceCrdtBridge";
 
   interface Props {
     open?: boolean;
@@ -89,6 +94,13 @@
   // File input for import
   let fileInputRef: HTMLInputElement | null = $state(null);
   let selectedFile: File | null = $state(null);
+
+  // Sync progress tracking
+  let syncStatusText = $state<string | null>(null);
+  let syncCompleted = $state(0);
+  let syncTotal = $state(0);
+  let unsubscribeProgress: (() => void) | null = null;
+  let unsubscribeStatus: (() => void) | null = null;
 
   // Error state
   let error = $state<string | null>(null);
@@ -374,11 +386,26 @@
         workspacePath = `${workspaceDir}/index.md`;
       }
 
+      // Subscribe to sync progress for real-time updates
+      unsubscribeProgress = onSyncProgress((completed, total) => {
+        syncCompleted = completed;
+        syncTotal = total;
+        if (total > 0) {
+          importProgress = Math.round((completed / total) * 100);
+        }
+      });
+
+      unsubscribeStatus = onSyncStatus((status, statusError) => {
+        if (status === 'error' && statusError) {
+          console.warn("[SyncWizard] Sync error:", statusError);
+        }
+      });
+
       switch (initMode) {
         case 'load_server':
           // Clear local files and let sync download from server
           console.log("[SyncWizard] Loading from server - clearing local data");
-          await simulateProgress(500);
+          syncStatusText = "Downloading files...";
           // Note: The actual clearing and sync will be handled by the sync system
           // We just need to initialize with an empty state
           await api.initializeWorkspaceCrdt(workspacePath);
@@ -387,18 +414,21 @@
         case 'merge':
           // Initialize with local files, sync will merge
           console.log("[SyncWizard] Merging local and server data");
+          syncStatusText = "Syncing files...";
           await api.initializeWorkspaceCrdt(workspacePath);
           break;
 
         case 'sync_local':
           // Initialize with local files, upload to server
           console.log("[SyncWizard] Syncing local content to server");
+          syncStatusText = "Uploading files...";
           await api.initializeWorkspaceCrdt(workspacePath);
           break;
 
         case 'import':
           // Import from zip file
           console.log("[SyncWizard] Importing from zip file");
+          syncStatusText = "Importing files...";
           if (selectedFile) {
             const result = await backend.importFromZip(
               selectedFile,
@@ -421,18 +451,33 @@
           break;
       }
 
+      // Wait for sync to complete (30 second timeout)
+      // This ensures the wizard shows real progress and doesn't close prematurely
+      console.log("[SyncWizard] Waiting for sync to complete...");
+      const syncResult = await waitForInitialSync(30000);
+
+      if (!syncResult) {
+        console.warn("[SyncWizard] Sync timed out, continuing in background");
+        toast.info("Sync continuing in background", {
+          description: "Check the sync indicator in the header for progress.",
+        });
+      } else {
+        toast.success("Sync setup complete", {
+          description: "Your workspace is now syncing.",
+        });
+      }
+
       importProgress = 100;
 
-      // Show success toast
-      toast.success("Sync setup complete", {
-        description: "Your workspace is now syncing.",
-      });
+      // Cleanup subscriptions before closing
+      cleanupSyncSubscriptions();
 
       // Close the wizard
       handleClose();
       onComplete?.();
     } catch (e) {
       console.error("[SyncWizard] Initialization error:", e);
+      cleanupSyncSubscriptions();
       if (e instanceof Error) {
         error = e.message || "Unknown error";
       } else if (typeof e === "object" && e !== null) {
@@ -445,23 +490,19 @@
     }
   }
 
-  // Helper to simulate progress for a fixed duration
-  function simulateProgress(durationMs: number): Promise<void> {
-    return new Promise(resolve => {
-      const interval = 50;
-      const steps = durationMs / interval;
-      let step = 0;
-
-      const timer = setInterval(() => {
-        step++;
-        importProgress = Math.min(Math.round((step / steps) * 100), 100);
-
-        if (step >= steps) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, interval);
-    });
+  // Cleanup sync subscriptions
+  function cleanupSyncSubscriptions() {
+    if (unsubscribeProgress) {
+      unsubscribeProgress();
+      unsubscribeProgress = null;
+    }
+    if (unsubscribeStatus) {
+      unsubscribeStatus();
+      unsubscribeStatus = null;
+    }
+    syncStatusText = null;
+    syncCompleted = 0;
+    syncTotal = 0;
   }
 
   // Handle dialog close
@@ -471,6 +512,7 @@
       clearInterval(resendInterval);
       resendInterval = null;
     }
+    cleanupSyncSubscriptions();
     open = false;
     onOpenChange?.(false);
   }
@@ -498,6 +540,7 @@
       if (resendInterval) {
         clearInterval(resendInterval);
       }
+      cleanupSyncSubscriptions();
     };
   });
 </script>
@@ -795,10 +838,20 @@
           <div class="space-y-2 pt-2">
             <Progress value={importProgress} class="h-2" />
             <p class="text-xs text-muted-foreground text-center">
-              {#if initMode === 'import'}
+              {#if syncStatusText}
+                {#if syncTotal > 0}
+                  {syncStatusText} ({syncCompleted} of {syncTotal})
+                {:else}
+                  {syncStatusText}
+                {/if}
+              {:else if initMode === 'import'}
                 Importing files...
               {:else if initMode === 'load_server'}
                 Downloading from server...
+              {:else if initMode === 'sync_local'}
+                Uploading files...
+              {:else if initMode === 'merge'}
+                Syncing files...
               {:else}
                 Initializing workspace...
               {/if}
