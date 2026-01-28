@@ -73,7 +73,7 @@ export function createApi(backend: Backend) {
 
     /** Delete an entry. */
     async deleteEntry(path: string): Promise<void> {
-      await backend.execute({ type: 'DeleteEntry', params: { path } });
+      await backend.execute({ type: 'DeleteEntry', params: { path, hard_delete: false } });
     },
 
     /** Move/rename an entry from one path to another. */

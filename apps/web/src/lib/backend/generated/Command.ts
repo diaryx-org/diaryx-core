@@ -33,7 +33,12 @@ options: CreateEntryOptions, } } | { "type": "DeleteEntry", "params": {
 /**
  * Path to the entry to delete.
  */
-path: string, } } | { "type": "MoveEntry", "params": {
+path: string,
+/**
+ * If true, perform a hard delete (remove from filesystem).
+ * If false (default), perform a soft delete (mark as deleted in CRDT).
+ */
+hard_delete: boolean, } } | { "type": "MoveEntry", "params": {
 /**
  * Existing path to the entry file.
  */
@@ -415,205 +420,44 @@ metadata: JsonValue,
 /**
  * Optional new body content. If not provided, existing body is preserved.
  */
-body: string | null, } } | { "type": "GetStorageUsage" } | { "type": "InitializeWorkspaceCrdt", "params": {
+body: string | null, } } | { "type": "GetStorageUsage" } | { "type": "GetLinkFormat", "params": {
+/**
+ * Path to the workspace root index file.
+ */
+root_index_path: string, } } | { "type": "SetLinkFormat", "params": {
+/**
+ * Path to the workspace root index file.
+ */
+root_index_path: string,
+/**
+ * The link format to set (one of: markdown_root, markdown_relative, plain_relative, plain_canonical).
+ */
+format: string, } } | { "type": "GetWorkspaceConfig", "params": {
+/**
+ * Path to the workspace root index file.
+ */
+root_index_path: string, } } | { "type": "ConvertLinks", "params": {
+/**
+ * Path to the workspace root index file.
+ */
+root_index_path: string,
+/**
+ * The target link format.
+ */
+format: string,
+/**
+ * Optional specific file path to convert (if None, converts entire workspace).
+ */
+path: string | null,
+/**
+ * If true, only report what would be changed without modifying files.
+ */
+dry_run: boolean, } } | { "type": "InitializeWorkspaceCrdt", "params": {
 /**
  * Path to workspace root (directory or root index file).
  */
 workspace_path: string,
 /**
- * Optional audience filter. If provided, only files visible to this audience
- * are included in CRDT (e.g., "family", "public", or "*" for all non-private).
+ * Optional audience filter (e.g., "family", "public", or "*" for all non-private).
  */
-audience: string | null, } } | { "type": "GetSyncState", "params": {
-/**
- * Document name (e.g., "workspace").
- */
-doc_name: string, } } | { "type": "ApplyRemoteUpdate", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Binary update data.
- */
-update: Array<number>, } } | { "type": "GetMissingUpdates", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Remote state vector to diff against.
- */
-remote_state_vector: Array<number>, } } | { "type": "GetFullState", "params": {
-/**
- * Document name.
- */
-doc_name: string, } } | { "type": "GetHistory", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Optional limit on number of entries.
- */
-limit: number | null, } } | { "type": "GetFileHistory", "params": {
-/**
- * File path in workspace.
- */
-file_path: string,
-/**
- * Optional limit on number of entries.
- */
-limit: number | null, } } | { "type": "RestoreVersion", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Update ID to restore to.
- */
-update_id: bigint, } } | { "type": "GetVersionDiff", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Starting update ID.
- */
-from_id: bigint,
-/**
- * Ending update ID.
- */
-to_id: bigint, } } | { "type": "GetStateAt", "params": {
-/**
- * Document name.
- */
-doc_name: string,
-/**
- * Update ID to reconstruct state at.
- */
-update_id: bigint, } } | { "type": "GetCrdtFile", "params": {
-/**
- * File path in workspace.
- */
-path: string, } } | { "type": "SetCrdtFile", "params": {
-/**
- * File path in workspace.
- */
-path: string,
-/**
- * File metadata as JSON.
- */
-metadata: JsonValue, } } | { "type": "ListCrdtFiles", "params": {
-/**
- * Whether to include deleted files.
- */
-include_deleted: boolean, } } | { "type": "SaveCrdtState", "params": {
-/**
- * Document name.
- */
-doc_name: string, } } | { "type": "GetBodyContent", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string, } } | { "type": "SetBodyContent", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string,
-/**
- * New content.
- */
-content: string, } } | { "type": "GetBodySyncState", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string, } } | { "type": "GetBodyFullState", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string, } } | { "type": "ApplyBodyUpdate", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string,
-/**
- * Binary update data.
- */
-update: Array<number>, } } | { "type": "GetBodyMissingUpdates", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string,
-/**
- * Remote state vector.
- */
-remote_state_vector: Array<number>, } } | { "type": "SaveBodyDoc", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string, } } | { "type": "SaveAllBodyDocs" } | { "type": "ListLoadedBodyDocs" } | { "type": "UnloadBodyDoc", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string, } } | { "type": "CreateSyncStep1", "params": {
-/**
- * Document name (use "workspace" for workspace CRDT).
- */
-doc_name: string, } } | { "type": "HandleSyncMessage", "params": {
-/**
- * Document name (use "workspace" for workspace CRDT).
- */
-doc_name: string,
-/**
- * The incoming message bytes.
- */
-message: Array<number>,
-/**
- * If true, write changed files to disk after applying updates.
- */
-write_to_disk: boolean, } } | { "type": "CreateUpdateMessage", "params": {
-/**
- * Document name (use "workspace" for workspace CRDT).
- */
-doc_name: string,
-/**
- * The update bytes to send.
- */
-update: Array<number>, } } | { "type": "ConfigureSyncHandler", "params": {
-/**
- * Guest join code (None to disable guest mode).
- */
-guest_join_code: string | null,
-/**
- * Whether the guest uses OPFS (requires path prefixing).
- */
-uses_opfs: boolean, } } | { "type": "ApplyRemoteWorkspaceUpdateWithEffects", "params": {
-/**
- * Binary update data.
- */
-update: Array<number>,
-/**
- * If true, write changed files to disk. If false, only apply to CRDT.
- */
-write_to_disk: boolean, } } | { "type": "ApplyRemoteBodyUpdateWithEffects", "params": {
-/**
- * Document name (file path).
- */
-doc_name: string,
-/**
- * Binary update data.
- */
-update: Array<number>,
-/**
- * If true, write body to disk. If false, only apply to CRDT.
- */
-write_to_disk: boolean, } } | { "type": "GetStoragePath", "params": {
-/**
- * Canonical path (e.g., "notes/hello.md").
- */
-canonical_path: string, } } | { "type": "GetCanonicalPath", "params": {
-/**
- * Storage path (possibly with guest prefix).
- */
-storage_path: string, } };
+audience: string | null, } };

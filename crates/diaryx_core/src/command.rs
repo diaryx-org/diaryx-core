@@ -24,9 +24,10 @@ use serde_json::Value as JsonValue;
 use ts_rs::TS;
 
 use crate::export::ExportPlan;
+use crate::link_parser::LinkFormat;
 use crate::search::SearchResults;
 use crate::validate::{FixResult, ValidationResult, ValidationResultWithMeta};
-use crate::workspace::TreeNode;
+use crate::workspace::{TreeNode, WorkspaceConfig};
 
 // ============================================================================
 // Command Types
@@ -924,6 +925,49 @@ pub enum Command {
     /// This is useful after batch operations to force a sync.
     #[cfg(feature = "crdt")]
     TriggerWorkspaceSync,
+
+    // ==================== Workspace Configuration Commands ====================
+    /// Get the link format setting from the workspace root index.
+    ///
+    /// Returns the current link format (MarkdownRoot, MarkdownRelative, etc.).
+    GetLinkFormat {
+        /// Path to the workspace root index file.
+        root_index_path: String,
+    },
+
+    /// Set the link format setting in the workspace root index.
+    ///
+    /// This updates the `link_format` property in the root index's frontmatter.
+    SetLinkFormat {
+        /// Path to the workspace root index file.
+        root_index_path: String,
+        /// The link format to set (one of: markdown_root, markdown_relative, plain_relative, plain_canonical).
+        format: String,
+    },
+
+    /// Get the full workspace configuration from the root index.
+    ///
+    /// Returns WorkspaceConfig with link_format and other settings.
+    GetWorkspaceConfig {
+        /// Path to the workspace root index file.
+        root_index_path: String,
+    },
+
+    /// Convert all links in workspace files to a target format.
+    ///
+    /// This scans files and rewrites `part_of` and `contents` properties.
+    /// Returns the count of files modified and links converted.
+    ConvertLinks {
+        /// Path to the workspace root index file.
+        root_index_path: String,
+        /// The target link format.
+        format: String,
+        /// Optional specific file path to convert (if None, converts entire workspace).
+        path: Option<String>,
+        /// If true, only report what would be changed without modifying files.
+        #[serde(default)]
+        dry_run: bool,
+    },
 }
 
 // ============================================================================
@@ -991,6 +1035,15 @@ pub enum Response {
 
     /// Ancestor attachments response.
     AncestorAttachments(AncestorAttachmentsResult),
+
+    /// Link format response.
+    LinkFormat(LinkFormat),
+
+    /// Workspace config response.
+    WorkspaceConfig(WorkspaceConfig),
+
+    /// Convert links result response.
+    ConvertLinksResult(ConvertLinksResult),
 
     /// Binary data response (for CRDT state vectors, updates).
     #[cfg(feature = "crdt")]
@@ -1177,6 +1230,20 @@ pub struct AncestorAttachmentsResult {
     /// Attachments from current entry and all ancestors.
     /// Ordered from current entry first, then ancestors (closest to root).
     pub entries: Vec<AncestorAttachmentEntry>,
+}
+
+/// Result of converting links to a new format.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct ConvertLinksResult {
+    /// Number of files that were modified (or would be modified in dry-run).
+    pub files_modified: usize,
+    /// Number of links that were converted (or would be converted in dry-run).
+    pub links_converted: usize,
+    /// List of file paths that were modified.
+    pub modified_files: Vec<String>,
+    /// Whether this was a dry run (no actual changes made).
+    pub dry_run: bool,
 }
 
 /// CRDT history entry for version tracking.

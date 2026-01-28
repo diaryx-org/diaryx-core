@@ -80,7 +80,11 @@ pub enum Commands {
     },
 
     /// Show current configuration
-    Config,
+    #[command(alias = "cfg")]
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommands>,
+    },
 
     /// Sort frontmatter keys
     Sort {
@@ -693,6 +697,29 @@ pub enum WorkspaceCommands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Convert all links in the workspace to a specific format
+    ///
+    /// Rewrites `part_of` and `contents` properties in all workspace files
+    /// to use the specified link format.
+    #[command(alias = "convert")]
+    ConvertLinks {
+        /// Target link format
+        #[arg(short, long)]
+        format: String,
+
+        /// Optional specific file path to convert (converts entire workspace if not specified)
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompts
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -748,6 +775,22 @@ pub enum TemplateCommands {
 
     /// List available template variables
     Variables,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ConfigCommands {
+    /// Show or set the link format setting
+    ///
+    /// Without arguments, shows the current link format.
+    /// With a format argument, sets the link format for the workspace.
+    #[command(alias = "lf")]
+    LinkFormat {
+        /// Link format to set (markdown_root, markdown_relative, plain_relative, plain_canonical)
+        format: Option<String>,
+    },
+
+    /// Show all workspace configuration
+    Show,
 }
 
 #[derive(Subcommand, Clone)]

@@ -59,5 +59,10 @@ export type { FileMetadata } from './FileMetadata';
 export type { FileSystemEvent } from './FileSystemEvent';
 export type { GuestConfig } from './GuestConfig';
 
+// Link format and workspace config types
+export type { LinkFormat } from './LinkFormat';
+export type { WorkspaceConfig } from './WorkspaceConfig';
+export type { ConvertLinksResult } from './ConvertLinksResult';
+
 // JSON value type
 export type { JsonValue } from './serde_json/JsonValue';

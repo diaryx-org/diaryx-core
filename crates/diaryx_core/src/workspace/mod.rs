@@ -23,12 +23,32 @@ pub use types::{IndexFile, IndexFrontmatter, TreeNode, format_tree_node};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
+use ts_rs::TS;
 
 use crate::config::Config;
 use crate::error::{DiaryxError, Result};
 use crate::fs::AsyncFileSystem;
 use crate::link_parser::{self, LinkFormat};
+
+/// Workspace-level configuration stored in the root index file's frontmatter.
+///
+/// This allows workspace settings to live with the data (local-first philosophy)
+/// rather than in separate config files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct WorkspaceConfig {
+    /// Format for `part_of` and `contents` links.
+    /// Defaults to MarkdownRoot if not specified.
+    #[serde(default)]
+    pub link_format: LinkFormat,
+
+    /// Subfolder for daily entries (e.g., "Daily" or "Journal/Daily").
+    /// If not specified, daily entries are created at workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_entry_folder: Option<String>,
+}
 
 /// Workspace operations (async-first).
 ///
@@ -332,6 +352,78 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         }
 
         Ok(None)
+    }
+
+    // ==================== Workspace Config Methods ====================
+
+    /// Get the workspace configuration from the root index file's frontmatter.
+    ///
+    /// Reads `link_format` and other workspace-level settings from the root index.
+    /// Returns default values if the properties aren't present.
+    pub async fn get_workspace_config(&self, root_index_path: &Path) -> Result<WorkspaceConfig> {
+        let index = self.parse_index(root_index_path).await?;
+
+        // Extract link_format from extra fields
+        let link_format = index
+            .frontmatter
+            .extra
+            .get("link_format")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "markdown_root" => Some(LinkFormat::MarkdownRoot),
+                "markdown_relative" => Some(LinkFormat::MarkdownRelative),
+                "plain_relative" => Some(LinkFormat::PlainRelative),
+                "plain_canonical" => Some(LinkFormat::PlainCanonical),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        // Extract daily_entry_folder from extra fields
+        let daily_entry_folder = index
+            .frontmatter
+            .extra
+            .get("daily_entry_folder")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(WorkspaceConfig {
+            link_format,
+            daily_entry_folder,
+        })
+    }
+
+    /// Set a workspace configuration field in the root index file's frontmatter.
+    ///
+    /// # Arguments
+    /// * `root_index_path` - Path to the root index file
+    /// * `field` - Field name to set (e.g., "link_format", "daily_entry_folder")
+    /// * `value` - Value to set (will be stored as a string)
+    pub async fn set_workspace_config_field(
+        &self,
+        root_index_path: &Path,
+        field: &str,
+        value: &str,
+    ) -> Result<()> {
+        self.set_frontmatter_property(root_index_path, field, Value::String(value.to_string()))
+            .await
+    }
+
+    /// Get the link format configuration from a workspace root index.
+    pub async fn get_link_format(&self, root_index_path: &Path) -> Result<LinkFormat> {
+        let config = self.get_workspace_config(root_index_path).await?;
+        Ok(config.link_format)
+    }
+
+    /// Set the link format configuration in a workspace root index.
+    pub async fn set_link_format(&self, root_index_path: &Path, format: LinkFormat) -> Result<()> {
+        let format_str = match format {
+            LinkFormat::MarkdownRoot => "markdown_root",
+            LinkFormat::MarkdownRelative => "markdown_relative",
+            LinkFormat::PlainRelative => "plain_relative",
+            LinkFormat::PlainCanonical => "plain_canonical",
+        };
+        self.set_workspace_config_field(root_index_path, "link_format", format_str)
+            .await
     }
 
     /// Resolve workspace: check current dir, then fall back to config default

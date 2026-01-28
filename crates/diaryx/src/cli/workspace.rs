@@ -150,6 +150,24 @@ pub fn handle_workspace_command(
                 verbose,
             );
         }
+
+        WorkspaceCommands::ConvertLinks {
+            format,
+            path,
+            dry_run,
+            yes,
+        } => {
+            handle_convert_links(
+                workspace_override,
+                ws,
+                &config,
+                &current_dir,
+                &format,
+                path,
+                dry_run,
+                yes,
+            );
+        }
     }
 }
 
@@ -2721,4 +2739,293 @@ fn create_new_index(app: &CliDiaryxAppSync, dir: &Path) -> Option<PathBuf> {
 
     println!("  ✓ Created new index: {}", index_path.display());
     Some(index_path)
+}
+
+/// Handle the 'workspace convert-links' command
+/// Converts all links in workspace files to a specific format
+#[allow(clippy::too_many_arguments)]
+fn handle_convert_links(
+    workspace_override: Option<PathBuf>,
+    ws: &CliWorkspace,
+    config: &Option<Config>,
+    current_dir: &Path,
+    format: &str,
+    path: Option<String>,
+    dry_run: bool,
+    yes: bool,
+) {
+    use diaryx_core::link_parser::LinkFormat;
+    use std::io::{self, Write};
+
+    // Parse the format
+    let target_format = match format.to_lowercase().as_str() {
+        "markdown_root" | "markdownroot" => LinkFormat::MarkdownRoot,
+        "markdown_relative" | "markdownrelative" => LinkFormat::MarkdownRelative,
+        "plain_relative" | "plainrelative" => LinkFormat::PlainRelative,
+        "plain_canonical" | "plaincanonical" => LinkFormat::PlainCanonical,
+        _ => {
+            eprintln!("Invalid link format: {}", format);
+            eprintln!(
+                "Valid formats: markdown_root, markdown_relative, plain_relative, plain_canonical"
+            );
+            return;
+        }
+    };
+
+    // Find workspace root
+    let root_index = if let Some(override_path) = workspace_override {
+        if override_path.extension().is_some_and(|ext| ext == "md") {
+            override_path.clone()
+        } else if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&override_path)) {
+            root
+        } else {
+            eprintln!("No workspace found in: {}", override_path.display());
+            return;
+        }
+    } else if let Ok(Some(detected)) = block_on(ws.detect_workspace(current_dir)) {
+        detected
+    } else if let Some(cfg) = config {
+        if let Ok(Some(root)) = block_on(ws.find_root_index_in_dir(&cfg.default_workspace)) {
+            root
+        } else {
+            eprintln!("No workspace found. Run 'diaryx init' or 'diaryx workspace init' first.");
+            return;
+        }
+    } else {
+        eprintln!("No workspace found. Run 'diaryx init' or 'diaryx workspace init' first.");
+        return;
+    };
+
+    // Show current format
+    let current_format = block_on(ws.get_link_format(&root_index)).unwrap_or_default();
+    let format_display = match target_format {
+        LinkFormat::MarkdownRoot => "markdown_root ([Title](/path/file.md))",
+        LinkFormat::MarkdownRelative => "markdown_relative ([Title](../file.md))",
+        LinkFormat::PlainRelative => "plain_relative (../file.md)",
+        LinkFormat::PlainCanonical => "plain_canonical (path/file.md)",
+    };
+
+    println!("Convert Links");
+    println!("=============");
+    println!();
+    println!("Workspace root: {}", root_index.display());
+    println!("Current format: {:?}", current_format);
+    println!("Target format:  {}", format_display);
+    if let Some(ref p) = path {
+        println!("Scope:          Single file: {}", p);
+    } else {
+        println!("Scope:          Entire workspace");
+    }
+    if dry_run {
+        println!();
+        println!("(Dry run - no changes will be made)");
+    }
+    println!();
+
+    // Confirm unless -y flag or dry_run
+    if !yes && !dry_run {
+        print!("Proceed with conversion? [y/N] ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            eprintln!("Failed to read input");
+            return;
+        }
+
+        let input = input.trim().to_lowercase();
+        if input != "y" && input != "yes" {
+            println!("Cancelled.");
+            return;
+        }
+    }
+
+    // Perform the conversion using the workspace methods
+    // For simplicity, we'll iterate manually here using the workspace tree
+    use std::collections::HashSet;
+
+    let tree = match block_on(ws.build_tree_with_depth(&root_index, None, &mut HashSet::new())) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Error building workspace tree: {}", e);
+            return;
+        }
+    };
+
+    // Get workspace root directory (parent of root index file)
+    let workspace_root = root_index.parent().unwrap_or_else(|| Path::new(""));
+
+    // If specific path provided, filter to just that file
+    let files_to_process: Vec<PathBuf> = if let Some(ref file_path) = path {
+        vec![PathBuf::from(file_path)]
+    } else {
+        // Collect all files from tree
+        let mut files = Vec::new();
+        collect_tree_files(&tree, &mut files);
+        files
+    };
+
+    let mut files_modified = 0;
+    let mut links_converted = 0;
+
+    for file_path in &files_to_process {
+        // Compute workspace-relative path for link conversion
+        let relative_path = file_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .to_string();
+
+        let (converted, was_modified) =
+            convert_file_links(file_path, &relative_path, target_format, dry_run);
+        if was_modified {
+            files_modified += 1;
+            links_converted += converted;
+            let action = if dry_run {
+                "would convert"
+            } else {
+                "converted"
+            };
+            println!("  {} {} link(s) in {}", action, converted, relative_path);
+        }
+    }
+
+    // Update workspace config (unless dry run)
+    if !dry_run && files_modified > 0 {
+        if let Err(e) = block_on(ws.set_link_format(&root_index, target_format)) {
+            eprintln!(
+                "Warning: Failed to update workspace link_format setting: {}",
+                e
+            );
+        }
+    }
+
+    println!();
+    if dry_run {
+        println!(
+            "Would modify {} file(s), {} link(s)",
+            files_modified, links_converted
+        );
+    } else {
+        println!(
+            "Modified {} file(s), {} link(s)",
+            files_modified, links_converted
+        );
+    }
+}
+
+/// Collect all file paths from a tree node
+fn collect_tree_files(node: &diaryx_core::workspace::TreeNode, files: &mut Vec<PathBuf>) {
+    files.push(node.path.clone());
+    for child in &node.children {
+        collect_tree_files(child, files);
+    }
+}
+
+/// Convert links in a single file
+///
+/// # Arguments
+/// * `file_path` - Absolute path to the file (for reading/writing)
+/// * `relative_path` - Workspace-relative path (for link conversion)
+/// * `target_format` - The target link format
+/// * `dry_run` - If true, don't write changes
+fn convert_file_links(
+    file_path: &Path,
+    relative_path: &str,
+    target_format: diaryx_core::link_parser::LinkFormat,
+    dry_run: bool,
+) -> (usize, bool) {
+    use diaryx_core::frontmatter;
+    use diaryx_core::fs::FileSystem;
+    use diaryx_core::link_parser;
+
+    let fs = RealFileSystem;
+
+    // Read the file
+    let content = match fs.read_to_string(file_path) {
+        Ok(c) => c,
+        Err(_) => return (0, false),
+    };
+
+    let parsed = match frontmatter::parse_or_empty(&content) {
+        Ok(p) => p,
+        Err(_) => return (0, false),
+    };
+
+    let mut links_converted = 0;
+    let mut fm = parsed.frontmatter.clone();
+    let mut modified = false;
+
+    // Convert part_of if present (can be string or array)
+    if let Some(part_of_value) = fm.get("part_of") {
+        if let Some(part_of_str) = part_of_value.as_str() {
+            // Single string value
+            let converted =
+                link_parser::convert_link(part_of_str, target_format, relative_path, None);
+            if converted != part_of_str {
+                fm.insert("part_of".to_string(), Value::String(converted));
+                links_converted += 1;
+                modified = true;
+            }
+        } else if let Some(part_of_seq) = part_of_value.as_sequence() {
+            // Array of strings
+            let mut new_part_of = Vec::new();
+            let mut part_of_changed = false;
+
+            for item in part_of_seq {
+                if let Some(item_str) = item.as_str() {
+                    let converted =
+                        link_parser::convert_link(item_str, target_format, relative_path, None);
+                    if converted != item_str {
+                        part_of_changed = true;
+                        links_converted += 1;
+                    }
+                    new_part_of.push(Value::String(converted));
+                } else {
+                    new_part_of.push(item.clone());
+                }
+            }
+
+            if part_of_changed {
+                fm.insert("part_of".to_string(), Value::Sequence(new_part_of));
+                modified = true;
+            }
+        }
+    }
+
+    // Convert contents if present
+    if let Some(contents_value) = fm.get("contents") {
+        if let Some(contents_seq) = contents_value.as_sequence() {
+            let mut new_contents = Vec::new();
+            let mut contents_changed = false;
+
+            for item in contents_seq {
+                if let Some(item_str) = item.as_str() {
+                    let converted =
+                        link_parser::convert_link(item_str, target_format, relative_path, None);
+                    if converted != item_str {
+                        contents_changed = true;
+                        links_converted += 1;
+                    }
+                    new_contents.push(Value::String(converted));
+                } else {
+                    new_contents.push(item.clone());
+                }
+            }
+
+            if contents_changed {
+                fm.insert("contents".to_string(), Value::Sequence(new_contents));
+                modified = true;
+            }
+        }
+    }
+
+    // Write the file if modified and not dry run
+    if modified && !dry_run {
+        if let Ok(new_content) = frontmatter::serialize(&fm, &parsed.body) {
+            let _ = fs.write_file(file_path, &new_content);
+        }
+    }
+
+    (links_converted, modified)
 }

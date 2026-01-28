@@ -114,7 +114,7 @@ export async function applyRemoteWorkspaceUpdate(
       write_to_disk: writeToDisk,
     },
   } as any);
-  if (response.type === 'UpdateId') {
+  if ((response as any).type === 'UpdateId') {
     return (response as any).data;
   }
   if (response.type === 'Ok') {
@@ -153,7 +153,7 @@ export async function applyRemoteBodyUpdate(
       write_to_disk: writeToDisk,
     },
   } as any);
-  if (response.type === 'UpdateId') {
+  if ((response as any).type === 'UpdateId') {
     return (response as any).data;
   }
   if (response.type === 'Ok') {
@@ -298,7 +298,7 @@ export async function createWorkspaceSyncStep1(backend: Backend): Promise<Uint8A
     type: 'CreateWorkspaceSyncStep1',
   } as any);
 
-  if (response.type === 'Binary') {
+  if ((response as any).type === 'Binary') {
     return new Uint8Array((response as any).data);
   }
   throw new Error(`Unexpected response type: ${response.type}`);
@@ -322,7 +322,7 @@ export async function createWorkspaceUpdate(
     },
   } as any);
 
-  if (response.type === 'Binary') {
+  if ((response as any).type === 'Binary') {
     return new Uint8Array((response as any).data);
   }
   throw new Error(`Unexpected response type: ${response.type}`);
@@ -408,7 +408,7 @@ export async function createBodySyncStep1(backend: Backend, docName: string): Pr
     },
   } as any);
 
-  if (response.type === 'Binary') {
+  if ((response as any).type === 'Binary') {
     return new Uint8Array((response as any).data);
   }
   throw new Error(`Unexpected response type: ${response.type}`);
@@ -435,7 +435,7 @@ export async function createBodyUpdate(
     },
   } as any);
 
-  if (response.type === 'Binary') {
+  if ((response as any).type === 'Binary') {
     return new Uint8Array((response as any).data);
   }
   throw new Error(`Unexpected response type: ${response.type}`);

@@ -6,6 +6,9 @@ mod args;
 /// Attachment management
 mod attachment;
 
+/// Config command handlers
+mod config;
+
 /// Body content manipulation
 mod content;
 
@@ -105,8 +108,8 @@ pub fn run_cli() {
             entry::handle_open(&app_sync, &path);
         }
 
-        Commands::Config => {
-            entry::handle_config();
+        Commands::Config { command } => {
+            config::handle_config_command(command, cli.workspace, &ws);
         }
 
         Commands::Create {

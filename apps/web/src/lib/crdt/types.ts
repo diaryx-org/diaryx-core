@@ -41,7 +41,7 @@ export type CrdtCommand =
   | { type: 'UnloadBodyDoc'; params: { doc_name: string } }
   // Sync protocol operations
   | { type: 'CreateSyncStep1'; params: { doc_name: string } }
-  | { type: 'HandleSyncMessage'; params: { doc_name: string; message: number[] } }
+  | { type: 'HandleSyncMessage'; params: { doc_name: string; message: number[]; write_to_disk: boolean } }
   | { type: 'CreateUpdateMessage'; params: { doc_name: string; update: number[] } };
 
 // CRDT-specific responses

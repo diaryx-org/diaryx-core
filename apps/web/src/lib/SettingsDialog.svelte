@@ -16,6 +16,7 @@
   import DisplaySettings from "./settings/DisplaySettings.svelte";
   import FormattingSettings from "./settings/FormattingSettings.svelte";
   import WorkspaceSettings from "./settings/WorkspaceSettings.svelte";
+  import LinkSettings from "./settings/LinkSettings.svelte";
   import StorageSettings from "./settings/StorageSettings.svelte";
   import SyncSettings from "./settings/SyncSettings.svelte";
   import AccountSettings from "./settings/AccountSettings.svelte";
@@ -107,6 +108,7 @@
     <Tabs.Content value="workspace">
       <div class="space-y-4 h-[350px] overflow-y-auto pr-2">
         <WorkspaceSettings />
+        <LinkSettings workspaceRootIndex={workspacePath} />
       </div>
     </Tabs.Content>
 
