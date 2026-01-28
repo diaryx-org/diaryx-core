@@ -599,4 +599,55 @@ mod tests {
         assert!(yaml.contains("part_of: \"[Parent Index](/Folder/index.md)\""));
         assert!(yaml.contains("  - \"[Child Entry](/Folder/child.md)\""));
     }
+
+    #[test]
+    fn test_from_json_with_already_formatted_markdown_links() {
+        // Regression test: already-formatted markdown links should not be double-wrapped
+        let json = serde_json::json!({
+            "title": "Child File",
+            // part_of is ALREADY a markdown link (from sync or corrupted data)
+            "part_of": "[Parent Index](/folder/parent.md)",
+            "contents": [
+                "[Child A](/folder/child_a.md)",
+                "[Child B](/folder/child_b.md)",
+            ],
+        });
+
+        let fm = FrontmatterMetadata::from_json_with_file_path(&json, Some("folder/child.md"));
+
+        // Should preserve the link format, NOT double-wrap
+        assert_eq!(
+            fm.part_of,
+            Some("[Parent Index](/folder/parent.md)".to_string())
+        );
+        assert_eq!(
+            fm.contents,
+            Some(vec![
+                "[Child A](/folder/child_a.md)".to_string(),
+                "[Child B](/folder/child_b.md)".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_from_json_handles_mixed_formats() {
+        // Test handling mixed formats in contents (some plain, some markdown)
+        let json = serde_json::json!({
+            "title": "Mixed Index",
+            "contents": [
+                "folder/plain_path.md",
+                "[Already Formatted](/folder/formatted.md)",
+            ],
+        });
+
+        let fm = FrontmatterMetadata::from_json_with_file_path(&json, Some("folder/index.md"));
+
+        assert_eq!(
+            fm.contents,
+            Some(vec![
+                "[Plain Path](/folder/plain_path.md)".to_string(),
+                "[Already Formatted](/folder/formatted.md)".to_string(),
+            ])
+        );
+    }
 }
