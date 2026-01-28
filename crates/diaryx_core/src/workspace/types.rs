@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 use ts_rs::TS;
 
-use crate::link_parser;
+use crate::link_parser::{self, LinkFormat};
 
 /// Normalize a path by resolving `.` and `..` components without filesystem access.
 /// This is necessary for web/WASM where the virtual filesystem doesn't handle `..` in paths.
@@ -85,6 +85,8 @@ pub struct IndexFrontmatter {
     #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub description: Option<String>,
 
+    /// List of paths to child index files (relative to this file)
+    /// None means the key was absent; Some(vec) means it was present (even if empty)
     /// List of paths to child index files (relative to this file)
     /// None means the key was absent; Some(vec) means it was present (even if empty)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +182,12 @@ pub struct IndexFile {
 
     /// Body content (after frontmatter)
     pub body: String,
+
+    /// Link format hint for resolving ambiguous paths.
+    /// When set to Some(LinkFormat::PlainCanonical), ambiguous paths like "Folder/file.md"
+    /// are resolved relative to workspace root instead of relative to current file.
+    #[serde(skip)]
+    pub link_format_hint: Option<LinkFormat>,
 }
 
 impl IndexFile {
@@ -194,7 +202,11 @@ impl IndexFile {
     /// - Markdown links: `[Title](/path/file.md)` or `[Title](../file.md)`
     /// - Plain paths with `/` prefix (workspace-root): `/path/file.md`
     /// - Plain relative paths: `../file.md` or `./file.md`
-    /// - Plain ambiguous paths: `path/file.md` (treated as relative)
+    /// - Plain ambiguous paths: `path/file.md` (treated based on link_format_hint)
+    ///
+    /// For ambiguous paths (no `/` prefix or `../`):
+    /// - If `link_format_hint` is `Some(PlainCanonical)`, resolves as workspace-root
+    /// - Otherwise, resolves relative to current file's directory (legacy behavior)
     ///
     /// Returns an absolute path resolved against this index file's location.
     /// The path is normalized to handle `..` and `.` components,
@@ -210,10 +222,24 @@ impl IndexFile {
                 // Return as PathBuf directly - callers operate relative to workspace root.
                 PathBuf::from(&parsed.path)
             }
-            link_parser::PathType::Relative | link_parser::PathType::Ambiguous => {
-                // Resolve relative to current file's directory
+            link_parser::PathType::Relative => {
+                // Explicit relative paths always resolve relative to current file
                 let dir = self.directory().unwrap_or_else(|| std::path::Path::new(""));
                 normalize_path(&dir.join(&parsed.path))
+            }
+            link_parser::PathType::Ambiguous => {
+                // Use link_format_hint to determine resolution strategy
+                match self.link_format_hint {
+                    // Workspace-root formats: treat ambiguous paths as workspace-root
+                    Some(LinkFormat::PlainCanonical) | Some(LinkFormat::MarkdownRoot) => {
+                        PathBuf::from(&parsed.path)
+                    }
+                    // Relative formats or no hint: resolve relative to current file (legacy)
+                    Some(LinkFormat::PlainRelative) | Some(LinkFormat::MarkdownRelative) | None => {
+                        let dir = self.directory().unwrap_or_else(|| std::path::Path::new(""));
+                        normalize_path(&dir.join(&parsed.path))
+                    }
+                }
             }
         }
     }
@@ -267,4 +293,127 @@ pub fn format_tree_node(node: &TreeNode, prefix: &str) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_index_file(path: &str, link_format_hint: Option<LinkFormat>) -> IndexFile {
+        IndexFile {
+            path: PathBuf::from(path),
+            frontmatter: IndexFrontmatter::default(),
+            body: String::new(),
+            link_format_hint,
+        }
+    }
+
+    #[test]
+    fn test_resolve_path_workspace_root() {
+        // Workspace-root paths (with /) should always resolve as-is
+        let index = make_index_file("A/B/index.md", None);
+        let resolved = index.resolve_path("/Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_relative() {
+        // Relative paths (../) should always resolve relative to current file
+        let index = make_index_file("A/B/index.md", None);
+        let resolved = index.resolve_path("../sibling.md");
+        assert_eq!(resolved, PathBuf::from("A/sibling.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_ambiguous_no_hint() {
+        // Without hint, ambiguous paths resolve relative to current file
+        let index = make_index_file("A/B/index.md", None);
+        let resolved = index.resolve_path("Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_ambiguous_with_plain_canonical_hint() {
+        // With PlainCanonical hint, ambiguous paths resolve as workspace-root
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainCanonical));
+        let resolved = index.resolve_path("Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_ambiguous_with_markdown_root_hint() {
+        // With MarkdownRoot hint, ambiguous paths resolve as workspace-root
+        // (MarkdownRoot implies canonical/workspace-relative paths)
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::MarkdownRoot));
+        let resolved = index.resolve_path("Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_markdown_link_root() {
+        // Markdown links with root path
+        let index = make_index_file("A/B/index.md", None);
+        let resolved = index.resolve_path("[Title](/Folder/file.md)");
+        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_markdown_link_relative() {
+        // Markdown links with relative path
+        let index = make_index_file("A/B/index.md", None);
+        let resolved = index.resolve_path("[Title](../sibling.md)");
+        assert_eq!(resolved, PathBuf::from("A/sibling.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_markdown_link_ambiguous_with_hint() {
+        // Markdown links with ambiguous path and PlainCanonical hint
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainCanonical));
+        let resolved = index.resolve_path("[Title](Folder/file.md)");
+        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_plain_canonical_real_world_case() {
+        // The real-world case: PlainCanonical format produces "Folder/file.md"
+        // which should resolve to workspace root when hint is set
+        let index = make_index_file("Projects/Ideas/index.md", Some(LinkFormat::PlainCanonical));
+
+        // Contents ref in PlainCanonical format
+        let resolved = index.resolve_path("Daily/2025/01/01.md");
+        assert_eq!(resolved, PathBuf::from("Daily/2025/01/01.md"));
+
+        // Part_of ref in PlainCanonical format
+        let resolved = index.resolve_path("Projects/index.md");
+        assert_eq!(resolved, PathBuf::from("Projects/index.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_ambiguous_with_markdown_relative_hint() {
+        // With MarkdownRelative hint, ambiguous paths resolve relative (legacy behavior)
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::MarkdownRelative));
+        let resolved = index.resolve_path("Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_ambiguous_with_plain_relative_hint() {
+        // With PlainRelative hint, ambiguous paths resolve relative (legacy behavior)
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainRelative));
+        let resolved = index.resolve_path("Folder/file.md");
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
+    }
+
+    #[test]
+    fn test_resolve_path_explicit_relative_ignores_hint() {
+        // Explicit relative paths (with ./ or ../) should always resolve relative,
+        // even with PlainCanonical hint
+        let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainCanonical));
+
+        let resolved = index.resolve_path("./sibling.md");
+        assert_eq!(resolved, PathBuf::from("A/B/sibling.md"));
+
+        let resolved = index.resolve_path("../parent.md");
+        assert_eq!(resolved, PathBuf::from("A/parent.md"));
+    }
 }

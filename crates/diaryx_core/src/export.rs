@@ -242,9 +242,16 @@ impl<FS: AsyncFileSystem> Exporter<FS> {
             for child_path_str in frontmatter.contents_list() {
                 let child_path = index.resolve_path(child_path_str);
 
-                if self.workspace.fs_ref().exists(&child_path).await {
+                // Make path absolute if needed by joining with root_dir
+                let absolute_child_path = if child_path.is_absolute() {
+                    child_path.clone()
+                } else {
+                    root_dir.join(&child_path)
+                };
+
+                if self.workspace.fs_ref().exists(&absolute_child_path).await {
                     let child_included = Box::pin(self.plan_file_recursive(
-                        &child_path,
+                        &absolute_child_path,
                         root_dir,
                         dest_dir,
                         audience,

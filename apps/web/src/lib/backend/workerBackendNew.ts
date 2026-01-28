@@ -404,9 +404,36 @@ export class WorkerBackendNew implements Backend {
     let filesImported = 0;
     let filesSkipped = 0;
 
+    // Detect common root directory prefix to strip
+    // This handles zips that have a single root folder containing all files
+    const nonDirFiles = fileNames.filter(name => !zip.files[name].dir);
+    let commonPrefix = '';
+    if (nonDirFiles.length > 0) {
+      // Get the first path component of the first file
+      const firstFile = nonDirFiles[0];
+      const firstSlash = firstFile.indexOf('/');
+      if (firstSlash > 0) {
+        const potentialPrefix = firstFile.substring(0, firstSlash + 1);
+        // Check if all non-directory files share this prefix
+        const allSharePrefix = nonDirFiles.every(name => name.startsWith(potentialPrefix));
+        if (allSharePrefix) {
+          commonPrefix = potentialPrefix;
+        }
+      }
+    }
+
     for (let i = 0; i < fileNames.length; i++) {
-      const fileName = fileNames[i];
+      let fileName = fileNames[i];
       const zipEntry = zip.files[fileName];
+
+      // Strip common root directory prefix if detected
+      if (commonPrefix && fileName.startsWith(commonPrefix)) {
+        fileName = fileName.substring(commonPrefix.length);
+        // Skip if this was just the root directory itself
+        if (fileName === '') {
+          continue;
+        }
+      }
 
       // Skip directories
       if (zipEntry.dir) {

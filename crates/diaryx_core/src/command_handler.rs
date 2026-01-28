@@ -624,6 +624,20 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let mut visited = HashSet::new();
                 let mut current_path = PathBuf::from(&path);
 
+                // Get workspace root for resolving workspace-relative paths
+                let workspace_root = current_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(Path::new("."))
+                    .to_path_buf();
+
+                // Try to get link format from workspace config
+                let link_format = ws
+                    .get_workspace_config(&current_path)
+                    .await
+                    .map(|c| c.link_format)
+                    .ok();
+
                 // Maximum depth to prevent runaway traversal
                 const MAX_DEPTH: usize = 100;
 
@@ -635,8 +649,8 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     }
                     visited.insert(path_str.clone());
 
-                    // Try to parse the file
-                    if let Ok(index) = ws.parse_index(&current_path).await {
+                    // Try to parse the file (with link format hint)
+                    if let Ok(index) = ws.parse_index_with_hint(&current_path, link_format).await {
                         let attachments = index.frontmatter.attachments_list().to_vec();
 
                         // Only add if there are attachments
@@ -650,7 +664,13 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
                         // Move to parent via part_of
                         if let Some(part_of) = &index.frontmatter.part_of {
-                            current_path = index.resolve_path(part_of);
+                            let parent_path = index.resolve_path(part_of);
+                            // Make path absolute if needed
+                            current_path = if parent_path.is_absolute() {
+                                parent_path
+                            } else {
+                                workspace_root.join(&parent_path)
+                            };
                         } else {
                             break; // Reached root
                         }
@@ -1440,18 +1460,33 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                 let mut audiences = std::collections::HashSet::new();
                 let mut visited = std::collections::HashSet::new();
 
+                // Get workspace root for resolving paths
+                let workspace_root = Path::new(&root_path)
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .to_path_buf();
+
+                // Get link format from workspace config
+                let link_format = ws
+                    .get_workspace_config(Path::new(&root_path))
+                    .await
+                    .map(|c| c.link_format)
+                    .ok();
+
                 async fn collect_audiences<FS: AsyncFileSystem>(
                     ws: &crate::workspace::Workspace<FS>,
                     path: &Path,
                     audiences: &mut std::collections::HashSet<String>,
                     visited: &mut std::collections::HashSet<PathBuf>,
+                    workspace_root: &Path,
+                    link_format: Option<crate::link_parser::LinkFormat>,
                 ) {
                     if visited.contains(path) {
                         return;
                     }
                     visited.insert(path.to_path_buf());
 
-                    if let Ok(index) = ws.parse_index(path).await {
+                    if let Ok(index) = ws.parse_index_with_hint(path, link_format).await {
                         if let Some(file_audiences) = &index.frontmatter.audience {
                             for a in file_audiences {
                                 if a.to_lowercase() != "private" {
@@ -1463,12 +1498,20 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         if index.frontmatter.is_index() {
                             for child_rel in index.frontmatter.contents_list() {
                                 let child_path = index.resolve_path(child_rel);
-                                if ws.fs_ref().exists(&child_path).await {
+                                // Make path absolute if needed
+                                let absolute_child_path = if child_path.is_absolute() {
+                                    child_path
+                                } else {
+                                    workspace_root.join(&child_path)
+                                };
+                                if ws.fs_ref().exists(&absolute_child_path).await {
                                     Box::pin(collect_audiences(
                                         ws,
-                                        &child_path,
+                                        &absolute_child_path,
                                         audiences,
                                         visited,
+                                        workspace_root,
+                                        link_format,
                                     ))
                                     .await;
                                 }
@@ -1477,7 +1520,15 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     }
                 }
 
-                collect_audiences(&ws, Path::new(&root_path), &mut audiences, &mut visited).await;
+                collect_audiences(
+                    &ws,
+                    Path::new(&root_path),
+                    &mut audiences,
+                    &mut visited,
+                    &workspace_root,
+                    link_format,
+                )
+                .await;
                 let mut result: Vec<String> = audiences.into_iter().collect();
                 result.sort();
                 Ok(Response::Strings(result))

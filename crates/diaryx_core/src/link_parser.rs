@@ -173,7 +173,11 @@ pub fn parse_link(value: &str) -> ParsedLink {
     ParsedLink::new(path, path_type)
 }
 
-/// Try to parse a markdown link `[Title](path)`.
+/// Try to parse a markdown link `[Title](path)` or `[Title](<path>)`.
+///
+/// Handles:
+/// - Angle brackets around the URL for paths with spaces or special characters
+/// - Balanced parentheses in paths (e.g., `[Title](/path/file (1).md)`)
 fn try_parse_markdown_link(value: &str) -> Option<ParsedLink> {
     // Must start with `[` and contain `](`
     if !value.starts_with('[') {
@@ -186,12 +190,32 @@ fn try_parse_markdown_link(value: &str) -> Option<ParsedLink> {
         return None;
     }
 
-    // Find the closing paren
     let path_start = close_bracket + 2;
-    let close_paren = value[path_start..].find(')')? + path_start;
+    let rest = &value[path_start..];
 
-    let title = value[1..close_bracket].to_string();
-    let raw_path = value[path_start..close_paren].to_string();
+    // Check if URL is wrapped in angle brackets: ](<path>)
+    let (raw_path, title) = if rest.starts_with('<') {
+        // Find the closing angle bracket followed by )
+        let close_angle = rest.find('>')?;
+        // Verify ) follows the >
+        if rest.get(close_angle + 1..close_angle + 2) != Some(")") {
+            return None;
+        }
+        // Extract path without angle brackets
+        (
+            rest[1..close_angle].to_string(),
+            value[1..close_bracket].to_string(),
+        )
+    } else {
+        // Standard format: find the closing paren with balanced parentheses
+        // We need to handle paths like "/path/file (1.1).md" where there are
+        // parentheses in the path itself
+        let close_paren = find_closing_paren(rest)?;
+        (
+            rest[..close_paren].to_string(),
+            value[1..close_bracket].to_string(),
+        )
+    };
 
     let path_type = determine_path_type(&raw_path);
 
@@ -203,6 +227,29 @@ fn try_parse_markdown_link(value: &str) -> Option<ParsedLink> {
     };
 
     Some(ParsedLink::with_title(title, path, path_type))
+}
+
+/// Find the closing parenthesis that ends a markdown link URL.
+///
+/// Handles balanced parentheses within the URL. For example:
+/// - `path.md)` -> returns 7 (position of `)`)
+/// - `path (1).md)` -> returns 13 (position of final `)`)
+/// - `path (a (b)).md)` -> returns 17 (position of final `)`)
+fn find_closing_paren(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Determine the path type from a raw path string.
@@ -300,9 +347,32 @@ fn normalize_path(path: &Path) -> String {
     }
 }
 
+/// Check if a path needs angle brackets in markdown link syntax.
+///
+/// Paths with spaces or parentheses need to be wrapped in angle brackets
+/// to ensure correct parsing: `[Title](<path with spaces>)`
+///
+/// While balanced parentheses CAN be parsed without angle brackets,
+/// using angle brackets is cleaner and avoids ambiguity.
+fn needs_angle_brackets(path: &str) -> bool {
+    path.contains(' ') || path.contains('(') || path.contains(')')
+}
+
+/// Format a URL for use in markdown link syntax.
+///
+/// Wraps the URL in angle brackets if it contains spaces or special characters.
+fn format_markdown_url(path: &str) -> String {
+    if needs_angle_brackets(path) {
+        format!("<{}>", path)
+    } else {
+        path.to_string()
+    }
+}
+
 /// Format a canonical path as a markdown link for frontmatter (default format).
 ///
 /// Creates a link in the format: `[Title](/canonical/path.md)`
+/// For paths with spaces, uses angle brackets: `[Title](</path with spaces.md>)`
 ///
 /// This is a convenience function that uses `LinkFormat::MarkdownRoot`.
 /// For other formats, use [`format_link_with_format`].
@@ -319,9 +389,14 @@ fn normalize_path(path: &Path) -> String {
 ///
 /// let link = format_link("Utility/utility_index.md", "Utility Index");
 /// assert_eq!(link, "[Utility Index](/Utility/utility_index.md)");
+///
+/// // Paths with spaces get angle brackets
+/// let link = format_link("My Folder/my file.md", "My File");
+/// assert_eq!(link, "[My File](</My Folder/my file.md>)");
 /// ```
 pub fn format_link(canonical_path: &str, title: &str) -> String {
-    format!("[{}](/{})", title, canonical_path)
+    let url = format!("/{}", canonical_path);
+    format!("[{}]({})", title, format_markdown_url(&url))
 }
 
 /// Format a link based on the specified format.
@@ -383,11 +458,12 @@ pub fn format_link_with_format(
 ) -> String {
     match format {
         LinkFormat::MarkdownRoot => {
-            format!("[{}](/{})", title, canonical_path)
+            let url = format!("/{}", canonical_path);
+            format!("[{}]({})", title, format_markdown_url(&url))
         }
         LinkFormat::MarkdownRelative => {
             let relative = compute_relative_path(from_canonical_path, canonical_path);
-            format!("[{}]({})", title, relative)
+            format!("[{}]({})", title, format_markdown_url(&relative))
         }
         LinkFormat::PlainRelative => compute_relative_path(from_canonical_path, canonical_path),
         LinkFormat::PlainCanonical => canonical_path.to_string(),
@@ -602,6 +678,99 @@ mod tests {
         assert_eq!(link.title, Some("Child".to_string()));
         assert_eq!(link.path, "child.md");
         assert_eq!(link.path_type, PathType::Ambiguous);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_angle_brackets() {
+        // Angle brackets are used for paths with spaces or special characters
+        let link = parse_link("[Creative Writing](</Creative Writing/Creative Writing.md>)");
+        assert_eq!(link.title, Some("Creative Writing".to_string()));
+        assert_eq!(link.path, "Creative Writing/Creative Writing.md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_angle_brackets_relative() {
+        let link = parse_link("[My File](<../My Folder/my file.md>)");
+        assert_eq!(link.title, Some("My File".to_string()));
+        assert_eq!(link.path, "../My Folder/my file.md");
+        assert_eq!(link.path_type, PathType::Relative);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_spaces_no_angle_brackets() {
+        // Even without angle brackets, we should still parse correctly
+        // (the parser looks for the closing paren)
+        let link = parse_link("[Daily Index](/Daily/daily_index.md)");
+        assert_eq!(link.title, Some("Daily Index".to_string()));
+        assert_eq!(link.path, "Daily/daily_index.md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_parentheses_in_path() {
+        // Paths with parentheses should be parsed correctly by counting balanced parens
+        let link = parse_link("[Explanation (1.1)](/Archive/Explanation (1.1).md)");
+        assert_eq!(link.title, Some("Explanation (1.1)".to_string()));
+        assert_eq!(link.path, "Archive/Explanation (1.1).md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_nested_parentheses() {
+        // Even nested parentheses should work
+        let link = parse_link("[File (a (b))](/path/file (a (b)).md)");
+        assert_eq!(link.title, Some("File (a (b))".to_string()));
+        assert_eq!(link.path, "path/file (a (b)).md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_plus_in_parens() {
+        // Real example: [The Cross (+)](/path/The Cross (+).md)
+        let link = parse_link("[The Cross (+)](/Archive/The Cross (+).md)");
+        assert_eq!(link.title, Some("The Cross (+)".to_string()));
+        assert_eq!(link.path, "Archive/The Cross (+).md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+    }
+
+    #[test]
+    fn test_format_link_with_parentheses_uses_angle_brackets() {
+        let link = format_link("Archive/Explanation (1.1).md", "Explanation (1.1)");
+        assert_eq!(link, "[Explanation (1.1)](</Archive/Explanation (1.1).md>)");
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_multiple_periods() {
+        // Paths with multiple periods should parse correctly
+        let link = parse_link("[Test File](/path/test....md)");
+        assert_eq!(link.title, Some("Test File".to_string()));
+        assert_eq!(link.path, "path/test....md");
+        assert_eq!(link.path_type, PathType::WorkspaceRoot);
+
+        // Also test with periods in folder names
+        let link = parse_link("[Notes](/my...folder/notes.md)");
+        assert_eq!(link.path, "my...folder/notes.md");
+    }
+
+    #[test]
+    fn test_parse_markdown_link_with_period_at_end_of_title() {
+        // Title ending with period
+        let link = parse_link("[Test...](/path/test.md)");
+        assert_eq!(link.title, Some("Test...".to_string()));
+        assert_eq!(link.path, "path/test.md");
+    }
+
+    #[test]
+    fn test_format_link_with_spaces_uses_angle_brackets() {
+        let link = format_link("My Folder/my file.md", "My File");
+        assert_eq!(link, "[My File](</My Folder/my file.md>)");
+    }
+
+    #[test]
+    fn test_format_link_without_spaces_no_angle_brackets() {
+        let link = format_link("Folder/file.md", "File");
+        assert_eq!(link, "[File](/Folder/file.md)");
     }
 
     #[test]

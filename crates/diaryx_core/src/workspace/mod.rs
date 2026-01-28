@@ -220,7 +220,24 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             path: path.to_path_buf(),
             frontmatter,
             body: body.to_string(),
+            link_format_hint: None,
         })
+    }
+
+    /// Parse a markdown file and extract index frontmatter, with a link format hint.
+    ///
+    /// This variant of `parse_index` allows setting the `link_format_hint` field
+    /// which affects how ambiguous paths (like `Folder/file.md`) are resolved.
+    /// When `link_format` is `Some(PlainCanonical)`, ambiguous paths are resolved
+    /// as workspace-root paths instead of relative paths.
+    pub async fn parse_index_with_hint(
+        &self,
+        path: &Path,
+        link_format: Option<LinkFormat>,
+    ) -> Result<IndexFile> {
+        let mut index = self.parse_index(path).await?;
+        index.link_format_hint = link_format;
+        Ok(index)
     }
 
     /// Check if a file is an index file (has contents property)
@@ -300,8 +317,25 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
     pub async fn collect_workspace_files(&self, index_path: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         let mut visited = HashSet::new();
-        self.collect_workspace_files_recursive(index_path, &mut files, &mut visited)
-            .await?;
+
+        // Get link format from workspace config for proper path resolution
+        let link_format = self
+            .get_workspace_config(index_path)
+            .await
+            .map(|c| c.link_format)
+            .ok();
+
+        // Get the workspace root directory (parent of root index file)
+        let workspace_root = index_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+        self.collect_workspace_files_recursive(
+            index_path,
+            &mut files,
+            &mut visited,
+            link_format,
+            &workspace_root,
+        )
+        .await?;
         files.sort();
         Ok(files)
     }
@@ -312,6 +346,8 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         path: &Path,
         files: &mut Vec<PathBuf>,
         visited: &mut HashSet<PathBuf>,
+        link_format: Option<LinkFormat>,
+        workspace_root: &Path,
     ) -> Result<()> {
         // Canonicalize to handle relative paths consistently
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -326,16 +362,29 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         files.push(path.to_path_buf());
 
         // If this is an index file, recurse into its contents
-        if let Ok(index) = self.parse_index(path).await
+        if let Ok(index) = self.parse_index_with_hint(path, link_format).await
             && index.frontmatter.is_index()
         {
             for child_path_str in index.frontmatter.contents_list() {
                 let child_path = index.resolve_path(child_path_str);
 
+                // Make path absolute if needed by joining with workspace root
+                let absolute_child_path = if child_path.is_absolute() {
+                    child_path
+                } else {
+                    workspace_root.join(&child_path)
+                };
+
                 // Only include if the file exists
-                if self.fs.exists(&child_path).await {
-                    Box::pin(self.collect_workspace_files_recursive(&child_path, files, visited))
-                        .await?;
+                if self.fs.exists(&absolute_child_path).await {
+                    Box::pin(self.collect_workspace_files_recursive(
+                        &absolute_child_path,
+                        files,
+                        visited,
+                        link_format,
+                        workspace_root,
+                    ))
+                    .await?;
                 }
             }
         }
@@ -502,7 +551,39 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         max_depth: Option<usize>,
         visited: &mut HashSet<PathBuf>,
     ) -> Result<TreeNode> {
-        let index = self.parse_index(root_path).await?;
+        // Get link format from workspace config for proper path resolution
+        let link_format = self
+            .get_workspace_config(root_path)
+            .await
+            .map(|c| c.link_format)
+            .ok();
+
+        // Get the workspace root directory (parent of root index file)
+        let workspace_root = root_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+        self.build_tree_with_depth_and_format(
+            root_path,
+            max_depth,
+            visited,
+            link_format,
+            &workspace_root,
+        )
+        .await
+    }
+
+    /// Build a tree structure with depth limit, cycle detection, and explicit link format.
+    ///
+    /// This is the internal implementation that handles tree building.
+    /// Use `build_tree_with_depth` for public API which auto-detects the link format.
+    async fn build_tree_with_depth_and_format(
+        &self,
+        root_path: &Path,
+        max_depth: Option<usize>,
+        visited: &mut HashSet<PathBuf>,
+        link_format: Option<LinkFormat>,
+        workspace_root: &Path,
+    ) -> Result<TreeNode> {
+        let index = self.parse_index_with_hint(root_path, link_format).await?;
 
         // Canonicalize path for cycle detection
         let canonical = root_path
@@ -557,10 +638,23 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             for child_path_str in contents {
                 let child_path = index.resolve_path(child_path_str);
 
+                // Make path absolute if needed by joining with workspace root
+                let absolute_child_path = if child_path.is_absolute() {
+                    child_path.clone()
+                } else {
+                    workspace_root.join(&child_path)
+                };
+
                 // Only include if the file exists
-                if self.fs.exists(&child_path).await {
-                    match Box::pin(self.build_tree_with_depth(&child_path, next_depth, visited))
-                        .await
+                if self.fs.exists(&absolute_child_path).await {
+                    match Box::pin(self.build_tree_with_depth_and_format(
+                        &absolute_child_path,
+                        next_depth,
+                        visited,
+                        link_format,
+                        workspace_root,
+                    ))
+                    .await
                     {
                         Ok(child_node) => children.push(child_node),
                         Err(_) => {
@@ -568,7 +662,7 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                             children.push(TreeNode {
                                 name: format!("{} (error)", child_path_str),
                                 description: None,
-                                path: child_path,
+                                path: absolute_child_path,
                                 children: Vec::new(),
                             });
                         }

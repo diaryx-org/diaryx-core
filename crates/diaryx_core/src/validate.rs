@@ -18,7 +18,7 @@ use ts_rs::TS;
 
 use crate::error::Result;
 use crate::fs::AsyncFileSystem;
-use crate::link_parser;
+use crate::link_parser::{self, LinkFormat};
 use crate::utils::path::relative_path_from_file_to_target;
 use crate::workspace::Workspace;
 
@@ -550,6 +550,14 @@ pub struct Validator<FS: AsyncFileSystem> {
     ws: Workspace<FS>,
 }
 
+/// Context for recursive validation.
+struct ValidationContext<'a> {
+    result: &'a mut ValidationResult,
+    visited: &'a mut HashSet<PathBuf>,
+    link_format: Option<LinkFormat>,
+    workspace_root: &'a Path,
+}
+
 impl<FS: AsyncFileSystem> Validator<FS> {
     /// Create a new validator.
     pub fn new(fs: FS) -> Self {
@@ -574,9 +582,28 @@ impl<FS: AsyncFileSystem> Validator<FS> {
         max_depth: Option<usize>,
     ) -> Result<ValidationResult> {
         let mut result = ValidationResult::default();
-        let mut visited = HashSet::new();
+        let mut visited: HashSet<PathBuf> = HashSet::new();
 
-        self.validate_recursive(root_path, &mut result, &mut visited, None, None)
+        // Get link format from workspace config
+        let link_format = self
+            .ws
+            .get_workspace_config(root_path)
+            .await
+            .map(|c| c.link_format)
+            .ok();
+
+        // Get the workspace root directory (parent of root index file)
+        // This is needed to resolve workspace-relative paths correctly
+        let workspace_root = root_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+        let mut ctx = ValidationContext {
+            result: &mut result,
+            visited: &mut visited,
+            link_format,
+            workspace_root: &workspace_root,
+        };
+
+        self.validate_recursive(root_path, &mut ctx, None, None)
             .await?;
 
         // Find unlinked entries: files/dirs in workspace not visited during traversal
@@ -735,30 +762,31 @@ impl<FS: AsyncFileSystem> Validator<FS> {
     async fn validate_recursive(
         &self,
         path: &Path,
-        result: &mut ValidationResult,
-        visited: &mut HashSet<PathBuf>,
+        ctx: &mut ValidationContext<'_>,
         from_parent: Option<&Path>,
         contents_ref: Option<&str>,
     ) -> Result<()> {
         // Avoid cycles - use normalize_path for consistent path comparison
         let normalized = normalize_path(path);
-        if visited.contains(&normalized) {
+        if ctx.visited.contains(&normalized) {
             // Cycle detected! Suggest removing the contents reference from the parent
-            result.warnings.push(ValidationWarning::CircularReference {
-                files: vec![path.to_path_buf()],
-                // Suggest editing the parent file that led us here
-                suggested_file: from_parent.map(|p| p.to_path_buf()),
-                // The contents ref to remove would be in the parent, but we suggest
-                // removing part_of from the target file as that's often cleaner
-                suggested_remove_part_of: contents_ref.map(|s| s.to_string()),
-            });
+            ctx.result
+                .warnings
+                .push(ValidationWarning::CircularReference {
+                    files: vec![path.to_path_buf()],
+                    // Suggest editing the parent file that led us here
+                    suggested_file: from_parent.map(|p| p.to_path_buf()),
+                    // The contents ref to remove would be in the parent, but we suggest
+                    // removing part_of from the target file as that's often cleaner
+                    suggested_remove_part_of: contents_ref.map(|s| s.to_string()),
+                });
             return Ok(());
         }
-        visited.insert(normalized);
-        result.files_checked += 1;
+        ctx.visited.insert(normalized);
+        ctx.result.files_checked += 1;
 
-        // Try to parse as index
-        if let Ok(index) = self.ws.parse_index(path).await {
+        // Try to parse as index (with link format hint for proper path resolution)
+        if let Ok(index) = self.ws.parse_index_with_hint(path, ctx.link_format).await {
             let dir = index.directory().unwrap_or_else(|| Path::new(""));
 
             // Check all contents references
@@ -766,23 +794,33 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 // Use index.resolve_path which handles markdown links and relative paths
                 let child_path = index.resolve_path(child_ref);
 
-                if !self.ws.fs_ref().exists(&child_path).await {
-                    result.errors.push(ValidationError::BrokenContentsRef {
+                // Make path absolute if needed by joining with workspace root
+                // This handles the case where resolve_path returns workspace-relative paths
+                // but we need absolute paths for the real filesystem
+                let absolute_child_path = if child_path.is_absolute() {
+                    child_path.clone()
+                } else {
+                    ctx.workspace_root.join(&child_path)
+                };
+
+                if !self.ws.fs_ref().exists(&absolute_child_path).await {
+                    ctx.result.errors.push(ValidationError::BrokenContentsRef {
                         index: path.to_path_buf(),
                         target: child_ref.clone(),
                     });
                 } else if child_path.extension().is_none_or(|ext| ext != "md") {
                     // Non-markdown file in contents - should be in attachments instead
-                    result.warnings.push(ValidationWarning::InvalidContentsRef {
-                        index: path.to_path_buf(),
-                        target: child_ref.clone(),
-                    });
+                    ctx.result
+                        .warnings
+                        .push(ValidationWarning::InvalidContentsRef {
+                            index: path.to_path_buf(),
+                            target: child_ref.clone(),
+                        });
                 } else {
                     // Recurse into child, tracking parent info for cycle detection
                     Box::pin(self.validate_recursive(
-                        &child_path,
-                        result,
-                        visited,
+                        &absolute_child_path,
+                        ctx,
                         Some(path),
                         Some(child_ref),
                     ))
@@ -794,17 +832,25 @@ impl<FS: AsyncFileSystem> Validator<FS> {
             if let Some(ref part_of) = index.frontmatter.part_of {
                 if is_clearly_non_portable_path(part_of) {
                     // Non-portable path - add warning, skip exists() check
-                    result.warnings.push(ValidationWarning::NonPortablePath {
-                        file: path.to_path_buf(),
-                        property: "part_of".to_string(),
-                        value: part_of.clone(),
-                        suggested: compute_suggested_portable_path(part_of, dir),
-                    });
+                    ctx.result
+                        .warnings
+                        .push(ValidationWarning::NonPortablePath {
+                            file: path.to_path_buf(),
+                            property: "part_of".to_string(),
+                            value: part_of.clone(),
+                            suggested: compute_suggested_portable_path(part_of, dir),
+                        });
                 } else {
                     // Use index.resolve_path which handles markdown links and relative paths
                     let parent_path = index.resolve_path(part_of);
-                    if !self.ws.fs_ref().exists(&parent_path).await {
-                        result.errors.push(ValidationError::BrokenPartOf {
+                    // Make path absolute if needed
+                    let absolute_parent_path = if parent_path.is_absolute() {
+                        parent_path
+                    } else {
+                        ctx.workspace_root.join(&parent_path)
+                    };
+                    if !self.ws.fs_ref().exists(&absolute_parent_path).await {
+                        ctx.result.errors.push(ValidationError::BrokenPartOf {
                             file: path.to_path_buf(),
                             target: part_of.clone(),
                         });
@@ -816,13 +862,49 @@ impl<FS: AsyncFileSystem> Validator<FS> {
             for attachment in index.frontmatter.attachments_list() {
                 // Use index.resolve_path which handles markdown links and relative paths
                 let attachment_path = index.resolve_path(attachment);
-                if self.ws.fs_ref().exists(&attachment_path).await {
-                    visited.insert(attachment_path);
+                // Make path absolute if needed
+                let absolute_attachment_path = if attachment_path.is_absolute() {
+                    attachment_path
+                } else {
+                    ctx.workspace_root.join(&attachment_path)
+                };
+                if self.ws.fs_ref().exists(&absolute_attachment_path).await {
+                    ctx.visited.insert(absolute_attachment_path);
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Try to find the workspace root by searching for a root index file in parent directories.
+    ///
+    /// Looks for README.md, index.md, or *.index.md files that could be workspace roots.
+    /// Returns None if no root index is found.
+    async fn find_workspace_root(&self, start_path: &Path) -> Option<PathBuf> {
+        let mut current = start_path.parent()?;
+
+        // Search up to 10 levels to avoid infinite loops
+        for _ in 0..10 {
+            // Check for common root index files
+            for name in &["README.md", "index.md"] {
+                let candidate = current.join(name);
+                if self.ws.fs_ref().exists(&candidate).await {
+                    // Check if this looks like a root index (has contents but no part_of)
+                    if let Ok(index) = self.ws.parse_index(&candidate).await
+                        && index.frontmatter.part_of.is_none()
+                        && index.frontmatter.is_index()
+                    {
+                        return Some(current.to_path_buf());
+                    }
+                }
+            }
+
+            // Move up to parent directory
+            current = current.parent()?;
+        }
+
+        None
     }
 
     /// Validate a single file's links.
@@ -855,8 +937,23 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
         result.files_checked = 1;
 
-        // Try to parse and validate
-        if let Ok(index) = self.ws.parse_index(&path).await {
+        // Try to find the workspace root by looking for a root index in parent directories
+        // Fall back to the file's parent directory if not found
+        let workspace_root = self
+            .find_workspace_root(&path)
+            .await
+            .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+        // Get link format from workspace config
+        let link_format = self
+            .ws
+            .get_workspace_config(&workspace_root.join("README.md"))
+            .await
+            .map(|c| c.link_format)
+            .ok();
+
+        // Try to parse and validate (with link format hint)
+        if let Ok(index) = self.ws.parse_index_with_hint(&path, link_format).await {
             let dir = index.directory().unwrap_or_else(|| Path::new(""));
 
             // Collect listed files (normalized to just filenames for comparison)
@@ -878,7 +975,14 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 // Use index.resolve_path which handles markdown links and relative paths
                 let child_path = index.resolve_path(child_ref);
 
-                if !self.ws.fs_ref().exists(&child_path).await {
+                // Make path absolute if needed by joining with workspace root
+                let absolute_child_path = if child_path.is_absolute() {
+                    child_path
+                } else {
+                    workspace_root.join(&child_path)
+                };
+
+                if !self.ws.fs_ref().exists(&absolute_child_path).await {
                     result.errors.push(ValidationError::BrokenContentsRef {
                         index: path.clone(),
                         target: child_ref.clone(),
@@ -899,7 +1003,13 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 } else {
                     // Use index.resolve_path which handles markdown links and relative paths
                     let parent_path = index.resolve_path(part_of);
-                    if !self.ws.fs_ref().exists(&parent_path).await {
+                    // Make path absolute if needed
+                    let absolute_parent_path = if parent_path.is_absolute() {
+                        parent_path
+                    } else {
+                        workspace_root.join(&parent_path)
+                    };
+                    if !self.ws.fs_ref().exists(&absolute_parent_path).await {
                         result.errors.push(ValidationError::BrokenPartOf {
                             file: path.clone(),
                             target: part_of.clone(),
@@ -941,8 +1051,15 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 // Use index.resolve_path which handles markdown links and relative paths
                 let attachment_path = index.resolve_path(attachment);
 
+                // Make path absolute if needed
+                let absolute_attachment_path = if attachment_path.is_absolute() {
+                    attachment_path
+                } else {
+                    workspace_root.join(&attachment_path)
+                };
+
                 // Check if attachment exists
-                if !self.ws.fs_ref().exists(&attachment_path).await {
+                if !self.ws.fs_ref().exists(&absolute_attachment_path).await {
                     result.errors.push(ValidationError::BrokenAttachment {
                         file: path.clone(),
                         attachment: attachment.clone(),
@@ -2046,5 +2163,266 @@ mod tests {
             }
             _ => panic!("Expected NonPortablePath warning"),
         }
+    }
+
+    #[test]
+    fn test_validate_workspace_with_plain_canonical_links() {
+        // Create a workspace using PlainCanonical link format
+        let fs = make_test_fs();
+
+        // Root index with link_format: plain_canonical
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\nlink_format: plain_canonical\ncontents:\n  - Folder/index.md\n---\n",
+        )
+        .unwrap();
+
+        // Create directory structure
+        fs.create_dir_all(Path::new("Folder")).unwrap();
+
+        // Child index in Folder using PlainCanonical format (no leading /)
+        fs.write_file(
+            Path::new("Folder/index.md"),
+            "---\ntitle: Folder Index\npart_of: README.md\ncontents:\n  - Folder/child.md\n---\n",
+        )
+        .unwrap();
+
+        // Child file
+        fs.write_file(
+            Path::new("Folder/child.md"),
+            "---\ntitle: Child\npart_of: Folder/index.md\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have no errors - the PlainCanonical links should resolve correctly
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, got: {:?}",
+            result.errors
+        );
+        assert_eq!(result.files_checked, 3);
+    }
+
+    #[test]
+    fn test_validate_workspace_plain_canonical_deeply_nested() {
+        // Test PlainCanonical links with deeper nesting
+        let fs = make_test_fs();
+
+        // Root with PlainCanonical
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\nlink_format: plain_canonical\ncontents:\n  - A/index.md\n---\n",
+        )
+        .unwrap();
+
+        fs.create_dir_all(Path::new("A/B")).unwrap();
+
+        // A/index.md links to A/B/index.md using PlainCanonical
+        fs.write_file(
+            Path::new("A/index.md"),
+            "---\ntitle: A\npart_of: README.md\ncontents:\n  - A/B/index.md\n---\n",
+        )
+        .unwrap();
+
+        // A/B/index.md links to A/B/note.md using PlainCanonical
+        fs.write_file(
+            Path::new("A/B/index.md"),
+            "---\ntitle: B\npart_of: A/index.md\ncontents:\n  - A/B/note.md\n---\n",
+        )
+        .unwrap();
+
+        // Leaf file
+        fs.write_file(
+            Path::new("A/B/note.md"),
+            "---\ntitle: Note\npart_of: A/B/index.md\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have no errors
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, got: {:?}",
+            result.errors
+        );
+        assert_eq!(result.files_checked, 4);
+    }
+
+    #[test]
+    fn test_validate_workspace_with_markdown_root_and_plain_paths() {
+        // Test that MarkdownRoot format also resolves ambiguous paths as workspace-root
+        // This handles cases where a workspace has markdown_root set but some links
+        // might be plain paths (e.g., from older formats or manual edits)
+        let fs = make_test_fs();
+
+        // Root index with link_format: markdown_root
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\nlink_format: markdown_root\ncontents:\n  - \"[Folder Index](/Folder/index.md)\"\n---\n",
+        )
+        .unwrap();
+
+        fs.create_dir_all(Path::new("Folder")).unwrap();
+
+        // Child index using a PLAIN path for part_of (not markdown link)
+        // With MarkdownRoot hint, this should resolve as workspace-root
+        fs.write_file(
+            Path::new("Folder/index.md"),
+            "---\ntitle: Folder Index\npart_of: README.md\ncontents: []\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have no errors - the plain path "README.md" should resolve correctly
+        // because MarkdownRoot format treats ambiguous paths as workspace-root
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors with MarkdownRoot format, got: {:?}",
+            result.errors
+        );
+        assert_eq!(result.files_checked, 2);
+    }
+
+    #[test]
+    fn test_validate_workspace_with_actual_markdown_links_in_contents() {
+        // Test that markdown links with [Title](/path) syntax work correctly
+        // This is the format users typically see in their files
+        let fs = make_test_fs();
+
+        // Root index with link_format: markdown_root and actual markdown links in contents
+        fs.write_file(
+            Path::new("README.md"),
+            r#"---
+title: Root
+link_format: markdown_root
+contents:
+  - "[Daily Index](/Daily/daily_index.md)"
+  - "[Creative Writing](</Creative Writing/index.md>)"
+---
+"#,
+        )
+        .unwrap();
+
+        // Create directories
+        fs.create_dir_all(Path::new("Daily")).unwrap();
+        fs.create_dir_all(Path::new("Creative Writing")).unwrap();
+
+        // Create the referenced files
+        fs.write_file(
+            Path::new("Daily/daily_index.md"),
+            "---\ntitle: Daily Index\npart_of: \"[Root](/README.md)\"\n---\n",
+        )
+        .unwrap();
+
+        fs.write_file(
+            Path::new("Creative Writing/index.md"),
+            "---\ntitle: Creative Writing\npart_of: \"[Root](/README.md)\"\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have no errors - markdown links should parse and resolve correctly
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors with markdown links, got: {:?}",
+            result.errors
+        );
+        assert_eq!(result.files_checked, 3);
+    }
+
+    #[test]
+    fn test_validate_workspace_with_relative_format_resolves_ambiguous_relatively() {
+        // Test that with PlainRelative format, ambiguous paths resolve relative to current file
+        let fs = make_test_fs();
+
+        // Root WITH link_format: plain_relative (ambiguous paths should resolve relatively)
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\nlink_format: plain_relative\ncontents:\n  - Folder/index.md\n---\n",
+        )
+        .unwrap();
+
+        fs.create_dir_all(Path::new("Folder")).unwrap();
+
+        // Child that uses ambiguous path for part_of
+        // With plain_relative, this will resolve to Folder/README.md which doesn't exist
+        fs.write_file(
+            Path::new("Folder/index.md"),
+            "---\ntitle: Folder Index\npart_of: README.md\ncontents: []\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have an error - "README.md" resolves to "Folder/README.md" (relative)
+        // which doesn't exist, because plain_relative treats ambiguous as relative
+        assert!(
+            !result.errors.is_empty(),
+            "Expected errors for ambiguous paths with PlainRelative format"
+        );
+        match &result.errors[0] {
+            ValidationError::BrokenPartOf { target, .. } => {
+                assert_eq!(target, "README.md");
+            }
+            _ => panic!("Expected BrokenPartOf error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_workspace_default_format_resolves_ambiguous_as_root() {
+        // Test that without explicit link_format, the default (MarkdownRoot) treats
+        // ambiguous paths as workspace-root
+        let fs = make_test_fs();
+
+        // Root WITHOUT explicit link_format (defaults to MarkdownRoot)
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\ncontents:\n  - Folder/index.md\n---\n",
+        )
+        .unwrap();
+
+        fs.create_dir_all(Path::new("Folder")).unwrap();
+
+        // Child that uses ambiguous path for part_of
+        // With default MarkdownRoot, this resolves as workspace-root to README.md
+        fs.write_file(
+            Path::new("Folder/index.md"),
+            "---\ntitle: Folder Index\npart_of: README.md\ncontents: []\n---\n",
+        )
+        .unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Should have NO errors - default MarkdownRoot format treats ambiguous paths
+        // as workspace-root, so "README.md" correctly resolves to the root file
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors with default format, got: {:?}",
+            result.errors
+        );
+        assert_eq!(result.files_checked, 2);
     }
 }
