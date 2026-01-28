@@ -64,6 +64,9 @@ let _initialSyncResolvers: Array<() => void> = [];
 // Per-file body sync bridges (file_path -> SyncTransport)
 const bodyBridges = new Map<string, SyncTransport>();
 
+// Lock for pending body bridge creations to prevent race conditions
+const bodyBridgePendingCreation = new Map<string, Promise<SyncTransport | undefined>>();
+
 // Cached server URL for body bridges
 let _serverUrl: string | null = null;
 
@@ -847,6 +850,10 @@ function isReadOnlyBlocked(): boolean {
 /**
  * Get or create a body sync bridge for a specific file.
  * Body bridges handle per-file body content sync separately from workspace metadata.
+ *
+ * This function uses a pending creation lock to prevent race conditions when
+ * multiple callers (e.g., proactive sync and entry opening) try to create
+ * a bridge for the same file simultaneously.
  */
 async function getOrCreateBodyBridge(filePath: string): Promise<SyncTransport | undefined> {
   if (!rustApi || !_serverUrl || !_workspaceId || !_backend) {
@@ -856,9 +863,15 @@ async function getOrCreateBodyBridge(filePath: string): Promise<SyncTransport | 
 
   const canonicalPath = getCanonicalPath(filePath);
 
-  // Return existing bridge if available
+  // If there's already a pending creation for this file, wait for it
+  const pendingCreation = bodyBridgePendingCreation.get(canonicalPath);
+  if (pendingCreation) {
+    return pendingCreation;
+  }
+
+  // Return existing bridge if connected or still connecting
   const existing = bodyBridges.get(canonicalPath);
-  if (existing?.isConnected) {
+  if (existing?.isConnected || existing?.isConnecting) {
     return existing;
   }
 
@@ -866,6 +879,26 @@ async function getOrCreateBodyBridge(filePath: string): Promise<SyncTransport | 
   if (existing) {
     existing.destroy();
     bodyBridges.delete(canonicalPath);
+  }
+
+  // Create the bridge with a lock to prevent concurrent creation
+  const createPromise = createBodyBridgeInternal(canonicalPath);
+  bodyBridgePendingCreation.set(canonicalPath, createPromise);
+
+  try {
+    return await createPromise;
+  } finally {
+    bodyBridgePendingCreation.delete(canonicalPath);
+  }
+}
+
+/**
+ * Internal function that actually creates the body bridge.
+ * Should only be called from getOrCreateBodyBridge with proper locking.
+ */
+async function createBodyBridgeInternal(canonicalPath: string): Promise<SyncTransport | undefined> {
+  if (!rustApi || !_serverUrl || !_workspaceId || !_backend) {
+    return undefined;
   }
 
   // Track existing content for echo detection (but don't load from disk yet)

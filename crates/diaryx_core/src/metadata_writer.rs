@@ -99,9 +99,16 @@ impl FrontmatterMetadata {
         let part_of = obj
             .and_then(|o| o.get("part_of"))
             .and_then(|v| v.as_str())
-            .map(|canonical_path| {
-                // Format as markdown link with workspace-root path
-                let link_title = title_resolver(canonical_path);
+            .map(|raw_value| {
+                // Parse the incoming value - handles both plain paths and markdown links
+                // This prevents double-wrapping if the value is already formatted
+                let parsed = link_parser::parse_link(raw_value);
+                let canonical_path = &parsed.path;
+                // Use existing title from markdown link if available, otherwise resolve
+                let link_title = parsed
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| title_resolver(canonical_path));
                 link_parser::format_link(canonical_path, &link_title)
             });
 
@@ -111,9 +118,16 @@ impl FrontmatterMetadata {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
-                    .map(|canonical_path| {
-                        // Format as markdown link with workspace-root path
-                        let link_title = title_resolver(canonical_path);
+                    .map(|raw_value| {
+                        // Parse the incoming value - handles both plain paths and markdown links
+                        // This prevents double-wrapping if the value is already formatted
+                        let parsed = link_parser::parse_link(raw_value);
+                        let canonical_path = &parsed.path;
+                        // Use existing title from markdown link if available, otherwise resolve
+                        let link_title = parsed
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| title_resolver(canonical_path));
                         link_parser::format_link(canonical_path, &link_title)
                     })
                     .collect()

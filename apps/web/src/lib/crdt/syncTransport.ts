@@ -162,6 +162,13 @@ export class SyncTransport {
   }
 
   /**
+   * Check if currently connecting.
+   */
+  get isConnecting(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.CONNECTING;
+  }
+
+  /**
    * Check if initial sync is complete.
    */
   get isSynced(): boolean {
