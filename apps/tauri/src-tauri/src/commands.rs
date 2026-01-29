@@ -2572,22 +2572,26 @@ pub async fn get_websocket_sync_status<R: Runtime>(
     let ws_state = app.state::<WebSocketSyncState>();
     let transport_guard = ws_state.transport.lock().await;
 
-    let (connected, status) = if let Some(ref transport) = *transport_guard {
+    if let Some(ref transport) = *transport_guard {
         let status = transport.status().await;
         let connected = transport.is_running();
-        (connected, Some(format!("{:?}", status)))
+        Ok(WebSocketSyncStatusResponse {
+            connected,
+            status: Some(status),
+        })
     } else {
-        (false, None)
-    };
-
-    Ok(WebSocketSyncStatusResponse { connected, status })
+        Ok(WebSocketSyncStatusResponse {
+            connected: false,
+            status: None,
+        })
+    }
 }
 
 /// WebSocket sync status response.
 #[derive(Debug, Serialize)]
 pub struct WebSocketSyncStatusResponse {
     pub connected: bool,
-    pub status: Option<String>,
+    pub status: Option<crate::websocket_sync::SyncStatus>,
 }
 
 #[cfg(test)]

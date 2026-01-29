@@ -40,13 +40,38 @@ pub struct SyncConfig {
 
 /// Status of the sync connection.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SyncStatus {
     Disconnected,
     Connecting,
     Connected,
+    Syncing { completed: usize, total: usize },
     Synced,
     Reconnecting { attempt: u32 },
     Error { message: String },
+}
+
+/// Control messages received from the sync server (JSON text messages).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ControlMessage {
+    SyncProgress {
+        completed: usize,
+        total: usize,
+    },
+    SyncComplete {
+        files_synced: usize,
+    },
+    PeerJoined {
+        guest_id: String,
+        peer_count: usize,
+    },
+    PeerLeft {
+        guest_id: String,
+        peer_count: usize,
+    },
+    #[serde(other)]
+    Other,
 }
 
 /// WebSocket sync transport.
@@ -197,6 +222,32 @@ async fn run_sync_loop(
                                         handle_server_message(diaryx, &data, &config, &mut write, &status).await;
                                     }
                                 }
+                                Some(Ok(Message::Text(text))) => {
+                                    // Handle JSON control messages from server
+                                    if let Ok(ctrl_msg) = serde_json::from_str::<ControlMessage>(&text) {
+                                        match ctrl_msg {
+                                            ControlMessage::SyncProgress { completed, total } => {
+                                                *status.lock().await = SyncStatus::Syncing { completed, total };
+                                                log::debug!("[SyncTransport] Sync progress: {}/{}", completed, total);
+                                            }
+                                            ControlMessage::SyncComplete { files_synced } => {
+                                                *status.lock().await = SyncStatus::Synced;
+                                                log::info!("[SyncTransport] Sync complete: {} files synced", files_synced);
+                                            }
+                                            ControlMessage::PeerJoined { guest_id, peer_count } => {
+                                                log::info!("[SyncTransport] Peer joined: {} (total: {})", guest_id, peer_count);
+                                            }
+                                            ControlMessage::PeerLeft { guest_id, peer_count } => {
+                                                log::info!("[SyncTransport] Peer left: {} (total: {})", guest_id, peer_count);
+                                            }
+                                            ControlMessage::Other => {
+                                                log::debug!("[SyncTransport] Received unknown control message");
+                                            }
+                                        }
+                                    } else {
+                                        log::warn!("[SyncTransport] Failed to parse control message: {}", text);
+                                    }
+                                }
                                 Some(Ok(Message::Close(_))) => {
                                     log::info!("[SyncTransport] Server closed connection");
                                     break;
@@ -316,7 +367,7 @@ async fn handle_server_message<S>(
     data: &[u8],
     config: &SyncConfig,
     write: &mut futures_util::stream::SplitSink<S, Message>,
-    status: &Arc<Mutex<SyncStatus>>,
+    _status: &Arc<Mutex<SyncStatus>>,
 ) where
     S: futures_util::Sink<Message> + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::fmt::Display,
@@ -341,10 +392,15 @@ async fn handle_server_message<S>(
                 }
             }
 
-            // Update sync status
+            // NOTE: We intentionally do NOT set status to Synced based on Rust's sync_complete flag.
+            // The Rust flag fires after receiving just one message (initial handshake), but that's
+            // BEFORE the client has finished sending its local data to the server.
+            // Instead, we rely on the server's sync_complete JSON message (handled in Message::Text)
+            // which indicates the server has received all our data.
             if sync_complete {
-                *status.lock().await = SyncStatus::Synced;
-                log::info!("[SyncTransport] Initial sync complete");
+                log::debug!(
+                    "[SyncTransport] Rust sync_complete flag set (waiting for server confirmation)"
+                );
             }
 
             // Log changed files
@@ -381,5 +437,80 @@ mod tests {
         let url = build_websocket_url(&config).unwrap();
         assert!(url.contains("doc=workspace123"));
         assert!(url.contains("token=token123"));
+    }
+
+    #[test]
+    fn test_control_message_deserialization() {
+        // Test sync_progress - must match server's ControlMessage format
+        let json = r#"{"type":"sync_progress","completed":5,"total":42}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg,
+            ControlMessage::SyncProgress {
+                completed: 5,
+                total: 42
+            }
+        ));
+
+        // Test sync_complete
+        let json = r#"{"type":"sync_complete","files_synced":100}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg,
+            ControlMessage::SyncComplete { files_synced: 100 }
+        ));
+
+        // Test peer_joined
+        let json = r#"{"type":"peer_joined","guest_id":"abc123","peer_count":3}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg,
+            ControlMessage::PeerJoined { peer_count: 3, .. }
+        ));
+
+        // Test peer_left
+        let json = r#"{"type":"peer_left","guest_id":"abc123","peer_count":2}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg,
+            ControlMessage::PeerLeft { peer_count: 2, .. }
+        ));
+
+        // Test unknown message type falls back to Other
+        let json = r#"{"type":"unknown_future_message","foo":"bar"}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ControlMessage::Other));
+    }
+
+    #[test]
+    fn test_sync_status_serialization() {
+        // Test Syncing variant - frontend needs to parse this
+        let status = SyncStatus::Syncing {
+            completed: 10,
+            total: 50,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""type":"syncing""#));
+        assert!(json.contains(r#""completed":10"#));
+        assert!(json.contains(r#""total":50"#));
+
+        // Test Synced variant
+        let status = SyncStatus::Synced;
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""type":"synced""#));
+
+        // Test Reconnecting variant
+        let status = SyncStatus::Reconnecting { attempt: 3 };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""type":"reconnecting""#));
+        assert!(json.contains(r#""attempt":3"#));
+
+        // Test Error variant
+        let status = SyncStatus::Error {
+            message: "connection failed".to_string(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains(r#""type":"error""#));
+        assert!(json.contains("connection failed"));
     }
 }

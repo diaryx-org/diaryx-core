@@ -766,3 +766,637 @@ impl SyncRoom {
         workspace.file_count()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diaryx_core::crdt::FileMetadata;
+
+    // =========================================================================
+    // SyncRoom Creation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_sync_room_in_memory_creation() {
+        let room = SyncRoom::in_memory("test-workspace");
+        assert_eq!(room.connection_count(), 0);
+        assert!(!room.is_read_only());
+    }
+
+    #[tokio::test]
+    async fn test_sync_room_initial_state_empty() {
+        let room = SyncRoom::in_memory("test-workspace");
+        let file_count = room.get_file_count().await;
+        assert_eq!(file_count, 0);
+    }
+
+    // =========================================================================
+    // Connection Tracking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_subscribe_increments_connection_count() {
+        let room = SyncRoom::in_memory("test-workspace");
+        assert_eq!(room.connection_count(), 0);
+
+        let _rx1 = room.subscribe();
+        assert_eq!(room.connection_count(), 1);
+
+        let _rx2 = room.subscribe();
+        assert_eq!(room.connection_count(), 2);
+    }
+
+    #[test]
+    fn test_unsubscribe_decrements_connection_count() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let _rx = room.subscribe();
+        assert_eq!(room.connection_count(), 1);
+
+        room.unsubscribe();
+        assert_eq!(room.connection_count(), 0);
+    }
+
+    // =========================================================================
+    // Session Context Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_session_context_initially_none() {
+        let room = SyncRoom::in_memory("test-workspace");
+        let context = room.get_session_context().await;
+        assert!(context.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_session_context() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let context = SessionContext {
+            code: "ABC123".to_string(),
+            owner_user_id: "user-1".to_string(),
+            read_only: false,
+        };
+
+        room.set_session_context(context.clone()).await;
+
+        let retrieved = room.get_session_context().await.unwrap();
+        assert_eq!(retrieved.code, "ABC123");
+        assert_eq!(retrieved.owner_user_id, "user-1");
+        assert!(!retrieved.read_only);
+    }
+
+    #[tokio::test]
+    async fn test_session_context_read_only_flag() {
+        let room = SyncRoom::in_memory("test-workspace");
+        assert!(!room.is_read_only());
+
+        let context = SessionContext {
+            code: "ABC123".to_string(),
+            owner_user_id: "user-1".to_string(),
+            read_only: true,
+        };
+
+        room.set_session_context(context).await;
+        assert!(room.is_read_only());
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_context() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let context = SessionContext {
+            code: "ABC123".to_string(),
+            owner_user_id: "user-1".to_string(),
+            read_only: true,
+        };
+
+        room.set_session_context(context).await;
+        assert!(room.is_read_only());
+
+        room.clear_session_context().await;
+        assert!(room.get_session_context().await.is_none());
+        assert!(!room.is_read_only()); // Should reset to false
+    }
+
+    #[tokio::test]
+    async fn test_set_read_only() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Set up a session first
+        let context = SessionContext {
+            code: "ABC123".to_string(),
+            owner_user_id: "user-1".to_string(),
+            read_only: false,
+        };
+        room.set_session_context(context).await;
+
+        // Change read-only state
+        room.set_read_only(true).await;
+        assert!(room.is_read_only());
+
+        // Session context should also be updated
+        let updated_context = room.get_session_context().await.unwrap();
+        assert!(updated_context.read_only);
+    }
+
+    // =========================================================================
+    // Guest Connection Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_add_and_remove_guest() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Subscribe to control messages to verify broadcasts
+        let mut control_rx = room.subscribe_control();
+
+        room.add_guest("guest-1").await;
+
+        // Should receive PeerJoined message
+        let msg = control_rx.try_recv();
+        assert!(msg.is_ok());
+        match msg.unwrap() {
+            ControlMessage::PeerJoined { guest_id, .. } => {
+                assert_eq!(guest_id, "guest-1");
+            }
+            _ => panic!("Expected PeerJoined message"),
+        }
+
+        room.remove_guest("guest-1").await;
+
+        // Should receive PeerLeft message
+        let msg = control_rx.try_recv();
+        assert!(msg.is_ok());
+        match msg.unwrap() {
+            ControlMessage::PeerLeft { guest_id, .. } => {
+                assert_eq!(guest_id, "guest-1");
+            }
+            _ => panic!("Expected PeerLeft message"),
+        }
+    }
+
+    // =========================================================================
+    // Sync Protocol Tests - handle_message()
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_handle_sync_step1_empty_workspace() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Create a SyncStep1 message with empty state vector (new client)
+        let empty_sv = Vec::new();
+        let msg = SyncMessage::SyncStep1(empty_sv).encode();
+
+        let response = room.handle_message(&msg).await;
+
+        // Should get a response (SyncStep2 with full state + SyncStep1 with server's SV)
+        assert!(response.is_some());
+        let response_data = response.unwrap();
+
+        // Decode the response
+        let response_msgs = SyncMessage::decode_all(&response_data).unwrap();
+
+        // Should have at least SyncStep2 and SyncStep1
+        assert!(response_msgs.len() >= 2);
+
+        // First message should be SyncStep2
+        assert!(matches!(response_msgs[0], SyncMessage::SyncStep2(_)));
+
+        // Second message should be SyncStep1 (server's state vector)
+        assert!(matches!(response_msgs[1], SyncMessage::SyncStep1(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_sync_step1_with_data() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Add some data to the room first
+        {
+            let workspace = room.workspace.write().await;
+            workspace
+                .set_file("test.md", FileMetadata::new(Some("Test".to_string())))
+                .unwrap();
+        }
+
+        // Client sends SyncStep1 with empty state vector
+        let empty_sv = Vec::new();
+        let msg = SyncMessage::SyncStep1(empty_sv).encode();
+
+        let response = room.handle_message(&msg).await;
+        assert!(response.is_some());
+
+        let response_data = response.unwrap();
+        let response_msgs = SyncMessage::decode_all(&response_data).unwrap();
+
+        // SyncStep2 should contain the file data
+        match &response_msgs[0] {
+            SyncMessage::SyncStep2(diff) => {
+                // Non-empty diff (> 2 bytes) because room has data
+                assert!(diff.len() > 2, "Diff should contain file data");
+            }
+            _ => panic!("Expected SyncStep2"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_sync_step2_applies_update() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Create a separate workspace with data
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_workspace = WorkspaceCrdt::new(client_storage);
+        client_workspace
+            .set_file(
+                "client-file.md",
+                FileMetadata::new(Some("Client File".to_string())),
+            )
+            .unwrap();
+
+        // Get the client's full state as an update
+        let client_update = client_workspace.encode_state_as_update();
+
+        // Send as SyncStep2
+        let msg = SyncMessage::SyncStep2(client_update).encode();
+        let _response = room.handle_message(&msg).await;
+
+        // Room should now have the file
+        let file_count = room.get_file_count().await;
+        assert_eq!(file_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_update_message() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Subscribe to broadcasts to verify the update is forwarded
+        let mut broadcast_rx = room.subscribe();
+
+        // Create an update from a separate workspace
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_workspace = WorkspaceCrdt::new(client_storage);
+        client_workspace
+            .set_file("new-file.md", FileMetadata::new(Some("New".to_string())))
+            .unwrap();
+
+        let update = client_workspace.encode_state_as_update();
+        let msg = SyncMessage::Update(update).encode();
+
+        let _response = room.handle_message(&msg).await;
+
+        // Room should have the file
+        let file_count = room.get_file_count().await;
+        assert_eq!(file_count, 1);
+
+        // Update should be broadcast to other subscribers
+        let broadcast = broadcast_rx.try_recv();
+        assert!(broadcast.is_ok());
+    }
+
+    // =========================================================================
+    // Loop Detection Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_loop_detection_blocks_duplicate_response() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Send the same SyncStep1 message twice
+        let empty_sv = Vec::new();
+        let msg = SyncMessage::SyncStep1(empty_sv).encode();
+
+        // First call should return a response
+        let response1 = room.handle_message(&msg).await;
+        assert!(response1.is_some());
+
+        // Second identical call should return None (loop detected)
+        let response2 = room.handle_message(&msg).await;
+        assert!(
+            response2.is_none(),
+            "Duplicate message should be blocked by loop detection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_detection_allows_different_messages() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // First message
+        let msg1 = SyncMessage::SyncStep1(Vec::new()).encode();
+        let response1 = room.handle_message(&msg1).await;
+        assert!(response1.is_some());
+
+        // Different message (with actual state vector)
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_workspace = WorkspaceCrdt::new(client_storage);
+        let sv = client_workspace.encode_state_vector();
+        let msg2 = SyncMessage::SyncStep1(sv).encode();
+
+        let response2 = room.handle_message(&msg2).await;
+        // Different message should get a response
+        assert!(response2.is_some());
+    }
+
+    // =========================================================================
+    // Body Document Sync Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_handle_body_sync_step1() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Send SyncStep1 for a body document
+        let empty_sv = Vec::new();
+        let msg = SyncMessage::SyncStep1(empty_sv).encode();
+
+        let response = room.handle_body_message("test.md", &msg).await;
+        assert!(response.is_some());
+
+        let response_data = response.unwrap();
+        let response_msgs = SyncMessage::decode_all(&response_data).unwrap();
+
+        // Should have SyncStep2 and SyncStep1
+        assert!(response_msgs.len() >= 2);
+        assert!(matches!(response_msgs[0], SyncMessage::SyncStep2(_)));
+        assert!(matches!(response_msgs[1], SyncMessage::SyncStep1(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_body_sync_step2_applies_content() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Create a client body doc with content
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_body_manager = BodyDocManager::new(client_storage);
+        let client_doc = client_body_manager.get_or_create("test.md");
+        let _ = client_doc.set_body("Hello from client!");
+
+        // Get the full state
+        let client_update = client_doc.encode_state_as_update();
+        let msg = SyncMessage::SyncStep2(client_update).encode();
+
+        let _response = room.handle_body_message("test.md", &msg).await;
+
+        // Room should now have the body content
+        let content = room.get_body_content("test.md").await;
+        assert_eq!(content, Some("Hello from client!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_body_update_broadcasts() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Subscribe to body broadcasts
+        let mut body_rx = room.subscribe_all_bodies();
+
+        // Create an update
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_body_manager = BodyDocManager::new(client_storage);
+        let client_doc = client_body_manager.get_or_create("test.md");
+        let _ = client_doc.set_body("Updated content");
+
+        let update = client_doc.encode_state_as_update();
+        let msg = SyncMessage::Update(update).encode();
+
+        let _response = room.handle_body_message("test.md", &msg).await;
+
+        // Should broadcast to subscribers
+        let broadcast = body_rx.try_recv();
+        assert!(broadcast.is_ok());
+
+        let (file_path, _data) = broadcast.unwrap();
+        assert_eq!(file_path, "test.md");
+    }
+
+    // =========================================================================
+    // Body Subscription Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_body_subscription_tracking() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Initially not subscribed
+        assert!(!room.is_subscribed_to_body("test.md", "client-1").await);
+
+        // Subscribe
+        let _rx = room.subscribe_body("test.md", "client-1").await;
+        assert!(room.is_subscribed_to_body("test.md", "client-1").await);
+
+        // Unsubscribe
+        room.unsubscribe_body("test.md", "client-1").await;
+        assert!(!room.is_subscribed_to_body("test.md", "client-1").await);
+    }
+
+    #[tokio::test]
+    async fn test_get_client_body_subscriptions() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let _rx1 = room.subscribe_body("file1.md", "client-1").await;
+        let _rx2 = room.subscribe_body("file2.md", "client-1").await;
+        let _rx3 = room.subscribe_body("file3.md", "client-2").await;
+
+        let client1_subs = room.get_client_body_subscriptions("client-1").await;
+        assert_eq!(client1_subs.len(), 2);
+        assert!(client1_subs.contains(&"file1.md".to_string()));
+        assert!(client1_subs.contains(&"file2.md".to_string()));
+
+        let client2_subs = room.get_client_body_subscriptions("client-2").await;
+        assert_eq!(client2_subs.len(), 1);
+        assert!(client2_subs.contains(&"file3.md".to_string()));
+    }
+
+    // =========================================================================
+    // State Vector / Full State Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_get_state_vector() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let sv_msg = room.get_state_vector().await;
+        let decoded = SyncMessage::decode_all(&sv_msg).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+        assert!(matches!(decoded[0], SyncMessage::SyncStep1(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_full_state() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Add some data
+        {
+            let workspace = room.workspace.write().await;
+            workspace
+                .set_file("test.md", FileMetadata::new(Some("Test".to_string())))
+                .unwrap();
+        }
+
+        let full_state_msg = room.get_full_state().await;
+        let decoded = SyncMessage::decode_all(&full_state_msg).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+        match &decoded[0] {
+            SyncMessage::SyncStep2(state) => {
+                assert!(state.len() > 2, "Full state should contain data");
+            }
+            _ => panic!("Expected SyncStep2"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_body_state_vector() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let sv_msg = room.get_body_state_vector("test.md").await;
+        let decoded = SyncMessage::decode_all(&sv_msg).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+        assert!(matches!(decoded[0], SyncMessage::SyncStep1(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_body_full_state() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        // Add body content
+        {
+            let body_docs = room.body_docs.read().await;
+            let doc = body_docs.get_or_create("test.md");
+            let _ = doc.set_body("Test content");
+        }
+
+        let full_state_msg = room.get_body_full_state("test.md").await;
+        let decoded = SyncMessage::decode_all(&full_state_msg).unwrap();
+
+        assert_eq!(decoded.len(), 1);
+        match &decoded[0] {
+            SyncMessage::SyncStep2(state) => {
+                assert!(state.len() > 2, "Full state should contain body data");
+            }
+            _ => panic!("Expected SyncStep2"),
+        }
+    }
+
+    // =========================================================================
+    // Control Message Broadcast Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_broadcast_control_message() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let mut control_rx = room.subscribe_control();
+
+        room.broadcast_control_message(ControlMessage::SyncComplete { files_synced: 42 })
+            .await;
+
+        let msg = control_rx.try_recv();
+        assert!(msg.is_ok());
+
+        match msg.unwrap() {
+            ControlMessage::SyncComplete { files_synced } => {
+                assert_eq!(files_synced, 42);
+            }
+            _ => panic!("Expected SyncComplete message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_progress_tracking() {
+        let room = SyncRoom::in_memory("test-workspace");
+
+        let mut control_rx = room.subscribe_control();
+
+        // Create a client workspace with multiple files
+        let client_storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let client_workspace = WorkspaceCrdt::new(client_storage);
+        client_workspace
+            .set_file("file1.md", FileMetadata::new(Some("File 1".to_string())))
+            .unwrap();
+        client_workspace
+            .set_file("file2.md", FileMetadata::new(Some("File 2".to_string())))
+            .unwrap();
+
+        // First, initiate sync with SyncStep1 (resets progress counter)
+        let empty_sv = Vec::new();
+        let init_msg = SyncMessage::SyncStep1(empty_sv).encode();
+        let _ = room.handle_message(&init_msg).await;
+
+        // Send update with the files
+        let update = client_workspace.encode_state_as_update();
+        let msg = SyncMessage::SyncStep2(update).encode();
+        let _ = room.handle_message(&msg).await;
+
+        // Should have received SyncProgress message
+        // (may need to drain initial messages first)
+        let mut found_progress = false;
+        while let Ok(ctrl_msg) = control_rx.try_recv() {
+            if let ControlMessage::SyncProgress { completed, total } = ctrl_msg {
+                assert!(completed > 0);
+                assert!(total > 0);
+                found_progress = true;
+                break;
+            }
+        }
+        assert!(found_progress, "Should have received SyncProgress message");
+    }
+
+    // =========================================================================
+    // ControlMessage Serialization Tests
+    // =========================================================================
+
+    #[test]
+    fn test_control_message_peer_joined_serialization() {
+        let msg = ControlMessage::PeerJoined {
+            guest_id: "guest-123".to_string(),
+            peer_count: 3,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("peer_joined"));
+        assert!(json.contains("guest-123"));
+        assert!(json.contains("3"));
+
+        let deserialized: ControlMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ControlMessage::PeerJoined {
+                guest_id,
+                peer_count,
+            } => {
+                assert_eq!(guest_id, "guest-123");
+                assert_eq!(peer_count, 3);
+            }
+            _ => panic!("Expected PeerJoined"),
+        }
+    }
+
+    #[test]
+    fn test_control_message_sync_complete_serialization() {
+        let msg = ControlMessage::SyncComplete { files_synced: 100 };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("sync_complete"));
+        assert!(json.contains("100"));
+
+        let deserialized: ControlMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ControlMessage::SyncComplete { files_synced } => {
+                assert_eq!(files_synced, 100);
+            }
+            _ => panic!("Expected SyncComplete"),
+        }
+    }
+
+    #[test]
+    fn test_control_message_session_ended_serialization() {
+        let msg = ControlMessage::SessionEnded;
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("session_ended"));
+
+        let deserialized: ControlMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, ControlMessage::SessionEnded));
+    }
+}

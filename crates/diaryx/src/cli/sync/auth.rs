@@ -209,3 +209,246 @@ pub fn handle_logout(config: &Config) {
         println!("  diaryx sync login {}", email);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // URL Construction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_login_url_construction() {
+        let server_url = "https://sync.diaryx.org";
+        let url = format!("{}/auth/magic-link", server_url);
+        assert_eq!(url, "https://sync.diaryx.org/auth/magic-link");
+    }
+
+    #[test]
+    fn test_login_url_with_trailing_slash() {
+        // If server URL had trailing slash, we'd get double slash
+        // This test documents current behavior
+        let server_url = "https://sync.diaryx.org/";
+        let url = format!("{}/auth/magic-link", server_url);
+        // Note: Current code doesn't strip trailing slash
+        assert_eq!(url, "https://sync.diaryx.org//auth/magic-link");
+    }
+
+    #[test]
+    fn test_verify_url_construction() {
+        let server_url = "https://sync.diaryx.org";
+        let token = "abc123";
+        let device = "CLI";
+
+        let url = format!(
+            "{}/auth/verify?token={}&device_name={}",
+            server_url,
+            urlencoding::encode(token),
+            urlencoding::encode(device)
+        );
+
+        assert_eq!(
+            url,
+            "https://sync.diaryx.org/auth/verify?token=abc123&device_name=CLI"
+        );
+    }
+
+    #[test]
+    fn test_verify_url_encoding_special_chars() {
+        let server_url = "https://sync.diaryx.org";
+        let token = "token+with/special=chars";
+        let device = "My Device Name";
+
+        let url = format!(
+            "{}/auth/verify?token={}&device_name={}",
+            server_url,
+            urlencoding::encode(token),
+            urlencoding::encode(device)
+        );
+
+        assert!(url.contains("token%2Bwith%2Fspecial%3Dchars"));
+        assert!(url.contains("My%20Device%20Name"));
+    }
+
+    #[test]
+    fn test_logout_url_construction() {
+        let server = "https://sync.diaryx.org";
+        let url = format!("{}/auth/logout", server);
+        assert_eq!(url, "https://sync.diaryx.org/auth/logout");
+    }
+
+    // =========================================================================
+    // Response Parsing Tests
+    // =========================================================================
+
+    #[test]
+    fn test_verify_response_parsing_token_field() {
+        let json = r#"{"token": "session-token-123"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let session_token = parsed
+            .get("token")
+            .or_else(|| parsed.get("session_token"))
+            .and_then(|v| v.as_str());
+
+        assert_eq!(session_token, Some("session-token-123"));
+    }
+
+    #[test]
+    fn test_verify_response_parsing_session_token_fallback() {
+        // Test fallback to session_token field
+        let json = r#"{"session_token": "session-token-456"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let session_token = parsed
+            .get("token")
+            .or_else(|| parsed.get("session_token"))
+            .and_then(|v| v.as_str());
+
+        assert_eq!(session_token, Some("session-token-456"));
+    }
+
+    #[test]
+    fn test_verify_response_parsing_nested_user() {
+        let json = r#"{
+            "token": "token123",
+            "user": {
+                "email": "user@example.com",
+                "id": "user-id-abc"
+            }
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        // Extract email from nested user object
+        let email = parsed
+            .get("user")
+            .and_then(|u| u.get("email"))
+            .and_then(|v| v.as_str())
+            .or_else(|| parsed.get("email").and_then(|v| v.as_str()));
+
+        assert_eq!(email, Some("user@example.com"));
+
+        // Extract user_id from nested user object
+        let user_id = parsed
+            .get("user")
+            .and_then(|u| u.get("id"))
+            .and_then(|v| v.as_str());
+
+        assert_eq!(user_id, Some("user-id-abc"));
+    }
+
+    #[test]
+    fn test_verify_response_parsing_flat_email() {
+        // Test email at root level (fallback)
+        let json = r#"{"token": "token", "email": "flat@example.com"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let email = parsed
+            .get("user")
+            .and_then(|u| u.get("email"))
+            .and_then(|v| v.as_str())
+            .or_else(|| parsed.get("email").and_then(|v| v.as_str()));
+
+        assert_eq!(email, Some("flat@example.com"));
+    }
+
+    #[test]
+    fn test_verify_response_parsing_workspace_id() {
+        let json = r#"{
+            "token": "token",
+            "workspace_id": "ws-123"
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let workspace_id = parsed
+            .get("workspace_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        assert_eq!(workspace_id, Some("ws-123".to_string()));
+    }
+
+    #[test]
+    fn test_verify_response_fallback_to_user_id() {
+        // When workspace_id is absent, use user.id as fallback
+        let json = r#"{
+            "token": "token",
+            "user": {"id": "user-123"}
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let user_id = parsed
+            .get("user")
+            .and_then(|u| u.get("id"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let workspace_id = parsed
+            .get("workspace_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or(user_id);
+
+        assert_eq!(workspace_id, Some("user-123".to_string()));
+    }
+
+    #[test]
+    fn test_verify_response_no_token_returns_none() {
+        let json = r#"{"email": "test@example.com"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let session_token = parsed
+            .get("token")
+            .or_else(|| parsed.get("session_token"))
+            .and_then(|v| v.as_str());
+
+        assert!(session_token.is_none());
+    }
+
+    // =========================================================================
+    // Default Server URL Tests
+    // =========================================================================
+
+    #[test]
+    fn test_default_sync_server_constant() {
+        assert_eq!(DEFAULT_SYNC_SERVER, "https://sync.diaryx.org");
+    }
+
+    #[test]
+    fn test_server_url_fallback_logic() {
+        let config = Config::default();
+        let explicit_server: Option<&str> = None;
+
+        let server_url = explicit_server
+            .or(config.sync_server_url.as_deref())
+            .unwrap_or(DEFAULT_SYNC_SERVER);
+
+        assert_eq!(server_url, "https://sync.diaryx.org");
+    }
+
+    #[test]
+    fn test_server_url_uses_explicit() {
+        let config = Config::default();
+        let explicit_server = Some("https://custom.server.com");
+
+        let server_url = explicit_server
+            .or(config.sync_server_url.as_deref())
+            .unwrap_or(DEFAULT_SYNC_SERVER);
+
+        assert_eq!(server_url, "https://custom.server.com");
+    }
+
+    #[test]
+    fn test_server_url_uses_config() {
+        let mut config = Config::default();
+        config.sync_server_url = Some("https://config.server.com".to_string());
+        let explicit_server: Option<&str> = None;
+
+        let server_url = explicit_server
+            .or(config.sync_server_url.as_deref())
+            .unwrap_or(DEFAULT_SYNC_SERVER);
+
+        assert_eq!(server_url, "https://config.server.com");
+    }
+}

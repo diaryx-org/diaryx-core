@@ -138,3 +138,199 @@ pub fn handle_config(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a default config for testing.
+    fn create_test_config() -> Config {
+        Config::default()
+    }
+
+    // =========================================================================
+    // Config State Tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_with_all_fields() {
+        let mut config = create_test_config();
+        config.sync_server_url = Some("https://custom.server.com".to_string());
+        config.sync_email = Some("test@example.com".to_string());
+        config.sync_session_token = Some("token123".to_string());
+        config.sync_workspace_id = Some("workspace-abc".to_string());
+
+        // Verify all fields are set
+        assert_eq!(
+            config.sync_server_url.as_deref(),
+            Some("https://custom.server.com")
+        );
+        assert_eq!(config.sync_email.as_deref(), Some("test@example.com"));
+        assert!(config.sync_session_token.is_some());
+        assert_eq!(config.sync_workspace_id.as_deref(), Some("workspace-abc"));
+    }
+
+    #[test]
+    fn test_config_default_values() {
+        let config = create_test_config();
+
+        assert!(config.sync_server_url.is_none());
+        assert!(config.sync_email.is_none());
+        assert!(config.sync_session_token.is_none());
+        assert!(config.sync_workspace_id.is_none());
+    }
+
+    #[test]
+    fn test_config_logged_in_status() {
+        let mut config = create_test_config();
+
+        // Not logged in by default
+        assert!(config.sync_session_token.is_none());
+
+        // Set token to simulate logged in state
+        config.sync_session_token = Some("token".to_string());
+        assert!(config.sync_session_token.is_some());
+    }
+
+    #[test]
+    fn test_config_partial_setup() {
+        let mut config = create_test_config();
+
+        // User has logged in but workspace ID not yet set
+        config.sync_email = Some("user@example.com".to_string());
+        config.sync_session_token = Some("token".to_string());
+        config.sync_server_url = Some("https://sync.diaryx.org".to_string());
+        // workspace_id is None
+
+        assert!(config.sync_session_token.is_some());
+        assert!(config.sync_workspace_id.is_none());
+    }
+
+    // =========================================================================
+    // Config Update Logic Tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_update_server_url() {
+        let mut config = create_test_config();
+
+        // Simulate updating server URL
+        let new_server = Some("https://new.server.com".to_string());
+        if let Some(s) = new_server {
+            config.sync_server_url = Some(s);
+        }
+
+        assert_eq!(
+            config.sync_server_url.as_deref(),
+            Some("https://new.server.com")
+        );
+    }
+
+    #[test]
+    fn test_config_update_workspace_id() {
+        let mut config = create_test_config();
+
+        // Simulate updating workspace ID
+        let new_workspace = Some("new-workspace-id".to_string());
+        if let Some(wid) = new_workspace {
+            config.sync_workspace_id = Some(wid);
+        }
+
+        assert_eq!(
+            config.sync_workspace_id.as_deref(),
+            Some("new-workspace-id")
+        );
+    }
+
+    #[test]
+    fn test_config_update_both_fields() {
+        let mut config = create_test_config();
+
+        config.sync_server_url = Some("https://server.com".to_string());
+        config.sync_workspace_id = Some("workspace-id".to_string());
+
+        assert!(config.sync_server_url.is_some());
+        assert!(config.sync_workspace_id.is_some());
+    }
+
+    #[test]
+    fn test_config_no_changes_when_none() {
+        let config = create_test_config();
+
+        // Simulate handle_config with no options
+        let server: Option<String> = None;
+        let workspace_id: Option<String> = None;
+
+        let mut changes = Vec::new();
+        if let Some(s) = server {
+            changes.push(format!("Server URL: {}", s));
+        }
+        if let Some(wid) = workspace_id {
+            changes.push(format!("Workspace ID: {}", wid));
+        }
+
+        assert!(changes.is_empty(), "No changes should be recorded");
+        assert!(config.sync_server_url.is_none()); // Config unchanged
+    }
+
+    // =========================================================================
+    // Status Display Logic Tests
+    // =========================================================================
+
+    #[test]
+    fn test_status_session_active_display() {
+        let mut config = create_test_config();
+        config.sync_session_token = Some("token".to_string());
+
+        let session_display = if config.sync_session_token.is_some() {
+            "active"
+        } else {
+            "(not logged in)"
+        };
+
+        assert_eq!(session_display, "active");
+    }
+
+    #[test]
+    fn test_status_session_inactive_display() {
+        let config = create_test_config();
+
+        let session_display = if config.sync_session_token.is_some() {
+            "active"
+        } else {
+            "(not logged in)"
+        };
+
+        assert_eq!(session_display, "(not logged in)");
+    }
+
+    #[test]
+    fn test_status_optional_field_display() {
+        let config = create_test_config();
+
+        // Test display fallback for None values
+        let server_display = config.sync_server_url.as_deref().unwrap_or("(not set)");
+        let email_display = config.sync_email.as_deref().unwrap_or("(not set)");
+        let workspace_display = config.sync_workspace_id.as_deref().unwrap_or("(not set)");
+
+        assert_eq!(server_display, "(not set)");
+        assert_eq!(email_display, "(not set)");
+        assert_eq!(workspace_display, "(not set)");
+    }
+
+    #[test]
+    fn test_status_with_configured_fields() {
+        let mut config = create_test_config();
+        config.sync_server_url = Some("https://sync.example.com".to_string());
+        config.sync_email = Some("user@example.com".to_string());
+        config.sync_workspace_id = Some("ws-123".to_string());
+
+        let server_display = config.sync_server_url.as_deref().unwrap_or("(not set)");
+        let email_display = config.sync_email.as_deref().unwrap_or("(not set)");
+        let workspace_display = config.sync_workspace_id.as_deref().unwrap_or("(not set)");
+
+        assert_eq!(server_display, "https://sync.example.com");
+        assert_eq!(email_display, "user@example.com");
+        assert_eq!(workspace_display, "ws-123");
+    }
+}

@@ -42,7 +42,12 @@
     waitForInitialSync,
     onSyncProgress,
     onSyncStatus,
+    setWorkspaceServer,
+    setWorkspaceId,
+    getAllFiles,
+    proactivelySyncBodies,
   } from "$lib/crdt/workspaceCrdtBridge";
+  import { getDefaultWorkspace } from "$lib/auth";
 
   interface Props {
     open?: boolean;
@@ -451,17 +456,58 @@
           break;
       }
 
-      // Wait for sync to complete (30 second timeout)
+      // IMPORTANT: Now establish the WebSocket sync connection
+      // The CRDT is populated with local files, now we need to connect to the server
+      const defaultWorkspace = getDefaultWorkspace();
+      const workspaceId = defaultWorkspace?.id ?? null;
+
+      if (workspaceId) {
+        console.log("[SyncWizard] Establishing sync connection for workspace:", workspaceId);
+
+        // Set workspace ID for proper document routing
+        await setWorkspaceId(workspaceId);
+
+        // Set server URL to create SyncTransport and connect
+        // This triggers the WebSocket connection that syncs CRDT data to server
+        await setWorkspaceServer(serverUrl);
+      } else {
+        console.warn("[SyncWizard] No workspace ID available after authentication");
+      }
+
+      // Wait for metadata sync to complete (30 second timeout)
       // This ensures the wizard shows real progress and doesn't close prematurely
-      console.log("[SyncWizard] Waiting for sync to complete...");
+      console.log("[SyncWizard] Waiting for metadata sync to complete...");
       const syncResult = await waitForInitialSync(30000);
 
       if (!syncResult) {
-        console.warn("[SyncWizard] Sync timed out, continuing in background");
+        console.warn("[SyncWizard] Metadata sync timed out, continuing in background");
         toast.info("Sync continuing in background", {
           description: "Check the sync indicator in the header for progress.",
         });
-      } else {
+      }
+
+      // For sync_local and merge modes, proactively sync body content
+      // This uploads the actual file content to the server, not just metadata
+      if (initMode === 'sync_local' || initMode === 'merge') {
+        console.log("[SyncWizard] Starting body content sync...");
+        syncStatusText = "Uploading file contents...";
+
+        try {
+          const allFiles = await getAllFiles();
+          const filePaths = Array.from(allFiles.keys());
+
+          if (filePaths.length > 0) {
+            console.log(`[SyncWizard] Syncing body content for ${filePaths.length} files`);
+            // Use concurrency of 5 for faster uploads
+            await proactivelySyncBodies(filePaths, 5);
+            console.log("[SyncWizard] Body content sync complete");
+          }
+        } catch (e) {
+          console.warn("[SyncWizard] Body sync error (continuing anyway):", e);
+        }
+      }
+
+      if (syncResult) {
         toast.success("Sync setup complete", {
           description: "Your workspace is now syncing.",
         });

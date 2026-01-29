@@ -163,6 +163,11 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
 
   // Create new bridge if URL is set
   if (url && _backend) {
+    // Reset initial sync tracking since we're starting a new sync connection
+    // This is important when transitioning from local-only mode to sync mode
+    _initialSyncComplete = false;
+    _initialSyncResolvers = [];
+
     const workspaceDocName = _workspaceId ? `${_workspaceId}:workspace` : 'workspace';
     const wsUrl = toWebSocketUrl(url);
     console.log('[WorkspaceCrdtBridge] Creating SyncTransport for workspace:', wsUrl, 'docName:', workspaceDocName);
@@ -178,10 +183,11 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
         notifySyncStatus(connected ? 'syncing' : 'idle');
       },
       onSynced: async () => {
-        console.log('[WorkspaceCrdtBridge] Initial sync complete');
+        console.log('[WorkspaceCrdtBridge] Initial sync complete (via setWorkspaceServer)');
         notifySyncStatus('synced');
         notifyFileChange(null, null);
         await updateFileIndexFromCrdt();
+        markInitialSyncComplete();
       },
       onFilesChanged: () => notifyFileChange(null, null),
       onProgress: (completed, total) => {
@@ -928,12 +934,29 @@ async function subscribeToBodyViaMultiplexed(canonicalPath: string): Promise<voi
     await multiplexedBodySync.connect();
   }
 
-  // Track existing content for echo detection (but don't load from disk yet)
+  // IMPORTANT: Load body content from disk into CRDT BEFORE syncing.
+  // This ensures our local content is in the CRDT when sync starts, so the
+  // Y-CRDT protocol can send it to the server (for uploads) or merge it
+  // with server content (for bidirectional sync).
   try {
     const existingBodyContent = await rustApi.getBodyContent(canonicalPath);
     if (existingBodyContent && existingBodyContent.length > 0) {
+      // CRDT already has content - just track for echo detection
       await syncHelpers.trackContent(_backend!, canonicalPath, existingBodyContent);
       console.log(`[MultiplexedBodySync] Body CRDT already has ${existingBodyContent.length} chars for ${canonicalPath}`);
+    } else if (backendApi && !shareSessionStore.isGuest) {
+      // CRDT is empty and we're a host - load from disk BEFORE syncing
+      // This is critical for uploads: content must be in CRDT before sync protocol runs
+      try {
+        const entry = await backendApi.getEntry(canonicalPath);
+        if (entry && entry.content && entry.content.length > 0) {
+          console.log(`[MultiplexedBodySync] Loading ${entry.content.length} chars from disk into CRDT BEFORE sync for ${canonicalPath}`);
+          await syncHelpers.trackContent(_backend!, canonicalPath, entry.content);
+          await rustApi.setBodyContent(canonicalPath, entry.content);
+        }
+      } catch (diskErr) {
+        console.log(`[MultiplexedBodySync] Could not load from disk for ${canonicalPath}:`, diskErr);
+      }
     }
   } catch (err) {
     console.warn(`[MultiplexedBodySync] Could not get body content for ${canonicalPath}:`, err);

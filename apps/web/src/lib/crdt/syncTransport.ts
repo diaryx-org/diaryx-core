@@ -98,8 +98,14 @@ export class SyncTransport {
             const msg = JSON.parse(event.data);
             if (msg.type === 'sync_progress') {
               this.options.onProgress?.(msg.completed, msg.total);
+            } else if (msg.type === 'sync_complete') {
+              // Handle server-side sync complete notification
+              if (!this.synced) {
+                this.synced = true;
+                this.options.onSynced?.();
+              }
             }
-            // Other control messages can be handled here
+            // Other control messages (peer_joined, peer_left) can be handled here
           } catch (e) {
             console.warn('[SyncTransport] Failed to parse control message:', e);
           }
@@ -330,11 +336,11 @@ export class SyncTransport {
         this.ws?.send(new Uint8Array(result.data.response));
       }
 
-      // Handle sync complete notification
-      if (result.data?.sync_complete && !this.synced) {
-        this.synced = true;
-        this.options.onSynced?.();
-      }
+      // NOTE: We intentionally do NOT trigger onSynced from Rust's sync_complete flag here.
+      // The Rust flag fires after receiving just one message (initial handshake), but that's
+      // BEFORE the client has finished sending its local data to the server.
+      // Instead, we wait for the server's sync_complete JSON message (handled in onmessage)
+      // which indicates the server has received all our data.
 
       // Handle changed files notification
       if (result.data?.changed_files && result.data.changed_files.length > 0) {

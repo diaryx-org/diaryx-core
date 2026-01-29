@@ -2300,18 +2300,29 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                                     let parsed_link = link_parser::parse_link(raw_value);
                                     let path_to_normalize = &parsed_link.path;
 
-                                    // Resolve relative path to canonical (matching fileMap keys)
-                                    // Also fixes corrupted absolute paths from previous sync issues
-                                    let resolved = normalize_contents_path(
-                                        file_dir,
-                                        path_to_normalize,
-                                        &base_path,
-                                    );
+                                    // If the path is already a workspace-root path (canonical),
+                                    // use it directly. Only resolve relative paths.
+                                    // This prevents doubling like Archive/Archive/file.md
+                                    let resolved = if parsed_link.path_type
+                                        == link_parser::PathType::WorkspaceRoot
+                                    {
+                                        // Already canonical - use as-is
+                                        path_to_normalize.to_string()
+                                    } else {
+                                        // Relative path - resolve against parent directory
+                                        // Also fixes corrupted absolute paths from previous sync issues
+                                        normalize_contents_path(
+                                            file_dir,
+                                            path_to_normalize,
+                                            &base_path,
+                                        )
+                                    };
                                     log::debug!(
-                                        "[InitializeWorkspaceCrdt] contents: {} + {} (from '{}') -> {}",
+                                        "[InitializeWorkspaceCrdt] contents: {} + {} (from '{}', type={:?}) -> {}",
                                         file_dir.display(),
                                         path_to_normalize,
                                         raw_value,
+                                        parsed_link.path_type,
                                         resolved
                                     );
                                     resolved
