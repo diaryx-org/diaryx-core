@@ -29,8 +29,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::async_runtime::Mutex;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
+
+/// Message to send over the WebSocket (from event callback).
+#[derive(Debug, Clone)]
+pub struct OutgoingSyncMessage {
+    /// Document name ("workspace" for metadata, file path for body)
+    pub doc_name: String,
+    /// Encoded sync message bytes
+    pub message: Vec<u8>,
+    /// Whether this is a body doc (true) or workspace (false)
+    pub is_body: bool,
+}
 
 /// Sync transport configuration.
 #[derive(Clone)]
@@ -47,6 +59,11 @@ pub struct SyncConfig {
     pub storage: Arc<dyn CrdtStorage>,
     /// Workspace root path for file operations
     pub workspace_root: PathBuf,
+    /// Pre-built sync manager (optional).
+    /// When provided, the sync transport will use this instead of creating its own.
+    /// This ensures the same CRDT instances are used for both command execution
+    /// and WebSocket sync, preventing state divergence.
+    pub sync_manager: Option<Arc<RustSyncManager<SyncToAsyncFs<RealFileSystem>>>>,
 }
 
 /// Status of the sync connection.
@@ -96,6 +113,9 @@ pub struct SyncTransport {
     running: Arc<AtomicBool>,
     /// Handle to the background task.
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// Channel sender for outgoing sync messages from local edits.
+    /// This allows the main Diaryx instance to send messages to the WebSocket.
+    outgoing_tx: Option<mpsc::UnboundedSender<OutgoingSyncMessage>>,
 }
 
 impl SyncTransport {
@@ -106,7 +126,16 @@ impl SyncTransport {
             status: Arc::new(Mutex::new(SyncStatus::Disconnected)),
             running: Arc::new(AtomicBool::new(false)),
             task_handle: None,
+            outgoing_tx: None,
         }
+    }
+
+    /// Get a clone of the outgoing message sender.
+    ///
+    /// Use this to send local edit messages to the WebSocket.
+    /// Returns None if not connected.
+    pub fn get_outgoing_sender(&self) -> Option<mpsc::UnboundedSender<OutgoingSyncMessage>> {
+        self.outgoing_tx.clone()
     }
 
     /// Get the current sync status.
@@ -138,9 +167,13 @@ impl SyncTransport {
         let status = Arc::clone(&self.status);
         let running = Arc::clone(&self.running);
 
+        // Create channel for outgoing messages from local edits
+        let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
+        self.outgoing_tx = Some(outgoing_tx);
+
         // Spawn the WebSocket task
         let handle = tauri::async_runtime::spawn(async move {
-            run_sync_loop(config, status, running).await;
+            run_sync_loop(config, status, running, outgoing_rx).await;
         });
 
         self.task_handle = Some(handle);
@@ -282,12 +315,22 @@ async fn run_sync_loop(
     config: SyncConfig,
     status: Arc<Mutex<SyncStatus>>,
     running: Arc<AtomicBool>,
+    outgoing_rx: mpsc::UnboundedReceiver<OutgoingSyncMessage>,
 ) {
     let mut reconnect_attempts: u32 = 0;
     let max_reconnect_attempts: u32 = 10;
 
-    // Create sync manager with shared CRDT storage
-    let sync_manager = create_sync_manager(&config);
+    // Wrap receiver in Arc<Mutex> so it survives reconnection attempts
+    let outgoing_rx = Arc::new(tokio::sync::Mutex::new(outgoing_rx));
+
+    // Use provided sync manager or create a new one as fallback.
+    // When a sync_manager is provided from the cached Diaryx instance,
+    // this ensures both command execution and WebSocket sync share
+    // the same CRDT state, preventing divergence issues.
+    let sync_manager = config.sync_manager.clone().unwrap_or_else(|| {
+        log::info!("[SyncTransport] No shared sync_manager provided, creating new one (fallback)");
+        create_sync_manager(&config)
+    });
 
     // Import local file bodies into CRDTs before syncing
     {
@@ -365,6 +408,7 @@ async fn run_sync_loop(
                     Arc::clone(&sync_manager),
                     config.clone(),
                     Arc::clone(&running),
+                    Arc::clone(&outgoing_rx),
                 );
 
                 // Run both until BOTH complete (not just one)
@@ -630,11 +674,14 @@ where
 ///
 /// This loads the file list from the workspace CRDT (which should now be populated
 /// after the initial metadata sync) and syncs body content for all files.
+///
+/// Also handles outgoing messages from local edits via the `outgoing_rx` channel.
 async fn run_body_sync<S>(
     ws_stream: S,
     sync_manager: Arc<RustSyncManager<SyncToAsyncFs<RealFileSystem>>>,
     config: SyncConfig,
     running: Arc<AtomicBool>,
+    outgoing_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<OutgoingSyncMessage>>>,
 ) -> &'static str
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -643,6 +690,7 @@ where
     <S as futures_util::Sink<Message>>::Error: std::fmt::Display,
 {
     let (mut write, mut read) = ws_stream.split();
+    let mut outgoing = outgoing_rx.lock().await;
 
     // Get list of files from workspace CRDT
     // NOTE: This now runs AFTER metadata initial sync, so the file list should be populated
@@ -676,6 +724,7 @@ where
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
+            // Handle incoming messages from server
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
@@ -722,6 +771,32 @@ where
                     _ => {}
                 }
             }
+            // Handle outgoing messages from local edits
+            outgoing_msg = outgoing.recv() => {
+                match outgoing_msg {
+                    Some(msg) => {
+                        if msg.is_body {
+                            // Send body sync message (multiplexed)
+                            let framed = frame_body_message(&msg.doc_name, &msg.message);
+                            if let Err(e) = write.send(Message::Binary(framed.into())).await {
+                                log::error!("[SyncTransport] Failed to send outgoing body message for {}: {}", msg.doc_name, e);
+                            } else {
+                                log::info!("[SyncTransport] Sent local body update for {}, {} bytes", msg.doc_name, msg.message.len());
+                            }
+                        } else {
+                            // Metadata messages would go to the metadata WebSocket
+                            // For now, log a warning since we don't have access to metadata write here
+                            log::warn!("[SyncTransport] Received metadata outgoing message for {} but can't send from body loop", msg.doc_name);
+                        }
+                    }
+                    None => {
+                        // Channel closed, transport is being destroyed
+                        log::info!("[SyncTransport] Outgoing channel closed");
+                        return "channel_closed";
+                    }
+                }
+            }
+            // Keep connection alive
             _ = tokio::time::sleep(Duration::from_secs(30)) => {
                 // Send ping to keep connection alive
                 if let Err(e) = write.send(Message::Ping(vec![].into())).await {
@@ -768,6 +843,7 @@ mod tests {
             write_to_disk: true,
             storage: Arc::new(MemoryStorage::new()),
             workspace_root: PathBuf::from("/tmp/test"),
+            sync_manager: None,
         }
     }
 

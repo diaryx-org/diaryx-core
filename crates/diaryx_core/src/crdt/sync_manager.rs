@@ -86,6 +86,10 @@ pub struct RustSyncManager<FS: AsyncFileSystem> {
     // Metadata echo detection - tracks last known metadata to detect our own updates
     last_known_metadata: RwLock<HashMap<String, FileMetadata>>,
 
+    // Last sent state vector per body doc (for delta encoding).
+    // This tracks what we've already sent so we only send new changes.
+    last_sent_body_sv: RwLock<HashMap<String, Vec<u8>>>,
+
     // Initial sync tracking
     initial_sync_complete: AtomicBool,
 
@@ -110,6 +114,7 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
             body_synced: RwLock::new(HashSet::new()),
             last_known_content: RwLock::new(HashMap::new()),
             last_known_metadata: RwLock::new(HashMap::new()),
+            last_sent_body_sv: RwLock::new(HashMap::new()),
             initial_sync_complete: AtomicBool::new(false),
             event_callback: RwLock::new(None),
         }
@@ -163,6 +168,9 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
     ///
     /// The `doc_name` is the canonical file path (e.g., "workspace/notes.md").
     /// The `content` is used only for echo detection tracking.
+    ///
+    /// This method uses delta encoding: it tracks the last-sent state vector
+    /// and only sends changes since then, not the full document state.
     pub fn emit_body_update(&self, doc_name: &str, content: &str) -> Result<()> {
         log::debug!(
             "[SyncManager] emit_body_update: doc_name='{}', content_preview='{}'",
@@ -179,8 +187,21 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
         // Get the body doc (should already exist and have content set)
         let body_doc = self.body_manager.get_or_create(doc_name);
 
-        // Encode current state as update (without calling set_body again!)
-        let update = body_doc.encode_state_as_update();
+        // Use delta encoding: only send changes since last sent state vector.
+        // This is more efficient than sending the full state every time.
+        let update = {
+            let sv_map = self.last_sent_body_sv.read().unwrap();
+            if let Some(last_sv) = sv_map.get(doc_name) {
+                // We have a previous state vector, send only the diff
+                body_doc
+                    .encode_diff(last_sv)
+                    .unwrap_or_else(|_| body_doc.encode_state_as_update())
+            } else {
+                // First time sending for this doc, send full state
+                body_doc.encode_state_as_update()
+            }
+        };
+
         if update.is_empty() {
             log::debug!(
                 "[SyncManager] emit_body_update: update is empty for doc_name='{}'",
@@ -189,8 +210,15 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
             return Ok(());
         }
 
+        // Store new state vector for next delta calculation
+        {
+            let new_sv = body_doc.encode_state_vector();
+            let mut sv_map = self.last_sent_body_sv.write().unwrap();
+            sv_map.insert(doc_name.to_string(), new_sv);
+        }
+
         log::debug!(
-            "[SyncManager] emit_body_update: sending {} bytes for doc_name='{}'",
+            "[SyncManager] emit_body_update: sending {} bytes (delta) for doc_name='{}'",
             update.len(),
             doc_name
         );
@@ -560,6 +588,15 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
             synced.insert(doc_name.to_string());
         }
 
+        // Update last sent state vector after receiving remote updates.
+        // This ensures our next emit_body_update() will calculate deltas
+        // from the correct baseline (including the remote changes we just received).
+        {
+            let new_sv = body_doc.encode_state_vector();
+            let mut sv_map = self.last_sent_body_sv.write().unwrap();
+            sv_map.insert(doc_name.to_string(), new_sv);
+        }
+
         Ok(BodySyncResult {
             response,
             content: if content_changed && !is_echo {
@@ -738,6 +775,11 @@ impl<FS: AsyncFileSystem> RustSyncManager<FS> {
         {
             let mut last_known = self.last_known_metadata.write().unwrap();
             last_known.clear();
+        }
+
+        {
+            let mut sv_map = self.last_sent_body_sv.write().unwrap();
+            sv_map.clear();
         }
 
         log::info!("[SyncManager] Reset complete");

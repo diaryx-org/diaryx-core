@@ -970,6 +970,40 @@ async function subscribeToBodyViaMultiplexed(canonicalPath: string): Promise<voi
         console.log(`[MultiplexedBodySync] Sync complete: ${filesSynced} files`);
         notifySyncStatus('synced');
       },
+      // Handle messages for files we're not actively subscribed to
+      // This ensures updates from other clients (e.g., Tauri) are applied even if the file isn't open
+      onUnsubscribedMessage: async (filePath: string, message: Uint8Array) => {
+        if (!_backend) return;
+
+        console.log(`[MultiplexedBodySync] Processing unsubscribed message for ${filePath}, ${message.length} bytes`);
+
+        try {
+          // Apply the update to the Rust CRDT without disk writes (we're not actively editing this file)
+          const response = await _backend.execute({
+            type: 'HandleBodySyncMessage' as any,
+            params: {
+              doc_name: filePath,
+              message: Array.from(message),
+              write_to_disk: !shareSessionStore.isGuest, // Write to disk for hosts
+            },
+          } as any);
+
+          if ((response.type as string) === 'BodySyncResult') {
+            const result = response as any;
+            // Send response if Rust returns one (e.g., SyncStep2 in response to SyncStep1)
+            if (result.data?.response && result.data.response.length > 0) {
+              multiplexedBodySync?.send(filePath, new Uint8Array(result.data.response));
+            }
+            // Note: We don't notify body change callbacks here since the file isn't open
+            // The change will be visible when the user opens the file
+            if (result.data?.content && !result.data?.is_echo) {
+              console.log(`[MultiplexedBodySync] Applied remote update for unopened file ${filePath}, ${result.data.content.length} chars`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[MultiplexedBodySync] Failed to handle unsubscribed message for ${filePath}:`, err);
+        }
+      },
     });
     await multiplexedBodySync.connect();
   }

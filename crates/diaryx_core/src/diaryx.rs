@@ -308,11 +308,14 @@ impl<FS: AsyncFileSystem> Diaryx<FS> {
         self.sync_handler.as_ref()
     }
 
-    /// Get a reference to the sync manager (for internal use).
+    /// Get a reference to the sync manager.
     ///
     /// Returns `None` if CRDT support is not enabled or sync manager not configured.
+    ///
+    /// This is used by sync transports to share the same CRDT instances
+    /// between command execution and WebSocket sync.
     #[cfg(feature = "crdt")]
-    pub(crate) fn sync_manager(&self) -> Option<&Arc<crate::crdt::RustSyncManager<FS>>> {
+    pub fn sync_manager(&self) -> Option<&Arc<crate::crdt::RustSyncManager<FS>>> {
         self.sync_manager.as_ref()
     }
 

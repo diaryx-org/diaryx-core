@@ -2483,7 +2483,7 @@ pub fn is_guest_mode<R: Runtime>(app: AppHandle<R>) -> Result<bool, Serializable
 // WebSocket Sync Commands
 // ============================================================================
 
-use crate::websocket_sync::{SyncConfig, SyncTransport};
+use crate::websocket_sync::{OutgoingSyncMessage, SyncConfig, SyncTransport};
 
 /// State for WebSocket sync connections.
 /// Uses tokio::sync::Mutex to allow holding across await points.
@@ -2559,6 +2559,28 @@ pub async fn start_websocket_sync<R: Runtime>(
         })?
     };
 
+    // Extract sync_manager from cached Diaryx instance (if available).
+    // This ensures the WebSocket sync uses the same CRDT instances as command execution,
+    // preventing state divergence between the two.
+    let sync_manager = {
+        let diaryx_guard = crdt_state.diaryx.lock().map_err(|e| SerializableError {
+            kind: "SyncError".to_string(),
+            message: format!("Failed to acquire diaryx lock: {}", e),
+            path: None,
+        })?;
+        diaryx_guard
+            .as_ref()
+            .and_then(|d| d.sync_manager().cloned())
+    };
+
+    if sync_manager.is_some() {
+        log::info!("[start_websocket_sync] Using sync_manager from cached Diaryx instance");
+    } else {
+        log::warn!(
+            "[start_websocket_sync] No cached Diaryx or sync_manager available, will create new one"
+        );
+    }
+
     // Create new transport with CRDT storage
     let config = SyncConfig {
         server_url,
@@ -2567,6 +2589,7 @@ pub async fn start_websocket_sync<R: Runtime>(
         write_to_disk: true,
         storage,
         workspace_root: workspace_path,
+        sync_manager,
     };
 
     let mut transport = SyncTransport::new(config);
@@ -2576,7 +2599,59 @@ pub async fn start_websocket_sync<R: Runtime>(
         path: None,
     })?;
 
+    // Get the outgoing sender to connect local edits to the WebSocket
+    let outgoing_tx = transport.get_outgoing_sender();
+
     *transport_guard = Some(transport);
+
+    // Set up event callback on the cached Diaryx instance to send local edits
+    // to the WebSocket via the outgoing channel
+    if let Some(tx) = outgoing_tx {
+        let cached_diaryx = {
+            let diaryx_guard = crdt_state.diaryx.lock().map_err(|e| SerializableError {
+                kind: "SyncError".to_string(),
+                message: format!("Failed to acquire diaryx lock: {}", e),
+                path: None,
+            })?;
+            diaryx_guard.as_ref().map(Arc::clone)
+        };
+
+        if let Some(diaryx) = cached_diaryx {
+            log::info!("[start_websocket_sync] Setting up event callback for local edit sync");
+            let tx_clone = tx.clone();
+            diaryx.set_sync_event_callback(Arc::new(move |event| {
+                if let diaryx_core::fs::FileSystemEvent::SendSyncMessage {
+                    doc_name,
+                    message,
+                    is_body,
+                } = event
+                {
+                    let outgoing = OutgoingSyncMessage {
+                        doc_name: doc_name.clone(),
+                        message: message.clone(),
+                        is_body: *is_body,
+                    };
+                    if let Err(e) = tx_clone.send(outgoing) {
+                        log::warn!(
+                            "[start_websocket_sync] Failed to send outgoing message for {}: {}",
+                            doc_name,
+                            e
+                        );
+                    } else {
+                        log::debug!(
+                            "[start_websocket_sync] Queued outgoing {} message for {}, {} bytes",
+                            if *is_body { "body" } else { "metadata" },
+                            doc_name,
+                            message.len()
+                        );
+                    }
+                }
+            }));
+        } else {
+            log::warn!("[start_websocket_sync] No cached Diaryx instance to set up event callback");
+        }
+    }
+
     Ok(())
 }
 

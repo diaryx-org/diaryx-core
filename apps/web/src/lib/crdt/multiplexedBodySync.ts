@@ -29,6 +29,8 @@ export interface MultiplexedBodySyncOptions {
   onProgress?: (completed: number, total: number) => void;
   /** Callback when sync_complete is received from server. */
   onSyncComplete?: (filesSynced: number) => void;
+  /** Callback for unsubscribed file messages (allows applying updates for files not actively open). */
+  onUnsubscribedMessage?: (filePath: string, message: Uint8Array) => Promise<void>;
 }
 
 /**
@@ -147,6 +149,17 @@ export class MultiplexedBodySync {
       const callbacks = this.fileCallbacks.get(unframed.filePath);
       if (callbacks) {
         await callbacks.onMessage(unframed.message);
+      } else if (this.options.onUnsubscribedMessage) {
+        // Handle messages for files we're not actively subscribed to
+        // This ensures updates from other clients are applied even if the file isn't open
+        console.log(`[MultiplexedBodySync] Received message for unsubscribed file: ${unframed.filePath}, forwarding to handler`);
+        try {
+          await this.options.onUnsubscribedMessage(unframed.filePath, unframed.message);
+        } catch (err) {
+          console.warn(`[MultiplexedBodySync] Failed to handle unsubscribed message for ${unframed.filePath}:`, err);
+        }
+      } else {
+        console.log(`[MultiplexedBodySync] Dropped message for unsubscribed file: ${unframed.filePath} (no handler)`);
       }
     };
 
