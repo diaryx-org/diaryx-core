@@ -5,6 +5,7 @@
 
 mod auth;
 mod client;
+mod progress;
 mod status;
 
 use std::path::PathBuf;

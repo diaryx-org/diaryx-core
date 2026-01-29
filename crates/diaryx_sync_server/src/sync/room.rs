@@ -13,11 +13,26 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlMessage {
-    PeerJoined { guest_id: String, peer_count: usize },
-    PeerLeft { guest_id: String, peer_count: usize },
-    ReadOnlyChanged { read_only: bool },
+    PeerJoined {
+        guest_id: String,
+        peer_count: usize,
+    },
+    PeerLeft {
+        guest_id: String,
+        peer_count: usize,
+    },
+    ReadOnlyChanged {
+        read_only: bool,
+    },
     SessionEnded,
-    SyncProgress { completed: usize, total: usize },
+    SyncProgress {
+        completed: usize,
+        total: usize,
+    },
+    /// Initial sync has completed - all data has been exchanged
+    SyncComplete {
+        files_synced: usize,
+    },
 }
 
 /// Session context for a share session
@@ -624,7 +639,8 @@ impl SyncRoom {
         };
 
         let mut responses = Vec::new();
-        let body_docs = self.body_docs.write().await;
+        // Use read lock - BodyDocManager::get_or_create handles its own internal locking
+        let body_docs = self.body_docs.read().await;
         let doc = body_docs.get_or_create(file_path);
 
         for sync_msg in sync_messages {
@@ -700,7 +716,8 @@ impl SyncRoom {
 
     /// Get the full body state for a new client
     pub async fn get_body_full_state(&self, file_path: &str) -> Vec<u8> {
-        let body_docs = self.body_docs.write().await;
+        // Use read lock - get_or_create handles its own internal locking
+        let body_docs = self.body_docs.read().await;
         let doc = body_docs.get_or_create(file_path);
         let state = doc.encode_state_as_update();
         SyncMessage::SyncStep2(state).encode()
@@ -708,7 +725,8 @@ impl SyncRoom {
 
     /// Get body state vector for sync initiation
     pub async fn get_body_state_vector(&self, file_path: &str) -> Vec<u8> {
-        let body_docs = self.body_docs.write().await;
+        // Use read lock - get_or_create handles its own internal locking
+        let body_docs = self.body_docs.read().await;
         let doc = body_docs.get_or_create(file_path);
         let sv = doc.encode_state_vector();
         SyncMessage::SyncStep1(sv).encode()

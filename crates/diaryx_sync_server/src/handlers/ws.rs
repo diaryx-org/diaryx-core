@@ -212,7 +212,7 @@ pub async fn ws_handler(
             }
         } else {
             info!(
-                "WebSocket upgrade: user={}, workspace={}",
+                "METADATA WebSocket upgrade: user={}, workspace={}",
                 auth.user.email, workspace_id
             );
 
@@ -362,7 +362,7 @@ async fn handle_authenticated_socket(
     let mut control_rx = room.subscribe_control();
 
     info!(
-        "WebSocket connected: user={}, workspace={}, connections={}",
+        "METADATA WebSocket connected: user={}, workspace={}, connections={}",
         user_id,
         workspace_id,
         room.connection_count()
@@ -370,10 +370,18 @@ async fn handle_authenticated_socket(
 
     // Send initial sync (full state)
     let initial_state = connection.get_initial_sync().await;
+    info!(
+        "METADATA sending initial state: {} bytes to user={}",
+        initial_state.len(),
+        user_id
+    );
     if let Err(e) = ws_tx.send(Message::Binary(initial_state.into())).await {
         error!("Failed to send initial state: {}", e);
         return;
     }
+
+    // Track initial sync completion for this connection
+    let mut initial_sync_complete = false;
 
     // Handle bidirectional communication
     loop {
@@ -382,11 +390,37 @@ async fn handle_authenticated_socket(
             Some(msg) = ws_rx.next() => {
                 match msg {
                     Ok(Message::Binary(data)) => {
+                        // Y-sync message format:
+                        // Byte 0: msg_type::SYNC (0)
+                        // Byte 1: sync_type - STEP1 (0), STEP2 (1), or UPDATE (2)
+                        let sync_type = data.get(1).copied();
+                        let msg_type = match sync_type {
+                            Some(0) => "SyncStep1",
+                            Some(1) => "SyncStep2",
+                            Some(2) => "Update",
+                            _ => "Unknown",
+                        };
+                        info!(
+                            "METADATA message from {}: {} ({} bytes)",
+                            user_id, msg_type, data.len()
+                        );
+
                         // Handle Y-sync message
                         if let Some(response) = connection.handle_message(&data).await {
                             if let Err(e) = ws_tx.send(Message::Binary(response.into())).await {
                                 error!("Failed to send response: {}", e);
                                 break;
+                            }
+                        }
+
+                        // Send SyncComplete after receiving client's SyncStep2
+                        if sync_type == Some(1) && !initial_sync_complete {
+                            initial_sync_complete = true;
+                            let file_count = room.get_file_count().await;
+                            let complete_msg = ControlMessage::SyncComplete { files_synced: file_count };
+                            if let Ok(json) = serde_json::to_string(&complete_msg) {
+                                let _ = ws_tx.send(Message::Text(json.into())).await;
+                                info!("Metadata sync complete for {}: {} files", user_id, file_count);
                             }
                         }
                     }
@@ -877,9 +911,17 @@ async fn handle_multiplexed_body_socket(
     // Track which files this client is subscribed to
     let mut subscribed_files: HashSet<String> = HashSet::new();
 
+    // Track sync state
+    let mut last_progress_sent = 0usize;
+    let mut messages_processed = 0usize;
+    let mut last_new_subscription = std::time::Instant::now();
+    let mut initial_sync_complete_sent = false;
+
     // Handle bidirectional communication
     loop {
         tokio::select! {
+            biased;  // Check branches in order - prioritize incoming messages over timeout
+
             // Handle incoming messages from client
             Some(msg) = ws_rx.next() => {
                 match msg {
@@ -891,14 +933,18 @@ async fn handle_multiplexed_body_socket(
                         };
 
                         // Auto-subscribe on first message for a file
-                        if !subscribed_files.contains(&file_path) {
+                        let is_new_subscription = !subscribed_files.contains(&file_path);
+                        if is_new_subscription {
                             // Track subscription in the room
                             room.subscribe_body(&file_path, &client_id).await;
                             subscribed_files.insert(file_path.clone());
-                            debug!(
-                                "Client {} auto-subscribed to body: {}",
-                                client_id, file_path
-                            );
+                            last_new_subscription = std::time::Instant::now();
+                            if subscribed_files.len() % 500 == 0 || subscribed_files.len() == 1 {
+                                debug!(
+                                    "Client {} subscribed to {} body docs",
+                                    client_id, subscribed_files.len()
+                                );
+                            }
                         }
 
                         // Route to existing handler
@@ -908,6 +954,20 @@ async fn handle_multiplexed_body_socket(
                             if let Err(e) = ws_tx.send(Message::Binary(framed.into())).await {
                                 error!("Failed to send multiplexed body response: {}", e);
                                 break;
+                            }
+                            messages_processed += 1;
+
+                            // Send progress every 100 messages or 5% of subscribed files
+                            let progress_interval = (subscribed_files.len() / 20).max(100).min(500);
+                            if messages_processed - last_progress_sent >= progress_interval {
+                                last_progress_sent = messages_processed;
+                                let progress_msg = ControlMessage::SyncProgress {
+                                    completed: messages_processed,
+                                    total: subscribed_files.len(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&progress_msg) {
+                                    let _ = ws_tx.send(Message::Text(json.into())).await;
+                                }
                             }
                         }
                     }
@@ -929,7 +989,7 @@ async fn handle_multiplexed_body_socket(
                 }
             }
 
-            // Handle broadcast messages from other clients
+            // Handle broadcast messages from other clients (also prioritized over timeout)
             result = body_rx.recv() => {
                 match result {
                     Ok((file_path, msg)) => {
@@ -947,6 +1007,27 @@ async fn handle_multiplexed_body_socket(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;
+                    }
+                }
+            }
+
+            // Low priority: check for initial sync completion after quiet period
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {
+                // If we have subscriptions and no new ones for 3+ seconds, send SyncComplete
+                if !initial_sync_complete_sent
+                    && !subscribed_files.is_empty()
+                    && last_new_subscription.elapsed() >= std::time::Duration::from_secs(3)
+                {
+                    initial_sync_complete_sent = true;
+                    let complete_msg = ControlMessage::SyncComplete {
+                        files_synced: subscribed_files.len(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&complete_msg) {
+                        let _ = ws_tx.send(Message::Text(json.into())).await;
+                        info!(
+                            "Body sync complete for {}: {} files, {} messages processed",
+                            client_id, subscribed_files.len(), messages_processed
+                        );
                     }
                 }
             }

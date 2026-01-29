@@ -89,21 +89,36 @@ pub fn handle_verify(config: &Config, token: &str, device_name: Option<&str>) {
                 // Parse response to get session token
                 match resp.json::<serde_json::Value>() {
                     Ok(json) => {
-                        if let Some(session_token) =
-                            json.get("session_token").and_then(|v| v.as_str())
-                        {
-                            // Get email from response or use stored email
+                        // Server returns "token" not "session_token"
+                        let session_token = json
+                            .get("token")
+                            .or_else(|| json.get("session_token"))
+                            .and_then(|v| v.as_str());
+
+                        if let Some(session_token) = session_token {
+                            // Get email from response - may be nested under "user"
                             let email = json
-                                .get("email")
+                                .get("user")
+                                .and_then(|u| u.get("email"))
                                 .and_then(|v| v.as_str())
+                                .or_else(|| json.get("email").and_then(|v| v.as_str()))
                                 .map(String::from)
                                 .or_else(|| config.sync_email.clone());
 
-                            // Get workspace_id from response
+                            // Get user_id from response - may be nested under "user"
+                            // This can be used as a workspace_id fallback
+                            let user_id = json
+                                .get("user")
+                                .and_then(|u| u.get("id"))
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+
+                            // Get workspace_id from response if present
                             let workspace_id = json
                                 .get("workspace_id")
                                 .and_then(|v| v.as_str())
-                                .map(String::from);
+                                .map(String::from)
+                                .or(user_id);
 
                             // Save credentials to config
                             let mut new_config = config.clone();
