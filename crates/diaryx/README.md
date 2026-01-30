@@ -8,10 +8,10 @@ author: adammharris
 audience:
   - public
 
-part_of: ../../README.md
+part_of: ../README.md
 
 contents:
-  - cli/README.md
+  - src/cli/README.md
 ---
 
 # Diaryx CLI

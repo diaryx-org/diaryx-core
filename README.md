@@ -10,6 +10,8 @@ contents:
   - LICENSE.md
   - ROADMAP.md
   - AGENTS.md
+  - CONTRIBUTING.md
+  - scripts/scripts.md
 audience:
   - public
   - developers

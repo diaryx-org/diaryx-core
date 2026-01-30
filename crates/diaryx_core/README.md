@@ -8,7 +8,7 @@ author: adammharris
 audience:
   - public
 
-part_of: ../../README.md
+part_of: ../README.md
 ---
 
 # Diaryx Core Library

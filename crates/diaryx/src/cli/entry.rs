@@ -11,10 +11,11 @@ use crate::cli::CliDiaryxAppSync;
 use crate::cli::util::{load_config, resolve_paths};
 
 /// Handle the 'today' command
-pub fn handle_today(app: &CliDiaryxAppSync, template: Option<String>) {
+/// Returns true on success, false on error
+pub fn handle_today(app: &CliDiaryxAppSync, template: Option<String>) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     match parse_date("today") {
@@ -24,22 +25,31 @@ pub fn handle_today(app: &CliDiaryxAppSync, template: Option<String>) {
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
+                        return false;
                     }
                     // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
                     // TODO: Add touch_updated to DiaryxAppSync or migrate to async
+                    true
                 }
-                Err(e) => eprintln!("✗ Error creating entry: {}", e),
+                Err(e) => {
+                    eprintln!("✗ Error creating entry: {}", e);
+                    false
+                }
             }
         }
-        Err(e) => eprintln!("✗ Error parsing date: {}", e),
+        Err(e) => {
+            eprintln!("✗ Error parsing date: {}", e);
+            false
+        }
     }
 }
 
 /// Handle the 'yesterday' command
-pub fn handle_yesterday(app: &CliDiaryxAppSync, template: Option<String>) {
+/// Returns true on success, false on error
+pub fn handle_yesterday(app: &CliDiaryxAppSync, template: Option<String>) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     match parse_date("yesterday") {
@@ -49,14 +59,22 @@ pub fn handle_yesterday(app: &CliDiaryxAppSync, template: Option<String>) {
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
+                        return false;
                     }
                     // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
                     // TODO: Add touch_updated to DiaryxAppSync or migrate to async
+                    true
                 }
-                Err(e) => eprintln!("✗ Error creating entry: {}", e),
+                Err(e) => {
+                    eprintln!("✗ Error creating entry: {}", e);
+                    false
+                }
             }
         }
-        Err(e) => eprintln!("✗ Error parsing date: {}", e),
+        Err(e) => {
+            eprintln!("✗ Error parsing date: {}", e);
+            false
+        }
     }
 }
 
@@ -67,10 +85,11 @@ pub fn handle_yesterday(app: &CliDiaryxAppSync, template: Option<String>) {
 /// - Exact paths: "./notes/todo.md"
 /// - Globs open multiple files: "*.md"
 /// - Directories open all workspace files: "."
-pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) {
+/// Returns true on success, false on error
+pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     // Use shared path resolution (handles directories, globs, fuzzy matching, dates)
@@ -78,8 +97,10 @@ pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) {
 
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path_or_date);
-        return;
+        return false;
     }
+
+    let mut had_error = false;
 
     // For single files that don't exist, check if this was meant as a date
     if paths.len() == 1 && !paths[0].exists() {
@@ -90,26 +111,28 @@ pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) {
                     println!("Opening: {}", path.display());
                     if let Err(e) = launch_editor(&path, &config) {
                         eprintln!("✗ Error launching editor: {}", e);
+                        return false;
                     }
                     // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
                     // TODO: Add touch_updated to DiaryxAppSync or migrate to async
-                    return;
+                    return true;
                 }
                 Err(e) => {
                     eprintln!("✗ Error creating entry: {}", e);
-                    return;
+                    return false;
                 }
             }
         }
         // Not a date and file doesn't exist
         eprintln!("✗ File not found: {}", paths[0].display());
-        return;
+        return false;
     }
 
     // Open all resolved files
     for path in &paths {
         if !path.exists() {
             eprintln!("✗ File not found: {}", path.display());
+            had_error = true;
             continue;
         }
 
@@ -119,23 +142,27 @@ pub fn handle_open(app: &CliDiaryxAppSync, path_or_date: &str) {
 
         if let Err(e) = launch_editor(path, &config) {
             eprintln!("✗ Error launching editor for {}: {}", path.display(), e);
+            had_error = true;
         }
         // Note: touch_updated is on async DiaryxApp, not DiaryxAppSync
         // TODO: Add touch_updated to DiaryxAppSync or migrate to async
     }
+
+    !had_error
 }
 
 /// Handle the 'create' command
 /// Supports fuzzy path resolution for the parent directory
+/// Returns true on success, false on error
 pub fn handle_create(
     app: &CliDiaryxAppSync,
     path: &str,
     template: Option<String>,
     title: Option<String>,
-) {
+) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     let path_buf = Path::new(path);
@@ -147,7 +174,7 @@ pub fn handle_create(
         && let Err(e) = std::fs::create_dir_all(parent)
     {
         eprintln!("✗ Error creating directories: {}", e);
-        return;
+        return false;
     }
 
     // Use template-based creation
@@ -158,8 +185,14 @@ pub fn handle_create(
         title.as_deref(),
         workspace_dir,
     ) {
-        Ok(_) => println!("✓ Created entry: {}", path),
-        Err(e) => eprintln!("✗ Error creating entry: {}", e),
+        Ok(_) => {
+            println!("✓ Created entry: {}", path);
+            true
+        }
+        Err(e) => {
+            eprintln!("✗ Error creating entry: {}", e);
+            false
+        }
     }
 }
 

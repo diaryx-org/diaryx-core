@@ -1,3 +1,9 @@
+---
+title: CONTRIBUTING
+description: A guide for making contributions in the Diaryx repo
+part_of: README.md
+---
+
 # Contributing to Diaryx
 
 Welcome to the Diaryx project! This document will help you understand the codebase structure, identify areas for improvement, and find good first issues to work on.

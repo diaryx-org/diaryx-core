@@ -1,5 +1,5 @@
 ---
-title: "License"
+title: LICENSE
 description: "PolyForm Shield License 1.0.0"
 part_of: README.md
 ---

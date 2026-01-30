@@ -4,6 +4,7 @@ use crate::cli::CliDiaryxAppSync;
 use crate::cli::util::{ConfirmResult, load_config, prompt_confirm, resolve_paths};
 
 /// Handle the sort command
+/// Returns true on success, false on error
 pub fn handle_sort_command(
     app: &CliDiaryxAppSync,
     path: String,
@@ -12,10 +13,10 @@ pub fn handle_sort_command(
     index: bool,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     // Determine sort pattern from flags or custom pattern
@@ -34,11 +35,12 @@ pub fn handle_sort_command(
 
     if paths.is_empty() {
         eprintln!("✗ No files matched pattern: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
     let mut skip_confirm = yes || !multiple_files;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -57,7 +59,7 @@ pub fn handle_sort_command(
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => continue,
                 ConfirmResult::All => skip_confirm = true,
-                ConfirmResult::Quit => return,
+                ConfirmResult::Quit => return !had_error,
             }
         }
 
@@ -79,7 +81,12 @@ pub fn handle_sort_command(
                 Some(p) => println!("{}✓ Sorted with pattern '{}'", prefix, p),
                 None => println!("{}✓ Sorted alphabetically", prefix),
             },
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }

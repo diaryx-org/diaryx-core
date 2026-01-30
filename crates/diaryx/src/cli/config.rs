@@ -7,22 +7,23 @@ use std::path::PathBuf;
 use crate::cli::args::ConfigCommands;
 use crate::cli::{CliWorkspace, block_on};
 
+/// Returns true on success, false on error
 pub fn handle_config_command(
     command: Option<ConfigCommands>,
     workspace_override: Option<PathBuf>,
     ws: &CliWorkspace,
-) {
+) -> bool {
     let config = Config::load().ok();
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     match command {
         None => {
             // Show all config (backward compatibility)
-            show_config(&config);
+            show_config(&config)
         }
         Some(ConfigCommands::Show) => {
             // Show workspace config from root index
-            show_workspace_config(workspace_override, ws, &config, &current_dir);
+            show_workspace_config(workspace_override, ws, &config, &current_dir)
         }
         Some(ConfigCommands::LinkFormat { format }) => match format {
             Some(fmt) => set_link_format(workspace_override, ws, &config, &current_dir, &fmt),
@@ -32,7 +33,7 @@ pub fn handle_config_command(
 }
 
 /// Show basic diaryx configuration
-fn show_config(config: &Option<Config>) {
+fn show_config(config: &Option<Config>) -> bool {
     match config {
         Some(cfg) => {
             println!("Diaryx Configuration");
@@ -44,9 +45,11 @@ fn show_config(config: &Option<Config>) {
             if let Some(config_path) = Config::config_path() {
                 println!("Config file: {}", config_path.display());
             }
+            true
         }
         None => {
             eprintln!("No configuration found. Run 'diaryx init' first.");
+            false
         }
     }
 }
@@ -57,12 +60,12 @@ fn show_workspace_config(
     ws: &CliWorkspace,
     config: &Option<Config>,
     current_dir: &std::path::Path,
-) {
+) -> bool {
     let root_index = match find_workspace_root(workspace_override, ws, config, current_dir) {
         Some(path) => path,
         None => {
             eprintln!("No workspace found. Run 'diaryx init' or 'diaryx workspace init' first.");
-            return;
+            return false;
         }
     };
 
@@ -78,9 +81,11 @@ fn show_workspace_config(
             if let Some(daily) = ws_config.daily_entry_folder {
                 println!("Daily entry folder: {}", daily);
             }
+            true
         }
         Err(e) => {
             eprintln!("Error reading workspace config: {}", e);
+            false
         }
     }
 }
@@ -91,12 +96,12 @@ fn show_link_format(
     ws: &CliWorkspace,
     config: &Option<Config>,
     current_dir: &std::path::Path,
-) {
+) -> bool {
     let root_index = match find_workspace_root(workspace_override, ws, config, current_dir) {
         Some(path) => path,
         None => {
             eprintln!("No workspace found. Run 'diaryx init' or 'diaryx workspace init' first.");
-            return;
+            return false;
         }
     };
 
@@ -111,9 +116,11 @@ fn show_link_format(
             println!("  markdown_relative - [Title](../relative/path.md)");
             println!("  plain_relative    - ../relative/path.md");
             println!("  plain_canonical   - path/to/file.md");
+            true
         }
         Err(e) => {
             eprintln!("Error reading link format: {}", e);
+            false
         }
     }
 }
@@ -125,12 +132,12 @@ fn set_link_format(
     config: &Option<Config>,
     current_dir: &std::path::Path,
     format_str: &str,
-) {
+) -> bool {
     let root_index = match find_workspace_root(workspace_override, ws, config, current_dir) {
         Some(path) => path,
         None => {
             eprintln!("No workspace found. Run 'diaryx init' or 'diaryx workspace init' first.");
-            return;
+            return false;
         }
     };
 
@@ -141,7 +148,7 @@ fn set_link_format(
             eprintln!(
                 "Valid formats: markdown_root, markdown_relative, plain_relative, plain_canonical"
             );
-            return;
+            return false;
         }
     };
 
@@ -152,9 +159,11 @@ fn set_link_format(
             println!("Note: Existing links are not automatically converted.");
             println!("To convert existing links, run:");
             println!("  diaryx workspace convert-links --format {}", format_str);
+            true
         }
         Err(e) => {
             eprintln!("Error setting link format: {}", e);
+            false
         }
     }
 }

@@ -7,7 +7,9 @@ contents:
   - diaryx_core/README.md
   - diaryx_wasm/README.md
   - diaryx_sync_server/README.md
+attachments:
   - LICENSE.md
+part_of: ../README.md
 ---
 
 This folder contains three crates for Diaryx.

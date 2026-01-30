@@ -88,48 +88,32 @@ pub fn run_cli() {
     let app_sync = DiaryxAppSync::new(RealFileSystem);
     let ws = Workspace::new(async_fs);
 
-    // Execute commands
-    match cli.command {
+    // Execute commands and track success
+    let success = match cli.command {
         Commands::Init {
             default_workspace,
             daily_folder,
             title,
             description,
-        } => {
-            handle_init(default_workspace, daily_folder, title, description, &ws);
-        }
+        } => handle_init(default_workspace, daily_folder, title, description, &ws),
 
-        Commands::Today { template } => {
-            entry::handle_today(&app_sync, template);
-        }
+        Commands::Today { template } => entry::handle_today(&app_sync, template),
 
-        Commands::Yesterday { template } => {
-            entry::handle_yesterday(&app_sync, template);
-        }
+        Commands::Yesterday { template } => entry::handle_yesterday(&app_sync, template),
 
-        Commands::Open { path } => {
-            entry::handle_open(&app_sync, &path);
-        }
+        Commands::Open { path } => entry::handle_open(&app_sync, &path),
 
-        Commands::Config { command } => {
-            config::handle_config_command(command, cli.workspace, &ws);
-        }
+        Commands::Config { command } => config::handle_config_command(command, cli.workspace, &ws),
 
         Commands::Create {
             path,
             template,
             title,
-        } => {
-            entry::handle_create(&app_sync, &path, template, title);
-        }
+        } => entry::handle_create(&app_sync, &path, template, title),
 
-        Commands::Property { operation } => {
-            property::handle_property_command(&app_sync, operation);
-        }
+        Commands::Property { operation } => property::handle_property_command(&app_sync, operation),
 
-        Commands::Template { command } => {
-            template::handle_template_command(command, &app_sync);
-        }
+        Commands::Template { command } => template::handle_template_command(command, &app_sync),
 
         Commands::Sort {
             path,
@@ -139,12 +123,10 @@ pub fn run_cli() {
             index,
             yes,
             dry_run,
-        } => {
-            sort::handle_sort_command(&app_sync, path, pattern, default, index, yes, dry_run);
-        }
+        } => sort::handle_sort_command(&app_sync, path, pattern, default, index, yes, dry_run),
 
         Commands::Workspace { command } => {
-            workspace::handle_workspace_command(command, cli.workspace, &ws, &app_sync);
+            workspace::handle_workspace_command(command, cli.workspace, &ws, &app_sync)
         }
 
         Commands::NormalizeFilename {
@@ -154,6 +136,7 @@ pub fn run_cli() {
             dry_run,
         } => {
             normalize::handle_normalize_filename(&app_sync, &path, title, yes, dry_run);
+            true
         }
 
         Commands::Export {
@@ -168,7 +151,7 @@ pub fn run_cli() {
                 Ok(root) => root,
                 Err(e) => {
                     eprintln!("✗ {}", e);
-                    return;
+                    std::process::exit(1);
                 }
             };
             export::handle_export(
@@ -180,14 +163,14 @@ pub fn run_cli() {
                 verbose,
                 dry_run,
             );
+            true
         }
 
-        Commands::Uninstall { yes } => {
-            handle_uninstall(yes);
-        }
+        Commands::Uninstall { yes } => handle_uninstall(yes),
 
         Commands::Content { operation } => {
             content::handle_content_command(&app_sync, operation);
+            true
         }
 
         Commands::Search {
@@ -209,6 +192,7 @@ pub fn run_cli() {
                 context,
                 count,
             );
+            true
         }
 
         Commands::Publish {
@@ -228,21 +212,29 @@ pub fn run_cli() {
                 force,
                 dry_run,
             );
+            true
         }
 
         Commands::Attachment { command } => {
             let current_dir = std::env::current_dir().unwrap_or_default();
             attachment::handle_attachment_command(command, &ws, &app_sync, &current_dir);
+            true
         }
 
         Commands::Sync { command } => {
             sync::handle_sync_command(command, cli.workspace);
+            true
         }
+    };
+
+    if !success {
+        std::process::exit(1);
     }
 }
 
 /// Handle the uninstall command
-fn handle_uninstall(yes: bool) {
+/// Returns true on success, false on error
+fn handle_uninstall(yes: bool) -> bool {
     use std::io::{self, Write};
 
     // Determine the binary location
@@ -250,7 +242,7 @@ fn handle_uninstall(yes: bool) {
         Ok(path) => path,
         Err(e) => {
             eprintln!("✗ Could not determine binary location: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -271,13 +263,13 @@ fn handle_uninstall(yes: bool) {
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_err() {
             eprintln!("✗ Failed to read input");
-            return;
+            return false;
         }
 
         let input = input.trim().to_lowercase();
         if input != "y" && input != "yes" {
             println!("Uninstall cancelled.");
-            return;
+            return true; // User cancelled, not an error
         }
     }
 
@@ -291,6 +283,7 @@ fn handle_uninstall(yes: bool) {
             println!(
                 "  curl -fsSL https://raw.githubusercontent.com/diaryx-org/diaryx-core/refs/heads/master/install.sh | bash"
             );
+            true
         }
         Err(e) => {
             eprintln!("✗ Failed to remove binary: {}", e);
@@ -299,18 +292,20 @@ fn handle_uninstall(yes: bool) {
                 eprintln!("Try running with elevated permissions:");
                 eprintln!("  sudo {} uninstall -y", binary_path.display());
             }
+            false
         }
     }
 }
 
 /// Handle the init command
+/// Returns true on success, false on error
 fn handle_init(
     default_workspace: Option<PathBuf>,
     daily_folder: Option<String>,
     title: Option<String>,
     description: Option<String>,
     ws: &Workspace<SyncToAsyncFs<RealFileSystem>>,
-) {
+) -> bool {
     let dir = default_workspace.unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -331,7 +326,7 @@ fn handle_init(
         }
         Err(e) => {
             eprintln!("✗ Error initializing config: {}", e);
-            return;
+            return false;
         }
     }
 
@@ -348,9 +343,12 @@ fn handle_init(
                 diaryx_core::error::DiaryxError::WorkspaceAlreadyExists(_)
             ) {
                 eprintln!("✗ Error initializing workspace: {}", e);
+                return false;
             } else {
                 println!("  Workspace already initialized");
             }
         }
     }
+
+    true
 }

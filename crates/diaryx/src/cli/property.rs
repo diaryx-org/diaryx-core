@@ -7,15 +7,16 @@ use crate::cli::args::PropertyCommands;
 use crate::cli::util::{ConfirmResult, format_value, load_config, prompt_confirm, resolve_paths};
 
 /// Handle the property command
-pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyCommands) {
+/// Returns true on success, false on error
+pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyCommands) -> bool {
     let config = match load_config() {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
 
     match operation {
         PropertyCommands::Get { path, key, yes } => {
-            handle_get_command(app, &config, &path, &key, yes);
+            handle_get_command(app, &config, &path, &key, yes)
         }
         PropertyCommands::Set {
             path,
@@ -23,56 +24,42 @@ pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyComman
             value,
             yes,
             dry_run,
-        } => {
-            handle_set_command(app, &config, &path, &key, &value, yes, dry_run);
-        }
+        } => handle_set_command(app, &config, &path, &key, &value, yes, dry_run),
         PropertyCommands::Remove {
             path,
             key,
             yes,
             dry_run,
-        } => {
-            handle_remove_command(app, &config, &path, &key, yes, dry_run);
-        }
+        } => handle_remove_command(app, &config, &path, &key, yes, dry_run),
         PropertyCommands::Rename {
             path,
             old_key,
             new_key,
             yes,
             dry_run,
-        } => {
-            handle_rename_command(app, &config, &path, &old_key, &new_key, yes, dry_run);
-        }
-        PropertyCommands::List { path, yes } => {
-            handle_list_command(app, &config, &path, yes);
-        }
+        } => handle_rename_command(app, &config, &path, &old_key, &new_key, yes, dry_run),
+        PropertyCommands::List { path, yes } => handle_list_command(app, &config, &path, yes),
         PropertyCommands::Append {
             path,
             key,
             value,
             yes,
             dry_run,
-        } => {
-            handle_list_append_command(app, &config, &path, &key, &value, yes, dry_run);
-        }
+        } => handle_list_append_command(app, &config, &path, &key, &value, yes, dry_run),
         PropertyCommands::Prepend {
             path,
             key,
             value,
             yes,
             dry_run,
-        } => {
-            handle_list_prepend_command(app, &config, &path, &key, &value, yes, dry_run);
-        }
+        } => handle_list_prepend_command(app, &config, &path, &key, &value, yes, dry_run),
         PropertyCommands::Pop {
             path,
             key,
             index,
             yes,
             dry_run,
-        } => {
-            handle_list_pop_command(app, &config, &path, &key, index, yes, dry_run);
-        }
+        } => handle_list_pop_command(app, &config, &path, &key, index, yes, dry_run),
         PropertyCommands::SetAt {
             path,
             key,
@@ -80,39 +67,37 @@ pub fn handle_property_command(app: &CliDiaryxAppSync, operation: PropertyComman
             value,
             yes,
             dry_run,
-        } => {
-            handle_list_set_at_command(app, &config, &path, &key, index, &value, yes, dry_run);
-        }
+        } => handle_list_set_at_command(app, &config, &path, &key, index, &value, yes, dry_run),
         PropertyCommands::RemoveValue {
             path,
             key,
             value,
             yes,
             dry_run,
-        } => {
-            handle_list_remove_value_command(app, &config, &path, &key, &value, yes, dry_run);
-        }
+        } => handle_list_remove_value_command(app, &config, &path, &key, &value, yes, dry_run),
         PropertyCommands::Show { path, key, yes } => {
-            handle_show_command(app, &config, &path, &key, yes);
+            handle_show_command(app, &config, &path, &key, yes)
         }
     }
 }
 
 /// Handle get command
+/// Returns true on success, false on error
 fn handle_get_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
     _yes: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -142,13 +127,20 @@ fn handle_get_command(
             },
             Ok(None) => {
                 eprintln!("{}Property '{}' not found", prefix, key);
+                had_error = true;
             }
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle set command
+/// Returns true on success, false on error
 fn handle_set_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -157,21 +149,22 @@ fn handle_set_command(
     value: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
     let mut skip_confirm = yes || !multiple_files;
+    let mut had_error = false;
 
     let yaml_value = match serde_yaml::from_str::<Value>(value) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("✗ Invalid YAML value: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -189,7 +182,7 @@ fn handle_set_command(
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => continue,
                 ConfirmResult::All => skip_confirm = true,
-                ConfirmResult::Quit => return,
+                ConfirmResult::Quit => return !had_error,
             }
         }
 
@@ -200,12 +193,18 @@ fn handle_set_command(
 
         match app.set_frontmatter_property(&path_str, key, yaml_value.clone()) {
             Ok(_) => println!("{}✓ Set '{}'", prefix, key),
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle remove command
+/// Returns true on success, false on error
 fn handle_remove_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -213,15 +212,16 @@ fn handle_remove_command(
     key: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
     let mut skip_confirm = yes || !multiple_files;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -237,7 +237,7 @@ fn handle_remove_command(
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => continue,
                 ConfirmResult::All => skip_confirm = true,
-                ConfirmResult::Quit => return,
+                ConfirmResult::Quit => return !had_error,
             }
         }
 
@@ -248,12 +248,18 @@ fn handle_remove_command(
 
         match app.remove_frontmatter_property(&path_str, key) {
             Ok(_) => println!("{}✓ Removed '{}'", prefix, key),
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle rename command
+/// Returns true on success, false on error
 fn handle_rename_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -262,15 +268,16 @@ fn handle_rename_command(
     new_key: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
     let mut skip_confirm = yes || !multiple_files;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -291,7 +298,7 @@ fn handle_rename_command(
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => continue,
                 ConfirmResult::All => skip_confirm = true,
-                ConfirmResult::Quit => return,
+                ConfirmResult::Quit => return !had_error,
             }
         }
 
@@ -302,26 +309,36 @@ fn handle_rename_command(
 
         match app.rename_frontmatter_property(&path_str, old_key, new_key) {
             Ok(true) => println!("{}✓ Renamed '{}' to '{}'", prefix, old_key, new_key),
-            Ok(false) => eprintln!("{}⚠ Property '{}' not found", prefix, old_key),
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Ok(false) => {
+                eprintln!("{}⚠ Property '{}' not found", prefix, old_key);
+                had_error = true;
+            }
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle list command (list all properties)
+/// Returns true on success, false on error
 fn handle_list_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     _yes: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -347,26 +364,33 @@ fn handle_list_command(
                     println!();
                 }
             }
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle show command (show list with indices)
+/// Returns true on success, false on error
 fn handle_show_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
     path: &str,
     key: &str,
     _yes: bool,
-) {
+) -> bool {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -394,16 +418,24 @@ fn handle_show_command(
             }
             Ok(Some(_)) => {
                 eprintln!("{}✗ Property '{}' is not a list", prefix, key);
+                had_error = true;
             }
             Ok(None) => {
                 eprintln!("{}Property '{}' not found", prefix, key);
+                had_error = true;
             }
-            Err(e) => eprintln!("{}✗ Error: {}", prefix, e),
+            Err(e) => {
+                eprintln!("{}✗ Error: {}", prefix, e);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }
 
 /// Handle list append command
+/// Returns true on success, false on error
 fn handle_list_append_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -412,7 +444,7 @@ fn handle_list_append_command(
     value: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     handle_list_operation(
         app,
         config,
@@ -428,10 +460,11 @@ fn handle_list_append_command(
             }
             Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
         },
-    );
+    )
 }
 
 /// Handle list prepend command
+/// Returns true on success, false on error
 fn handle_list_prepend_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -440,7 +473,7 @@ fn handle_list_prepend_command(
     value: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     handle_list_operation(
         app,
         config,
@@ -456,10 +489,11 @@ fn handle_list_prepend_command(
             }
             Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
         },
-    );
+    )
 }
 
 /// Handle list pop command
+/// Returns true on success, false on error
 fn handle_list_pop_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -468,7 +502,7 @@ fn handle_list_pop_command(
     index: i32,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     handle_list_operation(
         app,
         config,
@@ -507,10 +541,11 @@ fn handle_list_pop_command(
                 format_value(&removed)
             ))
         },
-    );
+    )
 }
 
 /// Handle list set-at command
+/// Returns true on success, false on error
 #[allow(clippy::too_many_arguments)]
 fn handle_list_set_at_command(
     app: &CliDiaryxAppSync,
@@ -521,7 +556,7 @@ fn handle_list_set_at_command(
     value: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     handle_list_operation(
         app,
         config,
@@ -547,10 +582,11 @@ fn handle_list_set_at_command(
                 Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
             }
         },
-    );
+    )
 }
 
 /// Handle list remove-value command
+/// Returns true on success, false on error
 fn handle_list_remove_value_command(
     app: &CliDiaryxAppSync,
     config: &diaryx_core::config::Config,
@@ -559,7 +595,7 @@ fn handle_list_remove_value_command(
     value: &str,
     yes: bool,
     dry_run: bool,
-) {
+) -> bool {
     handle_list_operation(
         app,
         config,
@@ -584,10 +620,11 @@ fn handle_list_remove_value_command(
             }
             Err(e) => Err(format!("✗ Invalid YAML value: {}", e)),
         },
-    );
+    )
 }
 
 /// Generic handler for list operations
+/// Returns true on success, false on error
 #[allow(clippy::too_many_arguments)]
 fn handle_list_operation<F>(
     app: &CliDiaryxAppSync,
@@ -598,17 +635,19 @@ fn handle_list_operation<F>(
     dry_run: bool,
     description: &str,
     operation: F,
-) where
+) -> bool
+where
     F: Fn(&mut Vec<Value>) -> Result<String, String> + Clone,
 {
     let paths = resolve_paths(path, config, app);
     if paths.is_empty() {
         eprintln!("✗ No files matched: {}", path);
-        return;
+        return false;
     }
 
     let multiple_files = paths.len() > 1;
     let mut skip_confirm = yes || !multiple_files;
+    let mut had_error = false;
 
     for file_path in paths {
         let path_str = file_path.to_string_lossy();
@@ -624,7 +663,7 @@ fn handle_list_operation<F>(
                 ConfirmResult::Yes => {}
                 ConfirmResult::No => continue,
                 ConfirmResult::All => skip_confirm = true,
-                ConfirmResult::Quit => return,
+                ConfirmResult::Quit => return !had_error,
             }
         }
 
@@ -638,6 +677,7 @@ fn handle_list_operation<F>(
             Ok(v) => v,
             Err(e) => {
                 eprintln!("{}✗ Error reading property: {}", prefix, e);
+                had_error = true;
                 continue;
             }
         };
@@ -647,6 +687,7 @@ fn handle_list_operation<F>(
             Some(Value::Sequence(items)) => items,
             Some(_) => {
                 eprintln!("{}✗ Property '{}' is not a list", prefix, key);
+                had_error = true;
                 continue;
             }
             None => Vec::new(),
@@ -658,10 +699,18 @@ fn handle_list_operation<F>(
                 // Save updated list
                 match app.set_frontmatter_property(&path_str, key, Value::Sequence(items)) {
                     Ok(_) => println!("{}{}", prefix, msg),
-                    Err(e) => eprintln!("{}✗ Error saving property: {}", prefix, e),
+                    Err(e) => {
+                        eprintln!("{}✗ Error saving property: {}", prefix, e);
+                        had_error = true;
+                    }
                 }
             }
-            Err(msg) => eprintln!("{}{}", prefix, msg),
+            Err(msg) => {
+                eprintln!("{}{}", prefix, msg);
+                had_error = true;
+            }
         }
     }
+
+    !had_error
 }

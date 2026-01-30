@@ -14,18 +14,20 @@ use crate::cli::util::{calculate_relative_path, rename_file_with_refs, resolve_p
 use crate::cli::{CliDiaryxAppSync, CliWorkspace, block_on};
 use crate::editor::launch_editor;
 
+/// Returns true on success, false on error
 pub fn handle_workspace_command(
     command: WorkspaceCommands,
     workspace_override: Option<PathBuf>,
     ws: &CliWorkspace,
     app: &CliDiaryxAppSync,
-) {
+) -> bool {
     let config = Config::load().ok();
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     match command {
         WorkspaceCommands::Info { path, depth } => {
             handle_info(workspace_override, ws, &config, &current_dir, path, depth);
+            true // errors are printed to stderr
         }
 
         WorkspaceCommands::Init {
@@ -34,10 +36,12 @@ pub fn handle_workspace_command(
             description,
         } => {
             handle_init(ws, dir, title, description, &current_dir);
+            true
         }
 
         WorkspaceCommands::Path => {
             handle_path(workspace_override, ws, &config, &current_dir);
+            true
         }
 
         WorkspaceCommands::Add {
@@ -60,6 +64,7 @@ pub fn handle_workspace_command(
                         yes,
                         dry_run,
                     );
+                    true
                 } else if let Some(index_name) = new_index {
                     // Create new index and add files to it
                     handle_add_with_new_index(
@@ -73,15 +78,20 @@ pub fn handle_workspace_command(
                         yes,
                         dry_run,
                     );
+                    true
                 } else {
                     let (parent, child_pattern) =
                         resolve_parent_child(ws, &current_dir, &parent_or_child, child);
                     if let (Some(p), Some(c)) = (parent, child_pattern) {
                         handle_add(app, cfg, &p, &c, yes, dry_run);
+                        true
+                    } else {
+                        false
                     }
                 }
             } else {
                 eprintln!("✗ No config found. Run 'diaryx init' first");
+                false
             }
         }
 
@@ -98,9 +108,13 @@ pub fn handle_workspace_command(
                 let (parent, name) = resolve_parent_name(ws, &current_dir, &parent_or_name, name);
                 if let (Some(p), Some(n)) = (parent, name) {
                     handle_create(app, cfg, &p, &n, title, description, template, index, edit);
+                    true
+                } else {
+                    false
                 }
             } else {
                 eprintln!("✗ No config found. Run 'diaryx init' first");
+                false
             }
         }
 
@@ -114,9 +128,13 @@ pub fn handle_workspace_command(
                     resolve_parent_child(ws, &current_dir, &parent_or_child, child);
                 if let (Some(p), Some(c)) = (parent, child) {
                     handle_remove(app, cfg, &p, &c, dry_run);
+                    true
+                } else {
+                    false
                 }
             } else {
                 eprintln!("✗ No config found. Run 'diaryx init' first");
+                false
             }
         }
 
@@ -128,8 +146,10 @@ pub fn handle_workspace_command(
         } => {
             if let Some(ref cfg) = config {
                 handle_mv(app, cfg, ws, &source, &dest, new_index, dry_run);
+                true
             } else {
                 eprintln!("✗ No config found. Run 'diaryx init' first");
+                false
             }
         }
 
@@ -138,18 +158,16 @@ pub fn handle_workspace_command(
             fix,
             recursive,
             verbose,
-        } => {
-            handle_validate(
-                workspace_override,
-                ws,
-                &config,
-                &current_dir,
-                path,
-                fix,
-                recursive,
-                verbose,
-            );
-        }
+        } => handle_validate(
+            workspace_override,
+            ws,
+            &config,
+            &current_dir,
+            path,
+            fix,
+            recursive,
+            verbose,
+        ),
 
         WorkspaceCommands::ConvertLinks {
             format,
@@ -167,6 +185,7 @@ pub fn handle_workspace_command(
                 dry_run,
                 yes,
             );
+            true
         }
     }
 }
@@ -183,7 +202,7 @@ fn handle_validate(
     fix: bool,
     recursive: bool,
     verbose: bool,
-) {
+) -> bool {
     use diaryx_core::fs::RealFileSystem as CoreRealFileSystem;
     use diaryx_core::validate::{
         ValidationError, ValidationFixer, ValidationResult, ValidationWarning, Validator,
@@ -214,7 +233,7 @@ fn handle_validate(
 
             if files.is_empty() {
                 println!("✓ No markdown files found in {}", resolved_path.display());
-                return;
+                return true;
             }
 
             if verbose {
@@ -244,7 +263,7 @@ fn handle_validate(
 
             // Report and fix using the aggregated result
             report_and_fix_validation(&fixer, &app, &total_result, fix, &resolved_path, verbose);
-            return;
+            return true;
         }
 
         // Single file validation
@@ -256,12 +275,12 @@ fn handle_validate(
             Ok(r) => r,
             Err(e) => {
                 eprintln!("✗ Error validating file: {}", e);
-                return;
+                return false;
             }
         };
 
         report_and_fix_validation(&fixer, &app, &result, fix, &resolved_path, verbose);
-        return;
+        return true;
     }
 
     // Full workspace validation
@@ -276,12 +295,12 @@ fn handle_validate(
         } else {
             eprintln!("✗ No workspace found");
             eprintln!("  Run 'diaryx init' or 'diaryx workspace init' first");
-            return;
+            return false;
         }
     } else {
         eprintln!("✗ No workspace found");
         eprintln!("  Run 'diaryx init' or 'diaryx workspace init' first");
-        return;
+        return false;
     };
 
     if verbose {
@@ -294,7 +313,7 @@ fn handle_validate(
         Ok(r) => r,
         Err(e) => {
             eprintln!("✗ Error validating workspace: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -303,7 +322,7 @@ fn handle_validate(
             "✓ Workspace validation passed ({} files checked)",
             result.files_checked
         );
-        return;
+        return true;
     }
 
     let mut fixed_count = 0;
@@ -681,6 +700,7 @@ fn handle_validate(
             result.files_checked
         );
     }
+    true
 }
 
 /// Helper function to report validation results and optionally fix issues

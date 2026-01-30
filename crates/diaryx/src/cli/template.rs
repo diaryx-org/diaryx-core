@@ -10,7 +10,8 @@ use crate::cli::args::TemplateCommands;
 use crate::editor::launch_editor;
 
 /// Handle template subcommands
-pub fn handle_template_command(command: TemplateCommands, app: &CliDiaryxAppSync) {
+/// Returns true on success, false on error
+pub fn handle_template_command(command: TemplateCommands, app: &CliDiaryxAppSync) -> bool {
     let config = Config::load().ok();
     let workspace_dir = config.as_ref().map(|c| c.default_workspace.as_path());
     let manager = app.template_manager(workspace_dir);
@@ -18,30 +19,27 @@ pub fn handle_template_command(command: TemplateCommands, app: &CliDiaryxAppSync
     match command {
         TemplateCommands::List { paths } => {
             handle_list(&manager, paths);
+            true
         }
 
-        TemplateCommands::Show { name } => {
-            handle_show(&manager, &name);
-        }
+        TemplateCommands::Show { name } => handle_show(&manager, &name),
 
         TemplateCommands::New { name, from, edit } => {
-            handle_new(&manager, &name, from.as_deref(), edit, config.as_ref());
+            handle_new(&manager, &name, from.as_deref(), edit, config.as_ref())
         }
 
-        TemplateCommands::Edit { name } => {
-            handle_edit(&manager, &name, config.as_ref());
-        }
+        TemplateCommands::Edit { name } => handle_edit(&manager, &name, config.as_ref()),
 
-        TemplateCommands::Delete { name, yes } => {
-            handle_delete(&manager, &name, yes);
-        }
+        TemplateCommands::Delete { name, yes } => handle_delete(&manager, &name, yes),
 
         TemplateCommands::Path => {
             handle_path(&manager);
+            true
         }
 
         TemplateCommands::Variables => {
             handle_variables();
+            true
         }
     }
 }
@@ -76,15 +74,17 @@ fn handle_list(manager: &TemplateManager<&RealFileSystem>, show_paths: bool) {
 }
 
 /// Handle the 'template show' command
-fn handle_show(manager: &TemplateManager<&RealFileSystem>, name: &str) {
+fn handle_show(manager: &TemplateManager<&RealFileSystem>, name: &str) -> bool {
     match manager.get(name) {
         Some(template) => {
             println!("Template: {}\n", template.name);
             println!("{}", template.raw_content);
+            true
         }
         None => {
             eprintln!("✗ Template not found: {}", name);
             eprintln!("  Use 'diaryx template list' to see available templates.");
+            false
         }
     }
 }
@@ -96,7 +96,7 @@ fn handle_new(
     from: Option<&str>,
     edit: bool,
     config: Option<&Config>,
-) {
+) -> bool {
     // Check if template already exists in user directory
     let user_templates = manager.list();
     let exists_in_user = user_templates
@@ -106,7 +106,7 @@ fn handle_new(
     if exists_in_user {
         eprintln!("✗ Template '{}' already exists in user templates.", name);
         eprintln!("  Use 'diaryx template edit {}' to modify it.", name);
-        return;
+        return false;
     }
 
     // Get initial content
@@ -116,7 +116,7 @@ fn handle_new(
             Some(template) => template.raw_content.clone(),
             None => {
                 eprintln!("✗ Source template not found: {}", source_name);
-                return;
+                return false;
             }
         }
     } else {
@@ -134,6 +134,7 @@ fn handle_new(
                     println!("Opening in editor...");
                     if let Err(e) = launch_editor(&path, cfg) {
                         eprintln!("✗ Error launching editor: {}", e);
+                        return false;
                     }
                 } else {
                     eprintln!("⚠ No config found, cannot open editor.");
@@ -141,15 +142,21 @@ fn handle_new(
             } else {
                 println!("  Use 'diaryx template edit {}' to customize it.", name);
             }
+            true
         }
         Err(e) => {
             eprintln!("✗ Error creating template: {}", e);
+            false
         }
     }
 }
 
 /// Handle the 'template edit' command
-fn handle_edit(manager: &TemplateManager<&RealFileSystem>, name: &str, config: Option<&Config>) {
+fn handle_edit(
+    manager: &TemplateManager<&RealFileSystem>,
+    name: &str,
+    config: Option<&Config>,
+) -> bool {
     let templates = manager.list();
 
     // Find the template
@@ -165,6 +172,7 @@ fn handle_edit(manager: &TemplateManager<&RealFileSystem>, name: &str, config: O
                         "  Use 'diaryx template new {} --from {}' to create an editable copy.",
                         name, name
                     );
+                    false
                 }
                 TemplateSource::User | TemplateSource::Workspace => {
                     if let Some(path) = &info.path {
@@ -172,13 +180,17 @@ fn handle_edit(manager: &TemplateManager<&RealFileSystem>, name: &str, config: O
                             println!("Opening: {}", path.display());
                             if let Err(e) = launch_editor(path, cfg) {
                                 eprintln!("✗ Error launching editor: {}", e);
+                                return false;
                             }
+                            true
                         } else {
                             eprintln!("✗ No config found, cannot determine editor.");
                             eprintln!("  Template file: {}", path.display());
+                            false
                         }
                     } else {
                         eprintln!("✗ Template path not found.");
+                        false
                     }
                 }
             }
@@ -186,12 +198,13 @@ fn handle_edit(manager: &TemplateManager<&RealFileSystem>, name: &str, config: O
         None => {
             eprintln!("✗ Template not found: {}", name);
             eprintln!("  Use 'diaryx template list' to see available templates.");
+            false
         }
     }
 }
 
 /// Handle the 'template delete' command
-fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bool) {
+fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bool) -> bool {
     let templates = manager.list();
 
     // Find the template
@@ -202,6 +215,7 @@ fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bo
             match &info.source {
                 TemplateSource::Builtin => {
                     eprintln!("✗ Cannot delete built-in template '{}'.", name);
+                    false
                 }
                 TemplateSource::User | TemplateSource::Workspace => {
                     if let Some(path) = &info.path {
@@ -213,13 +227,13 @@ fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bo
                             let mut input = String::new();
                             if io::stdin().read_line(&mut input).is_err() {
                                 eprintln!("✗ Failed to read input");
-                                return;
+                                return false;
                             }
 
                             let input = input.trim().to_lowercase();
                             if input != "y" && input != "yes" {
                                 println!("Cancelled.");
-                                return;
+                                return true; // User cancelled, not an error
                             }
                         }
 
@@ -227,13 +241,16 @@ fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bo
                         match std::fs::remove_file(path) {
                             Ok(()) => {
                                 println!("✓ Deleted template: {}", name);
+                                true
                             }
                             Err(e) => {
                                 eprintln!("✗ Error deleting template: {}", e);
+                                false
                             }
                         }
                     } else {
                         eprintln!("✗ Template path not found.");
+                        false
                     }
                 }
             }
@@ -241,6 +258,7 @@ fn handle_delete(manager: &TemplateManager<&RealFileSystem>, name: &str, yes: bo
         None => {
             eprintln!("✗ Template not found: {}", name);
             eprintln!("  Use 'diaryx template list' to see available templates.");
+            false
         }
     }
 }
