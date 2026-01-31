@@ -113,6 +113,13 @@ pub trait FileSystem: Send + Sync {
     /// Checks if a path is a directory
     fn is_dir(&self, path: &Path) -> bool;
 
+    /// Checks if a path is a symlink.
+    /// Returns false for non-existent paths or on platforms that don't support symlinks.
+    fn is_symlink(&self, _path: &Path) -> bool {
+        // Default: return false (no symlink support, e.g., in-memory or WASM)
+        false
+    }
+
     /// Move/rename a file from `from` to `to`.
     ///
     /// Implementations should treat this as an atomic-ish move when possible,
@@ -220,6 +227,10 @@ impl<T: FileSystem> FileSystem for &T {
 
     fn is_dir(&self, path: &Path) -> bool {
         (*self).is_dir(path)
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        (*self).is_symlink(path)
     }
 
     fn move_file(&self, from: &Path, to: &Path) -> Result<()> {

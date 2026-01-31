@@ -16,6 +16,12 @@ audience:
 - public
 - developers
 link_format: markdown_root
+exclude:
+- '*.lock'
+attachments:
+- '[flake.nix](/flake.nix)'
+- '[release.toml](/release.toml)'
+- '[Cargo.toml](/Cargo.toml)'
 ---
 
 # Diaryx

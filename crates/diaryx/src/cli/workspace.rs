@@ -159,6 +159,7 @@ pub fn handle_workspace_command(
             path,
             fix,
             recursive,
+            search_build_folders,
             verbose,
         } => handle_validate(
             workspace_override,
@@ -168,6 +169,7 @@ pub fn handle_workspace_command(
             path,
             fix,
             recursive,
+            search_build_folders,
             verbose,
         ),
 
@@ -203,6 +205,7 @@ fn handle_validate(
     file_path: Option<String>,
     fix: bool,
     recursive: bool,
+    search_build_folders: bool,
     verbose: bool,
 ) -> bool {
     use diaryx_core::fs::RealFileSystem as CoreRealFileSystem;
@@ -228,7 +231,7 @@ fn handle_validate(
         if resolved_path.is_dir() {
             // Validate all markdown files in the directory
             let files = if recursive {
-                collect_md_files_recursive(&resolved_path)
+                collect_md_files_recursive(&resolved_path, search_build_folders)
             } else {
                 collect_md_files(&resolved_path)
             };
@@ -1382,19 +1385,64 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Directories to skip by default for performance (build outputs, dependencies, VCS)
+const DEFAULT_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    ".git",
+    ".svn",
+    ".hg",
+    "dist",
+    "build",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    "vendor",
+    ".cargo",
+    ".venv",
+    "venv",
+    ".tox",
+    "coverage",
+    ".nyc_output",
+    ".cache",
+    ".parcel-cache",
+    ".turbo",
+    "out",
+    ".output",
+    "gen",
+];
+
 /// Collect markdown files in a directory (recursive)
-fn collect_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
+/// If `search_build_folders` is false, skips common build/dependency directories
+fn collect_md_files_recursive(dir: &Path, search_build_folders: bool) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_md_files_recursive_helper(dir, &mut files);
+    collect_md_files_recursive_helper(dir, &mut files, search_build_folders);
     files
 }
 
-fn collect_md_files_recursive_helper(dir: &Path, files: &mut Vec<PathBuf>) {
+fn collect_md_files_recursive_helper(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    search_build_folders: bool,
+) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_dir() {
-                collect_md_files_recursive_helper(&path, files);
+                // Check if we should skip this directory
+                if !search_build_folders {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        // Skip hidden directories
+                        if name.starts_with('.') {
+                            continue;
+                        }
+                        // Skip common build/dependency directories
+                        if DEFAULT_SKIP_DIRS.contains(&name) {
+                            continue;
+                        }
+                    }
+                }
+                collect_md_files_recursive_helper(&path, files, search_build_folders);
             } else if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
                 files.push(path);
             }

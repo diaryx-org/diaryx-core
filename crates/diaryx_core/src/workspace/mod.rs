@@ -2147,6 +2147,7 @@ mod tests {
             part_of: None,
             audience: None,
             attachments: None,
+            exclude: None,
             extra: std::collections::HashMap::new(),
         };
         assert!(root_fm.is_root());
@@ -2159,6 +2160,7 @@ mod tests {
             part_of: Some("../parent.md".to_string()),
             audience: None,
             attachments: None,
+            exclude: None,
             extra: std::collections::HashMap::new(),
         };
         assert!(!non_root_fm.is_root());

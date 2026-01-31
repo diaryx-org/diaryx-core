@@ -80,6 +80,13 @@ pub trait AsyncFileSystem: Send + Sync {
     /// Checks if a path is a directory.
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
 
+    /// Checks if a path is a symlink.
+    /// Returns false for non-existent paths or on platforms that don't support symlinks.
+    fn is_symlink<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, bool> {
+        // Default: return false (no symlink support, e.g., in-memory or WASM)
+        Box::pin(async move { false })
+    }
+
     /// Move/rename a file from `from` to `to`.
     ///
     /// Implementations should treat this as an atomic-ish move when possible,
@@ -226,6 +233,13 @@ pub trait AsyncFileSystem {
 
     /// Checks if a path is a directory.
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool>;
+
+    /// Checks if a path is a symlink.
+    /// Returns false for non-existent paths or on platforms that don't support symlinks.
+    fn is_symlink<'a>(&'a self, _path: &'a Path) -> BoxFuture<'a, bool> {
+        // Default: return false (no symlink support, e.g., in-memory or WASM)
+        Box::pin(async move { false })
+    }
 
     /// Move/rename a file from `from` to `to`.
     ///
@@ -424,6 +438,10 @@ impl<F: FileSystem + Send + Sync> AsyncFileSystem for SyncToAsyncFs<F> {
         Box::pin(async move { self.inner.is_dir(path) })
     }
 
+    fn is_symlink<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.is_symlink(path) })
+    }
+
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.inner.move_file(from, to) })
     }
@@ -477,6 +495,10 @@ impl<F: FileSystem> AsyncFileSystem for SyncToAsyncFs<F> {
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
         Box::pin(async move { self.inner.is_dir(path) })
+    }
+
+    fn is_symlink<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        Box::pin(async move { self.inner.is_symlink(path) })
     }
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
@@ -533,6 +555,10 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
         (*self).is_dir(path)
+    }
+
+    fn is_symlink<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).is_symlink(path)
     }
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {
@@ -597,6 +623,10 @@ impl<T: AsyncFileSystem + ?Sized> AsyncFileSystem for &T {
 
     fn is_dir<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
         (*self).is_dir(path)
+    }
+
+    fn is_symlink<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, bool> {
+        (*self).is_symlink(path)
     }
 
     fn move_file<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<()>> {

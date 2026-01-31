@@ -700,6 +700,11 @@ pub enum WorkspaceCommands {
         #[arg(short, long)]
         recursive: bool,
 
+        /// Include build/dependency folders (node_modules, target, dist, etc.)
+        /// By default, these are skipped for performance
+        #[arg(long)]
+        search_build_folders: bool,
+
         /// Show verbose output with file paths
         #[arg(short, long)]
         verbose: bool,

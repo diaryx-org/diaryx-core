@@ -103,10 +103,18 @@ pub struct IndexFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Vec<String>>,
 
-    /// List of paths to attachment files (images, documents, etc.) relative to this file
-    /// Attachments declared here are available to this entry and all children
+    /// List of paths to attachment files (images, documents, etc.) relative to this file.
+    /// Attachments declared here are available to this entry and all children.
+    /// Supports multiple formats: plain paths, markdown links, workspace-root paths (with `/` prefix).
+    /// All non-markdown files SHOULD be listed here to avoid orphan warnings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<String>>,
+
+    /// Glob patterns for files to exclude from orphan validation.
+    /// Files matching these patterns won't trigger OrphanBinaryFile warnings.
+    /// Example: `["*.lock", "*.toml", "build/*"]`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
 
     /// Additional frontmatter properties
     #[serde(flatten)]
@@ -142,6 +150,11 @@ impl IndexFrontmatter {
     /// Returns true if this file has attachments
     pub fn has_attachments(&self) -> bool {
         self.attachments.as_ref().is_some_and(|a| !a.is_empty())
+    }
+
+    /// Get exclude patterns as a slice, or empty slice if absent
+    pub fn exclude_list(&self) -> &[String] {
+        self.exclude.as_deref().unwrap_or(&[])
     }
 
     /// Returns true if this file is marked as private (has "private" in audience)

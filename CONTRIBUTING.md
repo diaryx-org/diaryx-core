@@ -119,4 +119,9 @@ All business logic should live in `diaryx_core`. Frontends should be thin wrappe
 
 ---
 
+## Current Issues
+
+- Remove sync filesystem from diaryx_core
+- Update Tauri and CLI to use an async filesystem natively
+
 Thank you for contributing to Diaryx!

@@ -84,6 +84,10 @@ impl FileSystem for RealFileSystem {
         path.is_dir()
     }
 
+    fn is_symlink(&self, path: &Path) -> bool {
+        path.is_symlink()
+    }
+
     fn list_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         if dir.is_dir() {

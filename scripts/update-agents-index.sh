@@ -19,11 +19,16 @@ head -n "$BEGIN_LINE" "$AGENTS_FILE" > "$TEMP_FILE"
 cat "$TREE_FILE" >> "$TEMP_FILE"
 tail -n +"$END_LINE" "$AGENTS_FILE" >> "$TEMP_FILE"
 
-mv "$TEMP_FILE" "$AGENTS_FILE"
-rm -f "$TREE_FILE"
+if cmp -s "$TEMP_FILE" "$AGENTS_FILE"; then
+  rm "$TEMP_FILE"
+  rm "$TREE_FILE"
+else
+  mv "$TEMP_FILE" "$AGENTS_FILE"
+  rm -f "$TREE_FILE"
 
-# Update frontmatter timestamp
-NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-diaryx property set "$AGENTS_FILE" updated "$NOW"
+  # Update frontmatter timestamp
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  diaryx property set "$AGENTS_FILE" updated "$NOW"
 
-echo "Updated AGENTS.md workspace index"
+  echo "Updated AGENTS.md workspace index"
+fi

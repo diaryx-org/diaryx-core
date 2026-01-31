@@ -2,7 +2,7 @@
 title: AGENTS
 description: Instructions for AI Agents
 author: adammharris
-updated: 2026-01-31T17:32:17Z
+updated: 2026-01-31T23:46:08Z
 part_of: '[README](/README.md)'
 ---
 

@@ -19,6 +19,7 @@ use ts_rs::TS;
 use crate::error::Result;
 use crate::fs::AsyncFileSystem;
 use crate::link_parser::{self, LinkFormat};
+use crate::utils::matches_glob_pattern;
 use crate::utils::path::relative_path_from_file_to_target;
 use crate::workspace::Workspace;
 
@@ -592,6 +593,14 @@ impl<FS: AsyncFileSystem> Validator<FS> {
             .map(|c| c.link_format)
             .ok();
 
+        // Get exclude patterns from the root index file
+        let exclude_patterns: Vec<String> = self
+            .ws
+            .parse_index(root_path)
+            .await
+            .map(|idx| idx.frontmatter.exclude_list().to_vec())
+            .unwrap_or_default();
+
         // Get the workspace root directory (parent of root index file)
         // This is needed to resolve workspace-relative paths correctly
         let workspace_root = root_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -699,6 +708,12 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                         continue;
                     }
 
+                    // Skip symlinks - they're filesystem implementation details.
+                    // The real file is what matters for the hierarchy.
+                    if self.ws.fs_ref().is_symlink(&entry).await {
+                        continue;
+                    }
+
                     let suggested_index = find_nearest_index(&entry);
                     let extension = entry.extension().and_then(|e| e.to_str());
 
@@ -709,11 +724,25 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                             suggested_index,
                         });
                     } else if extension.is_some() {
-                        // Binary file not referenced by any attachments
-                        result.warnings.push(ValidationWarning::OrphanBinaryFile {
-                            file: entry.clone(),
-                            suggested_index,
+                        // Check if file matches any exclude pattern
+                        let filename = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        let is_excluded = exclude_patterns.iter().any(|pattern| {
+                            // Match against filename
+                            matches_glob_pattern(pattern, filename)
+                                // Also match against relative path from workspace root
+                                || matches_glob_pattern(
+                                    pattern,
+                                    entry.to_str().unwrap_or(""),
+                                )
                         });
+
+                        if !is_excluded {
+                            // Binary file not referenced by any attachments
+                            result.warnings.push(ValidationWarning::OrphanBinaryFile {
+                                file: entry.clone(),
+                                suggested_index,
+                            });
+                        }
                     }
                 }
             }
@@ -741,6 +770,12 @@ impl<FS: AsyncFileSystem> Validator<FS> {
 
         if let Ok(entries) = self.ws.fs_ref().list_files(dir).await {
             for entry in entries {
+                // Skip symlinks entirely - they're filesystem implementation details.
+                // Also avoids potential infinite loops from circular symlinks.
+                if self.ws.fs_ref().is_symlink(&entry).await {
+                    continue;
+                }
+
                 all_entries.push(entry.clone());
 
                 // Recurse into subdirectories
@@ -1082,12 +1117,14 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 let this_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 // Collect all attachments referenced by this index
+                // Parse markdown links to extract the actual path
                 let referenced_attachments: HashSet<String> = index
                     .frontmatter
                     .attachments_list()
                     .iter()
                     .filter_map(|p| {
-                        Path::new(p)
+                        let parsed = link_parser::parse_link(p);
+                        Path::new(&parsed.path)
                             .file_name()
                             .and_then(|n| n.to_str())
                             .map(|s| s.to_string())
@@ -1098,6 +1135,20 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                 let mut other_indexes: Vec<PathBuf> = Vec::new();
 
                 for entry_path in entries {
+                    // Skip symlinks - they're filesystem implementation details
+                    if self.ws.fs_ref().is_symlink(&entry_path).await {
+                        continue;
+                    }
+
+                    // Skip hidden files (starting with .)
+                    if entry_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|s| s.starts_with('.'))
+                    {
+                        continue;
+                    }
+
                     if !self.ws.fs_ref().is_dir(&entry_path).await {
                         let extension = entry_path.extension().and_then(|e| e.to_str());
                         let filename = entry_path.file_name().and_then(|n| n.to_str());
@@ -1131,11 +1182,23 @@ impl<FS: AsyncFileSystem> Validator<FS> {
                                 if let Some(fname) = filename
                                     && !referenced_attachments.contains(fname)
                                 {
-                                    result.warnings.push(ValidationWarning::OrphanBinaryFile {
-                                        file: entry_path,
-                                        // We can suggest connecting to the current index
-                                        suggested_index: Some(path.clone()),
-                                    });
+                                    // Check if file matches any exclude pattern from this index
+                                    let is_excluded =
+                                        index.frontmatter.exclude_list().iter().any(|pattern| {
+                                            matches_glob_pattern(pattern, fname)
+                                                || matches_glob_pattern(
+                                                    pattern,
+                                                    entry_path.to_str().unwrap_or(""),
+                                                )
+                                        });
+
+                                    if !is_excluded {
+                                        result.warnings.push(ValidationWarning::OrphanBinaryFile {
+                                            file: entry_path,
+                                            // We can suggest connecting to the current index
+                                            suggested_index: Some(path.clone()),
+                                        });
+                                    }
                                 }
                             }
                             _ => {}
@@ -2425,4 +2488,63 @@ contents:
         );
         assert_eq!(result.files_checked, 2);
     }
+
+    #[test]
+    fn test_exclude_patterns_suppress_orphan_binary_warnings() {
+        // Test that exclude patterns suppress OrphanBinaryFile warnings
+        let fs = make_test_fs();
+
+        // Root with exclude patterns
+        fs.write_file(
+            Path::new("README.md"),
+            "---\ntitle: Root\ncontents: []\nexclude:\n  - \"*.lock\"\n  - \"*.toml\"\n---\n",
+        )
+        .unwrap();
+
+        // Create some files that should be excluded
+        fs.write_file(Path::new("Cargo.lock"), "# lock file")
+            .unwrap();
+        fs.write_file(Path::new("Cargo.toml"), "[package]").unwrap();
+
+        // Create a file that should NOT be excluded
+        fs.write_file(Path::new("config.json"), "{}").unwrap();
+
+        let async_fs: TestFs = SyncToAsyncFs::new(fs);
+        let validator = Validator::new(async_fs);
+        let result =
+            block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
+
+        // Check warnings - should only have OrphanBinaryFile for config.json
+        let orphan_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter_map(|w| {
+                if let ValidationWarning::OrphanBinaryFile { file, .. } = w {
+                    Some(file.file_name()?.to_str()?.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            !orphan_warnings.contains(&"Cargo.lock".to_string()),
+            "Cargo.lock should be excluded, got warnings: {:?}",
+            orphan_warnings
+        );
+        assert!(
+            !orphan_warnings.contains(&"Cargo.toml".to_string()),
+            "Cargo.toml should be excluded, got warnings: {:?}",
+            orphan_warnings
+        );
+        assert!(
+            orphan_warnings.contains(&"config.json".to_string()),
+            "config.json should trigger a warning, got warnings: {:?}",
+            orphan_warnings
+        );
+    }
+
+    // Note: Testing exclude patterns in validate_file is skipped because validate_file
+    // uses path canonicalization which doesn't work with InMemoryFileSystem.
+    // The workspace validation test covers the exclude patterns functionality.
 }
