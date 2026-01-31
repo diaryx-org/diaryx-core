@@ -1,3 +1,34 @@
+//! Date parsing and path generation utilities.
+//!
+//! This module provides natural language date parsing via chrono-english,
+//! and path generation for daily entries following the `YYYY/MM/YYYY-MM-DD.md` format.
+//!
+//! # Supported Date Formats
+//!
+//! - **Relative**: `"today"`, `"yesterday"`, `"tomorrow"`, `"3 days ago"`, `"in 5 days"`
+//! - **Named days**: `"last friday"`, `"next monday"`, `"this wednesday"`
+//! - **Periods**: `"last week"`, `"last month"`
+//! - **ISO 8601**: `"2024-01-15"`, `"2024-12-31"`
+//!
+//! # Key Functions
+//!
+//! - [`parse_date()`]: Parse natural language or ISO dates into `NaiveDate`
+//! - [`date_to_path()`]: Generate `YYYY/MM/YYYY-MM-DD.md` path from date
+//! - [`path_to_date()`]: Extract date from a daily entry path
+//! - [`is_daily_entry()`]: Check if a path matches daily entry format
+//! - [`get_adjacent_daily_entry_path()`]: Navigate between daily entries
+//!
+//! # Example
+//!
+//! ```ignore
+//! use diaryx_core::date::{parse_date, date_to_path};
+//! use std::path::Path;
+//!
+//! let date = parse_date("yesterday")?;
+//! let path = date_to_path(Path::new("/diary"), &date);
+//! // e.g., "/diary/2024/01/2024-01-14.md"
+//! ```
+
 use chrono::{Duration, Local, NaiveDate};
 use chrono_english::{Dialect, parse_date_string};
 use std::path::{Path, PathBuf};

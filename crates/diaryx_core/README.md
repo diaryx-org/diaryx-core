@@ -1,14 +1,13 @@
 ---
 title: diaryx_core
-
 description: Core library shared by Diaryx clients
-
 author: adammharris
-
 audience:
   - public
-
 part_of: ../README.md
+contents:
+- src/crdt/README.md
+- src/cloud/README.md
 ---
 
 # Diaryx Core Library
@@ -84,6 +83,13 @@ diaryx_core
         ├── mod.rs
         └── types.rs
 ```
+
+### Module Documentation
+
+| Module | README | Description |
+|--------|--------|-------------|
+| `crdt` | [src/crdt/README.md](src/crdt/README.md) | Real-time collaboration via Y.js CRDTs |
+| `cloud` | [src/cloud/README.md](src/cloud/README.md) | Bidirectional file sync with cloud storage |
 
 ## Provided functionality
 
@@ -516,15 +522,220 @@ let result = diaryx.execute(Command::GetHistory {
 
 ## Publish
 
+The `publish` module converts markdown files to HTML using [comrak](https://docs.rs/comrak):
+
+```rust,ignore
+use diaryx_core::publish::{Publisher, PublishOptions};
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use std::path::Path;
+
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let publisher = Publisher::new(fs);
+
+let options = PublishOptions {
+    include_toc: true,           // Generate table of contents
+    syntax_highlighting: true,   // Highlight code blocks
+    template: None,              // Use default HTML template
+};
+
+// Publish a single file
+let html = futures_lite::future::block_on(
+    publisher.publish_file(Path::new("notes/my-note.md"), &options)
+)?;
+
+// Publish to a specific path
+futures_lite::future::block_on(
+    publisher.publish_to_path(
+        Path::new("notes/my-note.md"),
+        Path::new("output/my-note.html"),
+        &options
+    )
+)?;
+```
+
 ## Templates
+
+Templates provide reusable content patterns for new entries.
+
+### Template Syntax
+
+Templates support variable substitution:
+
+- `{{title}}` - Entry title
+- `{{filename}}` - Filename without extension
+- `{{date}}` - Current date (ISO format)
+- `{{part_of}}` - Parent index reference
+
+### Built-in Templates
+
+- `daily` - Daily journal entry with date-based title
+- `note` - General note with title placeholder
+
+### Using Templates
+
+```rust,ignore
+use diaryx_core::template::{TemplateManager, TemplateContext};
+use diaryx_core::fs::InMemoryFileSystem;
+
+let fs = InMemoryFileSystem::new();
+let manager = TemplateManager::new(&fs)
+    .with_workspace_dir(Path::new("/workspace"));
+
+// Get a template
+let template = manager.get("daily").unwrap();
+
+// Render with context
+let context = TemplateContext::new()
+    .with_title("January 15, 2024")
+    .with_date(date)
+    .with_part_of("2024_january.md");
+
+let content = template.render(&context);
+```
+
+### Custom Templates
+
+Create custom templates in `.diaryx/templates/` within your workspace:
+
+```markdown
+---
+title: {{title}}
+part_of: {{part_of}}
+tags: []
+---
+
+# {{title}}
+
+Created: {{date}}
+```
 
 ## Workspaces
 
+Workspaces organize entries into a tree structure using `part_of` and `contents` relationships.
+
+### Tree Structure
+
+```rust,ignore
+use diaryx_core::workspace::Workspace;
+use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use std::path::Path;
+
+let fs = SyncToAsyncFs::new(RealFileSystem);
+let workspace = Workspace::new(fs);
+
+// Build tree from root index
+let tree = futures_lite::future::block_on(
+    workspace.build_tree(Path::new("README.md"))
+)?;
+
+// Traverse the tree
+for child in &tree.children {
+    println!("{}: {}", child.path.display(), child.title);
+}
+```
+
+### Link Formats
+
+Configure how `part_of` and `contents` links are formatted:
+
+- `LinkFormat::MarkdownRoot` (default) - `[../parent.md](../parent.md)` (clickable in editors)
+- `LinkFormat::Relative` - `../parent.md` (simple relative paths)
+- `LinkFormat::Absolute` - `/workspace/parent.md` (absolute from workspace root)
+
 ## Date parsing
+
+The `date` module provides natural language date parsing:
+
+```rust,ignore
+use diaryx_core::date::{parse_date, date_to_path};
+use std::path::Path;
+
+// Natural language parsing
+let today = parse_date("today")?;
+let yesterday = parse_date("yesterday")?;
+let last_friday = parse_date("last friday")?;
+let three_days_ago = parse_date("3 days ago")?;
+
+// ISO format
+let specific = parse_date("2024-01-15")?;
+
+// Generate path for date
+let path = date_to_path(Path::new("/diary"), &today);
+// e.g., "/diary/2024/01/2024-01-15.md"
+```
 
 ## Shared errors
 
+The `error` module provides [`DiaryxError`] for all fallible operations:
+
+```rust,ignore
+use diaryx_core::error::{DiaryxError, Result};
+
+fn example() -> Result<()> {
+    // Operations return Result<T, DiaryxError>
+    let content = fs.read_to_string(path)?;
+    Ok(())
+}
+
+// Error handling
+match result {
+    Err(DiaryxError::FileRead { path, source }) => {
+        eprintln!("Failed to read {}: {}", path.display(), source);
+    }
+    Err(DiaryxError::NoFrontmatter(path)) => {
+        // Handle missing frontmatter gracefully
+    }
+    Err(DiaryxError::InvalidDateFormat(input)) => {
+        eprintln!("Invalid date: {}", input);
+    }
+    _ => {}
+}
+```
+
+For IPC (Tauri), convert to `SerializableError`:
+
+```rust,ignore
+let serializable = error.to_serializable();
+// { kind: "FileRead", message: "...", path: Some(...) }
+```
+
 ## Configuration
+
+The `config` module manages user preferences:
+
+```rust,ignore
+use diaryx_core::config::Config;
+use std::path::PathBuf;
+
+// Load from default location (~/.config/diaryx/config.toml)
+let config = Config::load()?;
+
+// Or create with specific workspace
+let config = Config::new(PathBuf::from("/home/user/diary"));
+
+// Key fields
+let workspace = &config.default_workspace;    // Main workspace path
+let daily_dir = config.daily_entry_dir();     // Daily entries location
+let editor = &config.editor;                  // Preferred editor
+let link_fmt = &config.link_format;           // Link formatting style
+
+// Sync configuration
+let server = &config.sync_server_url;         // Sync server URL
+let token = &config.sync_session_token;       // Auth token
+```
+
+Configuration file format (TOML):
+
+```toml
+default_workspace = "/home/user/diary"
+daily_entry_folder = "Daily"
+editor = "nvim"
+link_format = "MarkdownRoot"
+
+# Sync settings (optional)
+sync_server_url = "https://sync.example.com"
+sync_email = "user@example.com"
+```
 
 ## Filesystem abstraction
 

@@ -6,11 +6,22 @@
 //! - Attachment management
 //! - Daily entry creation with index hierarchy
 //!
-//! ## Async-first refactor
+//! # Migration Note
 //!
-//! `DiaryxApp` is now async-first and uses `AsyncFileSystem`.
-//! The prior sync implementation is preserved as `DiaryxAppSync`
-//! (temporary compatibility during the refactor).
+//! `DiaryxAppSync` is deprecated. Use [`DiaryxApp`] with `AsyncFileSystem`
+//! for all new code. The sync implementation will be removed in a future version.
+//!
+//! ```ignore
+//! use diaryx_core::entry::DiaryxApp;
+//! use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+//! use futures_lite::future::block_on;
+//!
+//! // Use async-first API even in sync contexts
+//! let fs = SyncToAsyncFs::new(RealFileSystem);
+//! let app = DiaryxApp::new(fs);
+//!
+//! block_on(app.get_content("note.md"))?;
+//! ```
 
 mod helpers;
 

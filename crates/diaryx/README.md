@@ -9,9 +9,6 @@ audience:
   - public
 
 part_of: ../README.md
-
-contents:
-  - src/cli/README.md
 ---
 
 # Diaryx CLI

@@ -1,3 +1,5 @@
+#![doc = include_str!(concat!(env!("OUT_DIR"), "/README.md"))]
+
 //! Diaryx Sync Server
 //!
 //! A multi-device sync server for Diaryx with magic link authentication.

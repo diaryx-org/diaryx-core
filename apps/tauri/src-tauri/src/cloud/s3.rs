@@ -11,9 +11,9 @@ use chrono::{DateTime, Utc};
 use diaryx_core::backup::{
     BackupResult, BackupTarget, CloudBackupConfig, CloudProvider, FailurePolicy,
 };
+use diaryx_core::cloud::RemoteFileInfo;
+use diaryx_core::cloud::engine::CloudSyncProvider;
 use diaryx_core::fs::{AsyncFileSystem, BoxFuture, FileSystem, RealFileSystem};
-use diaryx_core::sync::RemoteFileInfo;
-use diaryx_core::sync::engine::CloudSyncProvider;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;

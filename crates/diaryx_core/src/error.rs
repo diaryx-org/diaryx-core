@@ -1,3 +1,21 @@
+//! Shared error types for Diaryx operations.
+//!
+//! This module defines [`DiaryxError`], the unified error type used throughout
+//! diaryx_core. All fallible operations return `Result<T, DiaryxError>`.
+//!
+//! # Error Categories
+//!
+//! - **I/O errors**: `DiaryxError::FileRead`, `DiaryxError::FileWrite`
+//! - **Frontmatter errors**: `DiaryxError::NoFrontmatter`, `DiaryxError::InvalidFrontmatter`
+//! - **Configuration errors**: `DiaryxError::ConfigParse`, `DiaryxError::ConfigNotInitialized`
+//! - **Editor errors**: `DiaryxError::NoEditorFound`, `DiaryxError::EditorLaunchFailed`
+//! - **Workspace errors**: `DiaryxError::WorkspaceNotFound`, `DiaryxError::WorkspaceAlreadyExists`
+//!
+//! # IPC Serialization
+//!
+//! For Tauri/IPC contexts, use [`SerializableError`] to convert errors into
+//! a format suitable for cross-process communication.
+
 use std::path::PathBuf;
 
 use serde::Serialize;

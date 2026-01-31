@@ -53,6 +53,9 @@ web-sys = { version = "0.3", features = [
 # code size when deploying.
 console_error_panic_hook = { version = "0.1", optional = true }
 
+[build-dependencies]
+diaryx_core = { path = "../diaryx_core" }
+
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 

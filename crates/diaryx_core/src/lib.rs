@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!(concat!(env!("OUT_DIR"), "/README.md"))]
 #![warn(missing_docs)]
 
 /// Command pattern API for unified command execution
@@ -60,14 +60,14 @@ pub mod workspace;
 #[cfg(feature = "crdt")]
 pub mod crdt;
 
-/// Cloud sync module for bidirectional file synchronization
-pub mod sync;
+/// Cloud storage module for bidirectional file synchronization
+pub mod cloud;
 
-// Re-export key sync types for convenience
-pub use sync::conflict::ConflictResolution;
-pub use sync::engine::CloudSyncProvider;
-pub use sync::manifest::SyncManifest;
-pub use sync::{CloudSyncResult, RemoteFileInfo};
+// Re-export key cloud types for convenience
+pub use cloud::conflict::ConflictResolution;
+pub use cloud::engine::CloudSyncProvider;
+pub use cloud::manifest::SyncManifest;
+pub use cloud::{CloudSyncResult, RemoteFileInfo};
 
 // Re-exports for backwards compatibility
 pub use utils::date;

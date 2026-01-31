@@ -2096,8 +2096,8 @@ pub async fn sync_to_s3<R: Runtime>(
 ) -> Result<SyncStatus, SerializableError> {
     use crate::cloud::S3Target;
     use diaryx_core::backup::{CloudBackupConfig, CloudProvider};
-    use diaryx_core::sync::engine::SyncEngine;
-    use diaryx_core::sync::{SyncProgress, SyncStage};
+    use diaryx_core::cloud::engine::SyncEngine;
+    use diaryx_core::cloud::{SyncProgress, SyncStage};
     use tokio::sync::mpsc;
 
     let paths = get_platform_paths(&app)?;
@@ -2215,8 +2215,8 @@ pub async fn sync_to_google_drive<R: Runtime>(
 ) -> Result<SyncStatus, SerializableError> {
     use crate::cloud::GoogleDriveTarget;
     use diaryx_core::backup::{CloudBackupConfig, CloudProvider};
-    use diaryx_core::sync::engine::SyncEngine;
-    use diaryx_core::sync::{SyncProgress, SyncStage};
+    use diaryx_core::cloud::engine::SyncEngine;
+    use diaryx_core::cloud::{SyncProgress, SyncStage};
     use tokio::sync::mpsc;
 
     let paths = get_platform_paths(&app)?;
@@ -2328,7 +2328,7 @@ pub async fn get_sync_status<R: Runtime>(
     provider: String,
     workspace_path: Option<String>,
 ) -> Result<SyncStatusInfo, SerializableError> {
-    use diaryx_core::sync::SyncManifest;
+    use diaryx_core::cloud::SyncManifest;
 
     let paths = get_platform_paths(&app)?;
     let workspace = workspace_path
@@ -2381,7 +2381,7 @@ pub async fn resolve_sync_conflict<R: Runtime>(
     _workspace_path: Option<String>,
     _config: Option<serde_json::Value>,
 ) -> Result<bool, SerializableError> {
-    use diaryx_core::sync::conflict::ConflictResolution;
+    use diaryx_core::cloud::conflict::ConflictResolution;
 
     let _paths = get_platform_paths(&app)?;
 

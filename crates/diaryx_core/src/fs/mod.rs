@@ -5,6 +5,22 @@
 //!
 //! For async operations, see the `AsyncFileSystem` trait and `SyncToAsyncFs` adapter.
 //!
+//! # Migration Note
+//!
+//! The synchronous [`FileSystem`] trait is being phased out in favor of
+//! [`AsyncFileSystem`]. New code should use `AsyncFileSystem` directly.
+//! For synchronous contexts, wrap with [`SyncToAsyncFs`] and use `block_on()`:
+//!
+//! ```ignore
+//! use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+//! use futures_lite::future::block_on;
+//!
+//! let fs = SyncToAsyncFs::new(RealFileSystem);
+//! block_on(fs.read_to_string(path))?;
+//! ```
+//!
+//! The `FileSystem` trait will be removed in a future version.
+//!
 //! ## Decorators
 //!
 //! The filesystem module includes a decorator pattern for extending filesystem behavior:

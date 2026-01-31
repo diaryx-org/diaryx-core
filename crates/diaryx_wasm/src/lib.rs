@@ -1,4 +1,5 @@
 #![cfg(target_arch = "wasm32")]
+#![doc = include_str!(concat!(env!("OUT_DIR"), "/README.md"))]
 //! WebAssembly bindings for Diaryx core functionality.
 //!
 //! This crate provides a complete backend implementation for the web frontend,

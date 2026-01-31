@@ -1,27 +1,4 @@
-//! Cloud sync module for bidirectional file synchronization.
-//!
-//! This module provides abstractions for syncing workspace files with cloud storage
-//! providers (S3, Google Drive) while integrating with the CRDT system for conflict
-//! resolution and real-time updates.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Cloud Storage (S3/GDrive)
-//!         ↑↓
-//!    SyncEngine (file-level bidirectional sync)
-//!         ↑↓
-//!    WorkspaceCrdt + BodyDocManager (CRDT layer)
-//!         ↑↓
-//!    AsyncFileSystem
-//! ```
-//!
-//! # Key Components
-//!
-//! - [`SyncManifest`] - Tracks sync state per file (hashes, timestamps, versions)
-//! - [`SyncEngine`] - Orchestrates the sync process
-//! - [`LocalChange`] / [`RemoteChange`] - Represents detected changes
-//! - [`Conflict`] / [`ConflictResolution`] - Handles conflicts between local and remote
+#![doc = include_str!(concat!(env!("OUT_DIR"), "/cloud_README.md"))]
 
 mod change;
 /// Conflict detection and resolution types

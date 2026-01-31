@@ -1,3 +1,39 @@
+//! Configuration types for Diaryx.
+//!
+//! This module provides the [`Config`] struct which stores user preferences
+//! and workspace settings. Configuration is persisted as TOML (typically at
+//! `~/.config/diaryx/config.toml` on Unix systems).
+//!
+//! # Key Configuration Fields
+//!
+//! - `default_workspace`: Primary workspace directory path
+//! - `daily_entry_folder`: Optional subfolder for daily entries
+//! - `editor`: Preferred editor command
+//! - `link_format`: Format for `part_of`/`contents` links
+//! - `sync_*`: Cloud synchronization settings
+//!
+//! # Async-first Design
+//!
+//! Use `Config::load_from()` with an `AsyncFileSystem` to load config.
+//! For synchronous contexts, use the `_sync` variants or wrap with
+//! `SyncToAsyncFs` and use `block_on()`.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use diaryx_core::config::Config;
+//! use std::path::PathBuf;
+//!
+//! // Create a new config
+//! let config = Config::new(PathBuf::from("/home/user/diary"));
+//!
+//! // Load from default location (native only)
+//! let config = Config::load()?;
+//!
+//! // Access config values
+//! let daily_dir = config.daily_entry_dir();
+//! ```
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
