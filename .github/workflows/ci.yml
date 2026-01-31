@@ -82,70 +82,34 @@ jobs:
       - name: Run Clippy
         run: cargo clippy -p diaryx_core -- -D warnings
 
-  # WASM build
-  wasm:
-    name: Build WASM
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Build WASM package
-        run: |
-          cd crates/diaryx_wasm
-          wasm-pack build --target web --out-dir ../../apps/web/src/lib/wasm
-
-      - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
-
-  # Web app build and checks
+  # Web app build and checks (WASM is built as part of bun run build via nix flake)
   web:
     name: Build Web App
     runs-on: ubuntu-latest
-    needs: wasm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Install dependencies
         run: |
           cd apps/web
-          bun install
+          nix develop --command bun install
 
       - name: Type check
         run: |
           cd apps/web
-          bun run check
+          nix develop --command bun run check
 
-      - name: Build
+      - name: Build (includes WASM)
         run: |
           cd apps/web
-          bun run build
+          nix develop --command bun run build
 
       - name: Upload web build artifact
         uses: actions/upload-artifact@v4
@@ -157,36 +121,30 @@ jobs:
   test-web:
     name: Test Web App
     runs-on: ubuntu-latest
-    needs: wasm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Install dependencies
+      - name: Install dependencies and build WASM
         run: |
           cd apps/web
-          bun install
+          nix develop --command bash -c "bun install && ../../scripts/build-wasm.sh"
 
       - name: Run unit tests
         run: |
           cd apps/web
-          bun run test -- --run
+          nix develop --command bun run test -- --run
 
       - name: Run tests with coverage
         run: |
           cd apps/web
-          bun run test:coverage -- --run
+          nix develop --command bun run test:coverage -- --run
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -199,37 +157,32 @@ jobs:
   test-web-e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [wasm, web, changes]
+    needs: [web, changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-package
-          path: apps/web/src/lib/wasm/
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Install dependencies
+      - name: Install dependencies and build WASM
         run: |
           cd apps/web
-          bun install
+          nix develop --command bash -c "bun install && ../../scripts/build-wasm.sh"
 
       - name: Install Playwright browsers
         run: |
           cd apps/web
-          bunx playwright install --with-deps chromium
+          nix develop --command bunx playwright install --with-deps chromium
 
       - name: Run E2E tests
         run: |
           cd apps/web
-          bun run test:e2e -- --project=chromium
+          nix develop --command bun run test:e2e -- --project=chromium
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

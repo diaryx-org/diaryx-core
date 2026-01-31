@@ -65,9 +65,13 @@ fn import_existing_files(
                     imported,
                 );
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-                // Get relative path from workspace root
+                // Get relative path from workspace root (always use forward slashes for cross-platform consistency)
                 let rel_path = match path.strip_prefix(workspace_root) {
-                    Ok(p) => p.to_string_lossy().to_string(),
+                    Ok(p) => p
+                        .iter()
+                        .map(|c| c.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
                     Err(_) => continue,
                 };
 
