@@ -1,14 +1,10 @@
 ---
 title: diaryx
-
 description: CLI frontend
-
 author: adammharris
-
 audience:
-  - public
-
-part_of: ../README.md
+- public
+part_of: '[README](/crates/README.md)'
 ---
 
 # Diaryx CLI

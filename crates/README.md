@@ -3,13 +3,13 @@ title: crates
 description: Cargo crates for Diaryx
 author: adammharris
 contents:
-  - diaryx/README.md
-  - diaryx_core/README.md
-  - diaryx_wasm/README.md
-  - diaryx_sync_server/README.md
+- '[README](/crates/diaryx/README.md)'
+- '[README](/crates/diaryx_core/README.md)'
+- '[README](/crates/diaryx_wasm/README.md)'
+- '[README](/crates/diaryx_sync_server/README.md)'
 attachments:
-  - LICENSE.md
-part_of: ../README.md
+- LICENSE.md
+part_of: '[README](/README.md)'
 ---
 
 This folder contains three crates for Diaryx.

@@ -228,18 +228,18 @@ impl IndexFile {
                 normalize_path(&dir.join(&parsed.path))
             }
             link_parser::PathType::Ambiguous => {
-                // Use link_format_hint to determine resolution strategy
-                match self.link_format_hint {
-                    // Workspace-root formats: treat ambiguous paths as workspace-root
-                    Some(LinkFormat::PlainCanonical) | Some(LinkFormat::MarkdownRoot) => {
-                        PathBuf::from(&parsed.path)
-                    }
-                    // Relative formats or no hint: resolve relative to current file (legacy)
-                    Some(LinkFormat::PlainRelative) | Some(LinkFormat::MarkdownRelative) | None => {
-                        let dir = self.directory().unwrap_or_else(|| std::path::Path::new(""));
-                        normalize_path(&dir.join(&parsed.path))
-                    }
-                }
+                // Ambiguous paths (like "folder/file.md") are always resolved relative
+                // to the current file for backwards compatibility. This handles legacy data
+                // that was written before proper link formats were enforced.
+                //
+                // The link_format_hint only affects how NEW links are WRITTEN:
+                // - MarkdownRoot writes: [Title](/workspace/path.md) - explicit workspace-root
+                // - PlainCanonical writes: workspace/path.md - also explicit workspace-root
+                //
+                // When READING, explicit workspace-root indicators (leading `/` or markdown
+                // link syntax) are respected, but ambiguous paths default to file-relative.
+                let dir = self.directory().unwrap_or_else(|| std::path::Path::new(""));
+                normalize_path(&dir.join(&parsed.path))
             }
         }
     }
@@ -334,19 +334,20 @@ mod tests {
 
     #[test]
     fn test_resolve_path_ambiguous_with_plain_canonical_hint() {
-        // With PlainCanonical hint, ambiguous paths resolve as workspace-root
+        // Ambiguous paths always resolve relative to current file for backwards compatibility.
+        // The link format hint only affects how NEW links are WRITTEN.
         let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainCanonical));
         let resolved = index.resolve_path("Folder/file.md");
-        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
     }
 
     #[test]
     fn test_resolve_path_ambiguous_with_markdown_root_hint() {
-        // With MarkdownRoot hint, ambiguous paths resolve as workspace-root
-        // (MarkdownRoot implies canonical/workspace-relative paths)
+        // Ambiguous paths always resolve relative to current file for backwards compatibility.
+        // The link format hint only affects how NEW links are WRITTEN.
         let index = make_index_file("A/B/index.md", Some(LinkFormat::MarkdownRoot));
         let resolved = index.resolve_path("Folder/file.md");
-        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
     }
 
     #[test]
@@ -367,25 +368,30 @@ mod tests {
 
     #[test]
     fn test_resolve_path_markdown_link_ambiguous_with_hint() {
-        // Markdown links with ambiguous path and PlainCanonical hint
+        // Markdown links with ambiguous path (no leading /) resolve as file-relative
+        // for backwards compatibility. Only explicit workspace-root links use the root.
         let index = make_index_file("A/B/index.md", Some(LinkFormat::PlainCanonical));
         let resolved = index.resolve_path("[Title](Folder/file.md)");
-        assert_eq!(resolved, PathBuf::from("Folder/file.md"));
+        assert_eq!(resolved, PathBuf::from("A/B/Folder/file.md"));
     }
 
     #[test]
     fn test_resolve_path_plain_canonical_real_world_case() {
-        // The real-world case: PlainCanonical format produces "Folder/file.md"
-        // which should resolve to workspace root when hint is set
+        // Ambiguous paths resolve relative to the current file for backwards compatibility.
+        // When writing links, PlainCanonical format would produce workspace-root paths,
+        // but when reading, we support legacy file-relative paths.
         let index = make_index_file("Projects/Ideas/index.md", Some(LinkFormat::PlainCanonical));
 
-        // Contents ref in PlainCanonical format
+        // Contents ref - resolves relative to current file
         let resolved = index.resolve_path("Daily/2025/01/01.md");
-        assert_eq!(resolved, PathBuf::from("Daily/2025/01/01.md"));
+        assert_eq!(
+            resolved,
+            PathBuf::from("Projects/Ideas/Daily/2025/01/01.md")
+        );
 
-        // Part_of ref in PlainCanonical format
+        // Part_of ref - resolves relative to current file
         let resolved = index.resolve_path("Projects/index.md");
-        assert_eq!(resolved, PathBuf::from("Projects/index.md"));
+        assert_eq!(resolved, PathBuf::from("Projects/Ideas/Projects/index.md"));
     }
 
     #[test]

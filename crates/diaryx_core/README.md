@@ -3,11 +3,11 @@ title: diaryx_core
 description: Core library shared by Diaryx clients
 author: adammharris
 audience:
-  - public
-part_of: ../README.md
+- public
+part_of: '[README](/crates/README.md)'
 contents:
-- src/crdt/README.md
-- src/cloud/README.md
+- '[README](/crates/diaryx_core/src/crdt/README.md)'
+- '[README](/crates/diaryx_core/src/cloud/README.md)'
 ---
 
 # Diaryx Core Library

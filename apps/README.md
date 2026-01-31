@@ -3,11 +3,11 @@ title: apps
 description: GUI frontends for Diaryx
 author: adammharris
 audience:
-  - public
+- public
 contents:
-  - web/README.md
-  - tauri/README.md
-part_of: ../README.md
+- '[README](/apps/web/README.md)'
+- '[README](/apps/tauri/README.md)'
+part_of: '[README](/README.md)'
 ---
 
 # Diaryx Frontend Apps

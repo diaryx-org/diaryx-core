@@ -1,9 +1,9 @@
 ---
 title: CRDT Synchronization
 description: Conflict-free replicated data types for real-time collaboration
-part_of: ../../README.md
+part_of: '[README](/crates/diaryx_core/README.md)'
 audience:
-  - developers
+- developers
 ---
 
 # CRDT Synchronization

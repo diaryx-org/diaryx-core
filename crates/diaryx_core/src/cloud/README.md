@@ -1,9 +1,9 @@
 ---
 title: Cloud Sync
 description: Bidirectional file synchronization with cloud storage
-part_of: ../../README.md
+part_of: '[README](/crates/diaryx_core/README.md)'
 audience:
-  - developers
+- developers
 ---
 
 # Cloud Sync

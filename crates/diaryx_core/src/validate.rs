@@ -2168,6 +2168,8 @@ mod tests {
     #[test]
     fn test_validate_workspace_with_plain_canonical_links() {
         // Create a workspace using PlainCanonical link format
+        // Note: When READING, ambiguous paths resolve as file-relative for backwards compatibility.
+        // PlainCanonical only affects how NEW links are WRITTEN by the CLI.
         let fs = make_test_fs();
 
         // Root index with link_format: plain_canonical
@@ -2180,17 +2182,17 @@ mod tests {
         // Create directory structure
         fs.create_dir_all(Path::new("Folder")).unwrap();
 
-        // Child index in Folder using PlainCanonical format (no leading /)
+        // Child index in Folder - uses file-relative paths
         fs.write_file(
             Path::new("Folder/index.md"),
-            "---\ntitle: Folder Index\npart_of: README.md\ncontents:\n  - Folder/child.md\n---\n",
+            "---\ntitle: Folder Index\npart_of: ../README.md\ncontents:\n  - child.md\n---\n",
         )
         .unwrap();
 
-        // Child file
+        // Child file - uses file-relative path for part_of
         fs.write_file(
             Path::new("Folder/child.md"),
-            "---\ntitle: Child\npart_of: Folder/index.md\n---\n",
+            "---\ntitle: Child\npart_of: index.md\n---\n",
         )
         .unwrap();
 
@@ -2199,7 +2201,7 @@ mod tests {
         let result =
             block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
 
-        // Should have no errors - the PlainCanonical links should resolve correctly
+        // Should have no errors - file-relative paths should resolve correctly
         assert!(
             result.errors.is_empty(),
             "Expected no errors, got: {:?}",
@@ -2210,10 +2212,11 @@ mod tests {
 
     #[test]
     fn test_validate_workspace_plain_canonical_deeply_nested() {
-        // Test PlainCanonical links with deeper nesting
+        // Test deeply nested workspace with file-relative paths
+        // Note: Ambiguous paths always resolve as file-relative for backwards compatibility.
         let fs = make_test_fs();
 
-        // Root with PlainCanonical
+        // Root with PlainCanonical format setting
         fs.write_file(
             Path::new("README.md"),
             "---\ntitle: Root\nlink_format: plain_canonical\ncontents:\n  - A/index.md\n---\n",
@@ -2222,24 +2225,24 @@ mod tests {
 
         fs.create_dir_all(Path::new("A/B")).unwrap();
 
-        // A/index.md links to A/B/index.md using PlainCanonical
+        // A/index.md uses file-relative paths
         fs.write_file(
             Path::new("A/index.md"),
-            "---\ntitle: A\npart_of: README.md\ncontents:\n  - A/B/index.md\n---\n",
+            "---\ntitle: A\npart_of: ../README.md\ncontents:\n  - B/index.md\n---\n",
         )
         .unwrap();
 
-        // A/B/index.md links to A/B/note.md using PlainCanonical
+        // A/B/index.md uses file-relative paths
         fs.write_file(
             Path::new("A/B/index.md"),
-            "---\ntitle: B\npart_of: A/index.md\ncontents:\n  - A/B/note.md\n---\n",
+            "---\ntitle: B\npart_of: ../index.md\ncontents:\n  - note.md\n---\n",
         )
         .unwrap();
 
-        // Leaf file
+        // Leaf file uses file-relative path
         fs.write_file(
             Path::new("A/B/note.md"),
-            "---\ntitle: Note\npart_of: A/B/index.md\n---\n",
+            "---\ntitle: Note\npart_of: index.md\n---\n",
         )
         .unwrap();
 
@@ -2259,12 +2262,11 @@ mod tests {
 
     #[test]
     fn test_validate_workspace_with_markdown_root_and_plain_paths() {
-        // Test that MarkdownRoot format also resolves ambiguous paths as workspace-root
-        // This handles cases where a workspace has markdown_root set but some links
-        // might be plain paths (e.g., from older formats or manual edits)
+        // Test MarkdownRoot format with explicit markdown links
+        // Ambiguous plain paths resolve as file-relative for backwards compatibility.
         let fs = make_test_fs();
 
-        // Root index with link_format: markdown_root
+        // Root index with link_format: markdown_root and proper markdown link in contents
         fs.write_file(
             Path::new("README.md"),
             "---\ntitle: Root\nlink_format: markdown_root\ncontents:\n  - \"[Folder Index](/Folder/index.md)\"\n---\n",
@@ -2273,11 +2275,12 @@ mod tests {
 
         fs.create_dir_all(Path::new("Folder")).unwrap();
 
-        // Child index using a PLAIN path for part_of (not markdown link)
-        // With MarkdownRoot hint, this should resolve as workspace-root
+        // Child index using file-relative path for part_of
+        // (The proper MarkdownRoot format would be "[Root](/README.md)" but plain
+        // relative paths are also supported for backwards compatibility)
         fs.write_file(
             Path::new("Folder/index.md"),
-            "---\ntitle: Folder Index\npart_of: README.md\ncontents: []\n---\n",
+            "---\ntitle: Folder Index\npart_of: ../README.md\ncontents: []\n---\n",
         )
         .unwrap();
 
@@ -2286,8 +2289,7 @@ mod tests {
         let result =
             block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
 
-        // Should have no errors - the plain path "README.md" should resolve correctly
-        // because MarkdownRoot format treats ambiguous paths as workspace-root
+        // Should have no errors
         assert!(
             result.errors.is_empty(),
             "Expected no errors with MarkdownRoot format, got: {:?}",
@@ -2389,9 +2391,9 @@ contents:
     }
 
     #[test]
-    fn test_validate_workspace_default_format_resolves_ambiguous_as_root() {
-        // Test that without explicit link_format, the default (MarkdownRoot) treats
-        // ambiguous paths as workspace-root
+    fn test_validate_workspace_default_format_with_file_relative_paths() {
+        // Test that ambiguous paths resolve as file-relative for backwards compatibility.
+        // This supports legacy workspaces that use file-relative paths.
         let fs = make_test_fs();
 
         // Root WITHOUT explicit link_format (defaults to MarkdownRoot)
@@ -2403,11 +2405,10 @@ contents:
 
         fs.create_dir_all(Path::new("Folder")).unwrap();
 
-        // Child that uses ambiguous path for part_of
-        // With default MarkdownRoot, this resolves as workspace-root to README.md
+        // Child uses file-relative path for part_of
         fs.write_file(
             Path::new("Folder/index.md"),
-            "---\ntitle: Folder Index\npart_of: README.md\ncontents: []\n---\n",
+            "---\ntitle: Folder Index\npart_of: ../README.md\ncontents: []\n---\n",
         )
         .unwrap();
 
@@ -2416,8 +2417,7 @@ contents:
         let result =
             block_on_test(validator.validate_workspace(Path::new("README.md"), None)).unwrap();
 
-        // Should have NO errors - default MarkdownRoot format treats ambiguous paths
-        // as workspace-root, so "README.md" correctly resolves to the root file
+        // Should have NO errors - file-relative paths are supported for backwards compatibility
         assert!(
             result.errors.is_empty(),
             "Expected no errors with default format, got: {:?}",

@@ -10,7 +10,9 @@ use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
 use crate::cli::args::WorkspaceCommands;
-use crate::cli::util::{calculate_relative_path, rename_file_with_refs, resolve_paths};
+use crate::cli::util::{
+    LinkFormatter, calculate_relative_path, rename_file_with_refs, resolve_paths,
+};
 use crate::cli::{CliDiaryxAppSync, CliWorkspace, block_on};
 use crate::editor::launch_editor;
 
@@ -83,7 +85,7 @@ pub fn handle_workspace_command(
                     let (parent, child_pattern) =
                         resolve_parent_child(ws, &current_dir, &parent_or_child, child);
                     if let (Some(p), Some(c)) = (parent, child_pattern) {
-                        handle_add(app, cfg, &p, &c, yes, dry_run);
+                        handle_add(app, cfg, ws, &p, &c, yes, dry_run);
                         true
                     } else {
                         false
@@ -2265,6 +2267,7 @@ fn handle_add_with_new_index(
 fn handle_add(
     app: &CliDiaryxAppSync,
     config: &Config,
+    ws: &CliWorkspace,
     parent: &str,
     child_pattern: &str,
     yes: bool,
@@ -2315,23 +2318,38 @@ fn handle_add(
         return;
     }
 
+    // Create link formatter from workspace config
+    let formatter = LinkFormatter::from_path(ws, parent_path);
+
     let multiple = child_paths.len() > 1;
     let mut confirm_all = yes;
 
     for child_path in &child_paths {
-        // Calculate relative paths
-        let relative_child = calculate_relative_path(parent_path, child_path);
-        let relative_parent = calculate_relative_path(child_path, parent_path);
+        // Format links according to workspace config, with fallback to relative paths
+        let (contents_link, part_of_link) = if let Some(ref fmt) = formatter {
+            (
+                fmt.format_contents_link(parent_path, child_path, None)
+                    .unwrap_or_else(|| calculate_relative_path(parent_path, child_path)),
+                fmt.format_part_of_link(child_path, parent_path, None)
+                    .unwrap_or_else(|| calculate_relative_path(child_path, parent_path)),
+            )
+        } else {
+            // Fallback to simple relative paths if workspace config not available
+            (
+                calculate_relative_path(parent_path, child_path),
+                calculate_relative_path(child_path, parent_path),
+            )
+        };
 
         if dry_run {
             println!(
                 "Would add '{}' to contents of '{}'",
-                relative_child,
+                contents_link,
                 parent_path.display()
             );
             println!(
                 "Would set part_of to '{}' in '{}'",
-                relative_parent,
+                part_of_link,
                 child_path.display()
             );
             continue;
@@ -2361,13 +2379,7 @@ fn handle_add(
         }
 
         // Add single child
-        add_single_child(
-            app,
-            parent_path,
-            child_path,
-            &relative_child,
-            &relative_parent,
-        );
+        add_single_child(app, parent_path, child_path, &contents_link, &part_of_link);
     }
 }
 
@@ -2761,6 +2773,34 @@ fn create_new_index(app: &CliDiaryxAppSync, dir: &Path) -> Option<PathBuf> {
     Some(index_path)
 }
 
+/// Display a LinkFormat in snake_case (matching user input style)
+fn format_link_format(format: diaryx_core::link_parser::LinkFormat) -> &'static str {
+    use diaryx_core::link_parser::LinkFormat;
+    match format {
+        LinkFormat::MarkdownRoot => "markdown_root",
+        LinkFormat::MarkdownRelative => "markdown_relative",
+        LinkFormat::PlainRelative => "plain_relative",
+        LinkFormat::PlainCanonical => "plain_canonical",
+    }
+}
+
+/// Detect the apparent format of a link string
+fn detect_link_format(link: &str) -> diaryx_core::link_parser::LinkFormat {
+    use diaryx_core::link_parser::{LinkFormat, PathType, parse_link};
+
+    let parsed = parse_link(link);
+    let is_markdown = parsed.title.is_some();
+
+    match (is_markdown, parsed.path_type) {
+        (true, PathType::WorkspaceRoot) => LinkFormat::MarkdownRoot,
+        (true, PathType::Relative) => LinkFormat::MarkdownRelative,
+        (true, PathType::Ambiguous) => LinkFormat::MarkdownRelative, // ambiguous markdown → likely relative
+        (false, PathType::WorkspaceRoot) => LinkFormat::PlainCanonical, // plain with / → canonical
+        (false, PathType::Relative) => LinkFormat::PlainRelative,
+        (false, PathType::Ambiguous) => LinkFormat::PlainRelative, // ambiguous plain → likely relative
+    }
+}
+
 /// Handle the 'workspace convert-links' command
 /// Converts all links in workspace files to a specific format
 #[allow(clippy::too_many_arguments)]
@@ -2816,21 +2856,26 @@ fn handle_convert_links(
         return;
     };
 
-    // Show current format
-    let current_format = block_on(ws.get_link_format(&root_index)).unwrap_or_default();
-    let format_display = match target_format {
-        LinkFormat::MarkdownRoot => "markdown_root ([Title](/path/file.md))",
-        LinkFormat::MarkdownRelative => "markdown_relative ([Title](../file.md))",
-        LinkFormat::PlainRelative => "plain_relative (../file.md)",
-        LinkFormat::PlainCanonical => "plain_canonical (path/file.md)",
+    // Show format info
+    let configured_format = block_on(ws.get_link_format(&root_index)).unwrap_or_default();
+    let target_format_str = format_link_format(target_format);
+    let configured_format_str = format_link_format(configured_format);
+    let format_example = match target_format {
+        LinkFormat::MarkdownRoot => "[Title](/path/file.md)",
+        LinkFormat::MarkdownRelative => "[Title](../file.md)",
+        LinkFormat::PlainRelative => "../file.md",
+        LinkFormat::PlainCanonical => "path/file.md",
     };
 
     println!("Convert Links");
     println!("=============");
     println!();
     println!("Workspace root: {}", root_index.display());
-    println!("Current format: {:?}", current_format);
-    println!("Target format:  {}", format_display);
+    println!(
+        "Configured:     {} (in workspace config)",
+        configured_format_str
+    );
+    println!("Target:         {} ({})", target_format_str, format_example);
     if let Some(ref p) = path {
         println!("Scope:          Single file: {}", p);
     } else {
@@ -2896,17 +2941,45 @@ fn handle_convert_links(
             .to_string_lossy()
             .to_string();
 
-        let (converted, was_modified) =
-            convert_file_links(file_path, &relative_path, target_format, dry_run);
-        if was_modified {
+        let result = convert_file_links(file_path, &relative_path, target_format, dry_run);
+        if result.was_modified {
             files_modified += 1;
-            links_converted += converted;
+            links_converted += result.links_converted;
+
+            // Build source format description
+            let target_format_str = format_link_format(target_format);
+            let source_desc = if result.source_formats.len() == 1 {
+                let (format_name, _) = &result.source_formats[0];
+                if format_name == target_format_str {
+                    String::new() // Same format, no need to show
+                } else {
+                    format!(" (from {})", format_name)
+                }
+            } else if !result.source_formats.is_empty() {
+                let formats: Vec<_> = result
+                    .source_formats
+                    .iter()
+                    .filter(|(name, _)| name != target_format_str)
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                if formats.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (from {})", formats.join(", "))
+                }
+            } else {
+                String::new()
+            };
+
             let action = if dry_run {
                 "would convert"
             } else {
                 "converted"
             };
-            println!("  {} {} link(s) in {}", action, converted, relative_path);
+            println!(
+                "  {} {} link(s) in {}{}",
+                action, result.links_converted, relative_path, source_desc
+            );
         }
     }
 
@@ -2942,6 +3015,16 @@ fn collect_tree_files(node: &diaryx_core::workspace::TreeNode, files: &mut Vec<P
     }
 }
 
+/// Result of converting links in a file
+struct ConvertResult {
+    /// Number of links converted
+    links_converted: usize,
+    /// Whether the file was modified
+    was_modified: bool,
+    /// Source formats encountered as strings (format_name -> count)
+    source_formats: Vec<(String, usize)>,
+}
+
 /// Convert links in a single file
 ///
 /// # Arguments
@@ -2954,27 +3037,42 @@ fn convert_file_links(
     relative_path: &str,
     target_format: diaryx_core::link_parser::LinkFormat,
     dry_run: bool,
-) -> (usize, bool) {
+) -> ConvertResult {
     use diaryx_core::frontmatter;
     use diaryx_core::fs::FileSystem;
     use diaryx_core::link_parser;
 
     let fs = RealFileSystem;
 
+    let mut result = ConvertResult {
+        links_converted: 0,
+        was_modified: false,
+        source_formats: Vec::new(),
+    };
+
     // Read the file
     let content = match fs.read_to_string(file_path) {
         Ok(c) => c,
-        Err(_) => return (0, false),
+        Err(_) => return result,
     };
 
     let parsed = match frontmatter::parse_or_empty(&content) {
         Ok(p) => p,
-        Err(_) => return (0, false),
+        Err(_) => return result,
     };
 
-    let mut links_converted = 0;
     let mut fm = parsed.frontmatter.clone();
-    let mut modified = false;
+
+    // Helper to track source format
+    fn track_source_format(formats: &mut Vec<(String, usize)>, link_str: &str) {
+        let source_format = detect_link_format(link_str);
+        let format_name = format_link_format(source_format).to_string();
+        if let Some(entry) = formats.iter_mut().find(|(name, _)| name == &format_name) {
+            entry.1 += 1;
+        } else {
+            formats.push((format_name, 1));
+        }
+    }
 
     // Convert part_of if present (can be string or array)
     if let Some(part_of_value) = fm.get("part_of") {
@@ -2983,9 +3081,10 @@ fn convert_file_links(
             let converted =
                 link_parser::convert_link(part_of_str, target_format, relative_path, None);
             if converted != part_of_str {
+                track_source_format(&mut result.source_formats, part_of_str);
                 fm.insert("part_of".to_string(), Value::String(converted));
-                links_converted += 1;
-                modified = true;
+                result.links_converted += 1;
+                result.was_modified = true;
             }
         } else if let Some(part_of_seq) = part_of_value.as_sequence() {
             // Array of strings
@@ -2997,8 +3096,9 @@ fn convert_file_links(
                     let converted =
                         link_parser::convert_link(item_str, target_format, relative_path, None);
                     if converted != item_str {
+                        track_source_format(&mut result.source_formats, item_str);
                         part_of_changed = true;
-                        links_converted += 1;
+                        result.links_converted += 1;
                     }
                     new_part_of.push(Value::String(converted));
                 } else {
@@ -3008,7 +3108,7 @@ fn convert_file_links(
 
             if part_of_changed {
                 fm.insert("part_of".to_string(), Value::Sequence(new_part_of));
-                modified = true;
+                result.was_modified = true;
             }
         }
     }
@@ -3024,8 +3124,9 @@ fn convert_file_links(
                     let converted =
                         link_parser::convert_link(item_str, target_format, relative_path, None);
                     if converted != item_str {
+                        track_source_format(&mut result.source_formats, item_str);
                         contents_changed = true;
-                        links_converted += 1;
+                        result.links_converted += 1;
                     }
                     new_contents.push(Value::String(converted));
                 } else {
@@ -3035,17 +3136,17 @@ fn convert_file_links(
 
             if contents_changed {
                 fm.insert("contents".to_string(), Value::Sequence(new_contents));
-                modified = true;
+                result.was_modified = true;
             }
         }
     }
 
     // Write the file if modified and not dry run
-    if modified && !dry_run {
+    if result.was_modified && !dry_run {
         if let Ok(new_content) = frontmatter::serialize(&fm, &parsed.body) {
             let _ = fs.write_file(file_path, &new_content);
         }
     }
 
-    (links_converted, modified)
+    result
 }

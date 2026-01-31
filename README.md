@@ -5,16 +5,17 @@ author: adammharris
 version: v0.11.0
 updated: 2026-01-10T13:50:20-05:00
 contents:
-  - crates/README.md
-  - apps/README.md
-  - LICENSE.md
-  - ROADMAP.md
-  - AGENTS.md
-  - CONTRIBUTING.md
-  - scripts/scripts.md
+- '[README](/crates/README.md)'
+- '[README](/apps/README.md)'
+- '[LICENSE](/LICENSE.md)'
+- '[ROADMAP](/ROADMAP.md)'
+- '[AGENTS](/AGENTS.md)'
+- '[CONTRIBUTING](/CONTRIBUTING.md)'
+- '[Scripts](/scripts/scripts.md)'
 audience:
-  - public
-  - developers
+- public
+- developers
+link_format: markdown_root
 ---
 
 # Diaryx

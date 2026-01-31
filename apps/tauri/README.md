@@ -3,9 +3,9 @@ title: tauri
 description: Web app + native backend
 author: adammharris
 audience:
-  - public
-  - developers
-part_of: ../README.md
+- public
+- developers
+part_of: '[README](/apps/README.md)'
 ---
 
 # Diaryx Tauri

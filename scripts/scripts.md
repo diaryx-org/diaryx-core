@@ -1,10 +1,10 @@
 ---
 title: Scripts
-part_of: ../README.md
+part_of: '[README](/README.md)'
 attachments:
-  - build-wasm.sh
-  - sync-versions.sh
-  - test-sync.sh
+- build-wasm.sh
+- sync-versions.sh
+- test-sync.sh
 ---
 
 # Scripts

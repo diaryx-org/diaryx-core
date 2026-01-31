@@ -1,14 +1,158 @@
 //! Shared utilities for CLI commands
 
 use diaryx_core::config::Config;
+use diaryx_core::entry::prettify_filename;
 use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use diaryx_core::link_parser::{self, LinkFormat};
 use diaryx_core::workspace::Workspace;
 use glob::glob;
 use serde_yaml::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::cli::{CliDiaryxAppSync, block_on};
+use crate::cli::{CliDiaryxAppSync, CliWorkspace, block_on};
+
+/// Helper for formatting links according to workspace configuration.
+///
+/// This struct caches the workspace root and link format to avoid repeated lookups
+/// when formatting multiple links.
+pub struct LinkFormatter {
+    /// The workspace root directory (parent of root index file)
+    workspace_root: PathBuf,
+    /// The configured link format
+    link_format: LinkFormat,
+}
+
+impl LinkFormatter {
+    /// Create a new LinkFormatter by detecting workspace settings from a path.
+    ///
+    /// The path can be any file within the workspace - we'll walk up to find the root.
+    pub fn from_path(ws: &CliWorkspace, path: &Path) -> Option<Self> {
+        // Try to detect the workspace root from the given path
+        let workspace_root_index = block_on(ws.detect_workspace(path)).ok()??;
+        let workspace_root = workspace_root_index.parent()?.to_path_buf();
+
+        // Get the link format from workspace config
+        let config = block_on(ws.get_workspace_config(&workspace_root_index)).ok()?;
+
+        Some(Self {
+            workspace_root,
+            link_format: config.link_format,
+        })
+    }
+
+    /// Create a new LinkFormatter with explicit workspace root and format.
+    pub fn new(workspace_root: PathBuf, link_format: LinkFormat) -> Self {
+        Self {
+            workspace_root,
+            link_format,
+        }
+    }
+
+    /// Get the workspace root directory.
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    /// Get the configured link format.
+    pub fn link_format(&self) -> LinkFormat {
+        self.link_format
+    }
+
+    /// Convert an absolute path to a canonical (workspace-relative) path.
+    ///
+    /// Returns None if the path is not within the workspace.
+    pub fn to_canonical(&self, path: &Path) -> Option<String> {
+        // Canonicalize both paths for accurate comparison
+        let path_canonical = path.canonicalize().ok()?;
+        let root_canonical = self.workspace_root.canonicalize().ok()?;
+
+        // Get the relative path from workspace root
+        let relative = pathdiff::diff_paths(&path_canonical, &root_canonical)?;
+
+        // Ensure it doesn't escape the workspace (no leading ..)
+        if relative.starts_with("..") {
+            return None;
+        }
+
+        Some(relative.to_string_lossy().to_string())
+    }
+
+    /// Format a link from one file to another according to workspace settings.
+    ///
+    /// # Arguments
+    /// * `from_path` - Absolute path of the file containing the link
+    /// * `to_path` - Absolute path of the target file
+    /// * `title` - Optional title for the link (uses filename if None)
+    ///
+    /// # Returns
+    /// The formatted link string, or None if paths can't be resolved
+    pub fn format_link(
+        &self,
+        from_path: &Path,
+        to_path: &Path,
+        title: Option<&str>,
+    ) -> Option<String> {
+        let from_canonical = self.to_canonical(from_path)?;
+        let to_canonical = self.to_canonical(to_path)?;
+
+        // Use provided title or derive from filename
+        let title = title.map(|s| s.to_string()).unwrap_or_else(|| {
+            to_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(prettify_filename)
+                .unwrap_or_else(|| to_canonical.clone())
+        });
+
+        Some(link_parser::format_link_with_format(
+            &to_canonical,
+            &title,
+            self.link_format,
+            &from_canonical,
+        ))
+    }
+
+    /// Format a link for a contents entry (from parent index to child).
+    pub fn format_contents_link(
+        &self,
+        parent_path: &Path,
+        child_path: &Path,
+        title: Option<&str>,
+    ) -> Option<String> {
+        self.format_link(parent_path, child_path, title)
+    }
+
+    /// Format a link for a part_of entry (from child to parent index).
+    pub fn format_part_of_link(
+        &self,
+        child_path: &Path,
+        parent_path: &Path,
+        title: Option<&str>,
+    ) -> Option<String> {
+        self.format_link(child_path, parent_path, title)
+    }
+}
+
+/// Format a link using workspace configuration, with fallback to relative path.
+///
+/// This is a convenience function that tries to use LinkFormatter, falling back
+/// to a simple relative path if workspace detection fails.
+pub fn format_workspace_link(
+    ws: &CliWorkspace,
+    from_path: &Path,
+    to_path: &Path,
+    title: Option<&str>,
+) -> String {
+    if let Some(formatter) = LinkFormatter::from_path(ws, from_path) {
+        if let Some(link) = formatter.format_link(from_path, to_path, title) {
+            return link;
+        }
+    }
+
+    // Fallback to simple relative path
+    calculate_relative_path(from_path, to_path)
+}
 
 /// Result of a workspace-aware file rename operation
 pub struct RenameResult {

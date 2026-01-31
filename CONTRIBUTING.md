@@ -1,7 +1,7 @@
 ---
 title: CONTRIBUTING
 description: A guide for making contributions in the Diaryx repo
-part_of: README.md
+part_of: '[README](/README.md)'
 ---
 
 # Contributing to Diaryx
