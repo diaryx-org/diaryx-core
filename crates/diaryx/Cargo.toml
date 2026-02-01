@@ -35,6 +35,9 @@ url = "2.5"
 urlencoding = "2.1"
 log = "0.4"
 env_logger = "0.11"
+ratatui = "0.30"
+tui-tree-widget = "0.24"
+crossterm = "0.28"
 
 [build-dependencies]
 diaryx_core = { path = "../diaryx_core" }

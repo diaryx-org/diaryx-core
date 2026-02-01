@@ -36,6 +36,9 @@ mod sort;
 /// Sync commands for remote synchronization
 mod sync;
 
+/// Navigate workspace hierarchy with TUI
+mod nav;
+
 /// Template management
 mod template;
 
@@ -224,6 +227,12 @@ pub fn run_cli() {
         Commands::Sync { command } => {
             sync::handle_sync_command(command, cli.workspace);
             true
+        }
+
+        Commands::Nav { path, depth } => {
+            let current_dir = std::env::current_dir().unwrap_or_default();
+            let config = Config::load().ok();
+            nav::handle_nav(cli.workspace, &ws, &config, &current_dir, path, depth)
         }
     };
 

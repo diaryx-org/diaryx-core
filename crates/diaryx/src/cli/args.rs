@@ -264,6 +264,18 @@ pub enum Commands {
         #[command(subcommand)]
         command: SyncCommands,
     },
+
+    /// Navigate workspace hierarchy with interactive TUI
+    /// Opens a tree view with preview pane for browsing entries
+    #[command(alias = "go")]
+    Nav {
+        /// Path to start navigation from (use "." for current directory's index)
+        path: Option<String>,
+
+        /// Maximum depth to load initially (0 = unlimited)
+        #[arg(short, long, default_value = "0")]
+        depth: usize,
+    },
 }
 
 #[derive(Subcommand, Clone)]

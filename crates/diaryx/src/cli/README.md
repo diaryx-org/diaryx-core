@@ -6,6 +6,7 @@ author: adammharris
 audience:
   - public
 contents:
+  - '[README](/crates/diaryx/src/cli/nav/README.md)'
   - '[README](/crates/diaryx/src/cli/sync/README.md)'
 attachments:
   - '[mod.rs](/crates/diaryx/src/cli/mod.rs)'

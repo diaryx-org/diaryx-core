@@ -95,6 +95,46 @@ These `contents`/`part_of` relationships can be deeply nested, and don't necessa
 
 From here, you can learn about the tool using `--help` menus. Try `diaryx --help`, `diaryx workspace --help`, or `diaryx property --help` to learn more about what you can do with Diaryx.
 
+## Navigation
+
+Interactively browse your workspace hierarchy with a TUI:
+
+```bash
+> diaryx nav
+
+┌─────────────── Workspace ───────────────┬─────────────── notes/ideas.md ───────────────┐
+│ ▶ README - A diaryx workspace           │                                              │
+│   ├── notes - Personal notes            │   Ideas                                      │
+│   │   ├── meeting-notes                 │   notes/ideas.md                             │
+│   │   └── ideas - Random thoughts       │                                              │
+│   └── ▶ projects                        │ # Ideas                                      │
+│                                         │                                              │
+│                                         │ Random thoughts and ideas go here.           │
+├─────────────────────────────────────────┴──────────────────────────────────────────────┤
+│ j/k: navigate  h/l: collapse/expand  Enter: open  J/K: scroll preview  q: quit        │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Bindings
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `h` / `←` | Collapse / Go to parent |
+| `l` / `→` | Expand / Enter child |
+| `Space` / `Tab` | Toggle expand/collapse |
+| `J` / `K` | Scroll preview down/up |
+| `Ctrl+d` / `Ctrl+u` | Page down/up in preview |
+| `Enter` | Open selected file in `$EDITOR` |
+| `q` / `Esc` | Quit |
+
+### Navigation Options
+
+- `diaryx nav` - Start from workspace root
+- `diaryx nav .` - Start from current directory's index
+- `diaryx nav notes/` - Start from a specific subdirectory
+
 ## Workspace Validation
 
 Diaryx can validate your workspace to find broken links and other issues:

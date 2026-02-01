@@ -2,7 +2,7 @@
 title: AGENTS
 description: Instructions for AI Agents
 author: adammharris
-updated: 2026-02-01T08:06:05Z
+updated: 2026-02-01T21:48:51Z
 part_of: '[README](/README.md)'
 ---
 
@@ -18,6 +18,7 @@ README - Repository for the Diaryx project - README.md
 │   ├── diaryx - CLI frontend - crates/diaryx/README.md
 │   │   └── diaryx src - Source code for the Diaryx CLI application - crates/diaryx/src/README.md
 │   │       └── Command-line module - The main CLI command implementation module - crates/diaryx/src/cli/README.md
+│   │           ├── Navigation TUI module - Interactive TUI for navigating workspace hierarchy - crates/diaryx/src/cli/nav/README.md
 │   │           └── Sync CLI module - CLI commands for workspace synchronization - crates/diaryx/src/cli/sync/README.md
 │   ├── diaryx_core - Core library shared by Diaryx clients - crates/diaryx_core/README.md
 │   │   └── diaryx_core src - Source code for the core Diaryx library - crates/diaryx_core/src/README.md
