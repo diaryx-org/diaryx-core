@@ -730,10 +730,11 @@
   // Create a child entry - delegates to controller with sync support
   async function handleCreateChildEntry(parentPath: string) {
     if (!api) return;
-    await createChildEntryWithSync(api, parentPath, async (path) => {
+    await createChildEntryWithSync(api, parentPath, async (result) => {
       await refreshTree();
-      await loadNodeChildren(parentPath);
-      await openEntry(path);
+      // Use result.parent_path (may differ from original if parent was converted to index)
+      await loadNodeChildren(result.parent_path);
+      await openEntry(result.child_path);
       await runValidation();
     });
   }

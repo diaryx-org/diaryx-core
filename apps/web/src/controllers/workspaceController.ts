@@ -70,6 +70,7 @@ export async function loadNodeChildren(
   showUnlinkedFiles: boolean,
   showHiddenFiles: boolean
 ): Promise<void> {
+  console.log('[WorkspaceController] loadNodeChildren called for:', nodePath);
   try {
     let subtree: TreeNode;
 
@@ -84,6 +85,13 @@ export async function loadNodeChildren(
       // Workspace tree mode - use index file path directly
       subtree = await api.getWorkspaceTree(nodePath, TREE_INITIAL_DEPTH);
     }
+
+    console.log('[WorkspaceController] loadNodeChildren subtree result:', {
+      path: subtree.path,
+      name: subtree.name,
+      childrenCount: subtree.children.length,
+      childPaths: subtree.children.map(c => c.path),
+    });
 
     // Merge into existing tree
     workspaceStore.updateSubtree(nodePath, subtree);

@@ -170,22 +170,36 @@ function mergeTree(oldNode: TreeNode | null, newNode: TreeNode | null): TreeNode
   const newTreeHasPlaceholders = newNode.children.some(isPlaceholderNode);
 
   // Add back any old children that weren't in the new tree but should be preserved
-  // ONLY preserve if the new tree has placeholders - this means the fetch was depth-limited
-  // and some children may be hidden behind placeholders.
-  // If the new tree has NO placeholders, all children were fetched - any missing old
-  // children were deleted and should NOT be preserved.
+  // ONLY preserve if:
+  // 1. The new tree has placeholders (depth-limited fetch) - AND
+  // 2. No sibling in the same directory was fetched in the new tree
+  //    (if a sibling was fetched, the old child was likely moved/renamed, not hidden)
   for (const oldChild of oldNode.children) {
     if (isPlaceholderNode(oldChild)) continue;
 
-    const inNewTree = newNode.children.some(c => c.path === oldChild.path);
-    const alreadyMerged = mergedChildren.some(c => c.path === oldChild.path);
+    const inNewTree = newNode.children.some((c) => c.path === oldChild.path);
+    const alreadyMerged = mergedChildren.some((c) => c.path === oldChild.path);
 
     if (!inNewTree && !alreadyMerged && newTreeHasPlaceholders) {
-      // This child was loaded via lazy loading but not in new tree's depth
-      // The new tree has placeholders, so this child might still exist
-      console.log('[mergeTree] Preserving lazy-loaded child:', oldChild.path);
-      mergedChildren.push(oldChild);
-      childrenChanged = true;
+      // Check if old child's parent directory has siblings in new tree
+      // If ANY sibling from the same directory was fetched in the new tree,
+      // the old child was likely moved/renamed - don't preserve it
+      const oldChildDir = oldChild.path.substring(0, oldChild.path.lastIndexOf('/'));
+      const siblingInNewTree = newNode.children.some((c) => {
+        if (isPlaceholderNode(c)) return false;
+        const cDir = c.path.substring(0, c.path.lastIndexOf('/'));
+        return cDir === oldChildDir && c.path !== oldChild.path;
+      });
+
+      if (!siblingInNewTree) {
+        // This child was loaded via lazy loading but not in new tree's depth
+        // No siblings were fetched, so it might still exist behind placeholders
+        console.log('[mergeTree] Preserving lazy-loaded child:', oldChild.path);
+        mergedChildren.push(oldChild);
+        childrenChanged = true;
+      } else {
+        console.log('[mergeTree] NOT preserving (sibling exists in new tree):', oldChild.path);
+      }
     }
   }
 

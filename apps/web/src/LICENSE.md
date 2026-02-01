@@ -1,7 +1,7 @@
 ---
-title: "License"
-description: "PolyForm Shield License 1.0.0"
-part_of: '[README](/apps/web/src/README.md)'
+title: LICENSE
+description: PolyForm Shield License 1.0.0
+part_of: '[README](/README.md)'
 ---
 
 # PolyForm Shield License 1.0.0

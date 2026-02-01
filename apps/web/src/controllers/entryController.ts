@@ -11,7 +11,7 @@
  */
 
 import { tick } from 'svelte';
-import type { EntryData, TreeNode, Api } from '../lib/backend';
+import type { EntryData, TreeNode, Api, CreateChildResult } from '../lib/backend';
 import type { JsonValue } from '../lib/backend/generated/serde_json/JsonValue';
 import { entryStore, uiStore, collaborationStore } from '../models/stores';
 import {
@@ -188,15 +188,15 @@ export async function createChildEntry(
   api: Api,
   parentPath: string,
   onSuccess?: () => Promise<void>
-): Promise<string | null> {
+): Promise<CreateChildResult | null> {
   try {
-    const newPath = await api.createChildEntry(parentPath);
+    const result = await api.createChildEntry(parentPath);
 
     if (onSuccess) {
       await onSuccess();
     }
 
-    return newPath;
+    return result;
   } catch (e) {
     uiStore.setError(e instanceof Error ? e.message : String(e));
     return null;
@@ -612,26 +612,28 @@ export async function deleteEntryWithSync(
  *
  * @param api - API instance
  * @param parentPath - Path of the parent entry
- * @param onSuccess - Callback after successful creation (e.g., refresh tree, load children)
- * @returns The path of the new child entry, or null on failure
+ * @param onSuccess - Callback after successful creation. Receives the full result
+ *                    including both child path and (possibly new) parent path.
+ * @returns The CreateChildResult with paths and conversion info, or null on failure
  */
 export async function createChildEntryWithSync(
   api: Api,
   parentPath: string,
-  onSuccess?: (newPath: string) => Promise<void>
-): Promise<string | null> {
+  onSuccess?: (result: CreateChildResult) => Promise<void>
+): Promise<CreateChildResult | null> {
   try {
     // Create via Rust - handles CRDT sync automatically
-    const newPath = await api.createChildEntry(parentPath);
+    // Returns detailed result with child path, parent path, and conversion info
+    const result = await api.createChildEntry(parentPath);
 
     // Ensure body sync bridge is created for the new file
-    await ensureBodySync(newPath);
+    await ensureBodySync(result.child_path);
 
     if (onSuccess) {
-      await onSuccess(newPath);
+      await onSuccess(result);
     }
 
-    return newPath;
+    return result;
   } catch (e) {
     uiStore.setError(e instanceof Error ? e.message : String(e));
     return null;

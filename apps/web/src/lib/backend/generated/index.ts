@@ -63,6 +63,7 @@ export type { GuestConfig } from './GuestConfig';
 export type { LinkFormat } from './LinkFormat';
 export type { WorkspaceConfig } from './WorkspaceConfig';
 export type { ConvertLinksResult } from './ConvertLinksResult';
+export type { CreateChildResult } from './CreateChildResult';
 
 // JSON value type
 export type { JsonValue } from './serde_json/JsonValue';

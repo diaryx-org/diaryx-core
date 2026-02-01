@@ -558,8 +558,16 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             .map(|c| c.link_format)
             .ok();
 
-        // Get the workspace root directory (parent of root index file)
-        let workspace_root = root_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        // Get the actual workspace root directory.
+        // IMPORTANT: We must use self.root_path (the configured workspace root) rather than
+        // deriving from root_path. When loading children for nested paths like
+        // ./new-entry/new-entry-1/new-entry-1.md, workspace-root paths in contents
+        // (like /new-entry/new-entry-1/new-entry.md) need to be resolved relative to
+        // the ACTUAL workspace root, not the parent of the current file.
+        let workspace_root = self
+            .root_path
+            .clone()
+            .unwrap_or_else(|| root_path.parent().unwrap_or(Path::new(".")).to_path_buf());
 
         self.build_tree_with_depth_and_format(
             root_path,
@@ -622,6 +630,13 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
         let contents = index.frontmatter.contents_list();
         let child_count = contents.len();
 
+        log::debug!(
+            "[build_tree] Processing {}: contents={:?}, workspace_root={:?}",
+            root_path.display(),
+            contents,
+            workspace_root
+        );
+
         // Check if we've hit depth limit
         let at_depth_limit = max_depth.map(|d| d == 0).unwrap_or(false);
 
@@ -647,8 +662,16 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
                     workspace_root.join(&child_path)
                 };
 
+                let exists = self.fs.exists(&absolute_child_path).await;
+                log::debug!(
+                    "[build_tree] Child '{}' resolved to {:?}, exists={}",
+                    child_path_str,
+                    absolute_child_path,
+                    exists
+                );
+
                 // Only include if the file exists
-                if self.fs.exists(&absolute_child_path).await {
+                if exists {
                     match Box::pin(self.build_tree_with_depth_and_format(
                         &absolute_child_path,
                         next_depth,
@@ -1691,6 +1714,102 @@ impl<FS: AsyncFileSystem> Workspace<FS> {
             .await?;
 
         Ok(child_path)
+    }
+
+    /// Create a new child entry under a parent index, returning detailed result.
+    ///
+    /// This method provides more information than `create_child_entry`, including
+    /// whether the parent was converted to an index and what the new parent path is.
+    /// This is essential for the frontend to correctly update the tree when a leaf
+    /// is converted to an index (which changes its path).
+    ///
+    /// Returns a [`CreateChildResult`] with:
+    /// - `child_path`: The path to the newly created child
+    /// - `parent_path`: The current parent path (may differ from input if converted)
+    /// - `parent_converted`: Whether the parent was converted from leaf to index
+    /// - `original_parent_path`: The original parent path if conversion occurred
+    pub async fn create_child_entry_with_result(
+        &self,
+        parent_index_path: &Path,
+        title: Option<&str>,
+    ) -> Result<crate::command::CreateChildResult> {
+        use crate::path_utils::relative_path_from_file_to_target;
+
+        let original_parent_str = parent_index_path.to_string_lossy().to_string();
+
+        // Parse parent - if it's a leaf (not an index), convert it to an index first
+        let (effective_parent, was_converted) = if let Ok(parent_index) =
+            self.parse_index(parent_index_path).await
+        {
+            if parent_index.frontmatter.is_index() {
+                (parent_index_path.to_path_buf(), false)
+            } else {
+                // Parent is a leaf file - convert to index first
+                let new_path = self.convert_to_index(parent_index_path).await?;
+                (new_path, true)
+            }
+        } else {
+            // Parent doesn't exist or couldn't be parsed
+            return Err(DiaryxError::FileRead {
+                path: parent_index_path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "Parent file not found"),
+            });
+        };
+
+        // Determine parent directory (from effective parent, which may have moved)
+        let parent_dir = effective_parent
+            .parent()
+            .ok_or_else(|| DiaryxError::InvalidPath {
+                path: effective_parent.clone(),
+                message: "Parent index has no directory".to_string(),
+            })?;
+
+        // Generate unique filename
+        let child_filename = self.generate_unique_child_name(parent_dir).await;
+        let child_path = parent_dir.join(&child_filename);
+
+        // Format part_of link based on configured format
+        let display_title = title.unwrap_or("New Entry");
+        let part_of_value = if self.root_path.is_some() {
+            // Use link formatting - resolve parent's title for the link display
+            let child_canonical = self.get_canonical_path(&child_path);
+            let parent_canonical = self.get_canonical_path(&effective_parent);
+            let parent_title = self.resolve_title(&parent_canonical).await;
+            self.format_link_sync(&parent_canonical, &parent_title, &child_canonical)
+        } else {
+            // Fallback: use relative path
+            relative_path_from_file_to_target(&child_path, &effective_parent)
+        };
+
+        // Create child file with frontmatter
+        let content = format!(
+            "---\ntitle: \"{}\"\npart_of: \"{}\"\n---\n\n# {}\n\n",
+            display_title, part_of_value, display_title
+        );
+
+        self.fs
+            .create_new(&child_path, &content)
+            .await
+            .map_err(|e| DiaryxError::FileWrite {
+                path: child_path.clone(),
+                source: e,
+            })?;
+
+        // Add to parent's contents (using formatted link)
+        let child_canonical = self.get_canonical_path(&child_path);
+        self.add_to_index_contents_canonical(&effective_parent, &child_canonical, display_title)
+            .await?;
+
+        Ok(crate::command::CreateChildResult {
+            child_path: child_path.to_string_lossy().to_string(),
+            parent_path: effective_parent.to_string_lossy().to_string(),
+            parent_converted: was_converted,
+            original_parent_path: if was_converted {
+                Some(original_parent_str)
+            } else {
+                None
+            },
+        })
     }
 
     /// Rename an entry file by giving it a new filename.

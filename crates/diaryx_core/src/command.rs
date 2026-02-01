@@ -971,6 +971,29 @@ pub enum Command {
 }
 
 // ============================================================================
+// Result Types
+// ============================================================================
+
+/// Result of creating a child entry, with details about any parent conversion.
+///
+/// When creating a child under a leaf file, the leaf is converted to an index first.
+/// This struct provides both the new child path and the (possibly new) parent path,
+/// allowing the frontend to correctly update the tree and navigation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "bindings/")]
+pub struct CreateChildResult {
+    /// Path to the newly created child entry.
+    pub child_path: String,
+    /// Current path to the parent entry (may differ from input if converted to index).
+    pub parent_path: String,
+    /// True if the parent was converted from a leaf to an index.
+    pub parent_converted: bool,
+    /// Original parent path before conversion (only set if parent_converted is true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_parent_path: Option<String>,
+}
+
+// ============================================================================
 // Response Types
 // ============================================================================
 
@@ -1044,6 +1067,9 @@ pub enum Response {
 
     /// Convert links result response.
     ConvertLinksResult(ConvertLinksResult),
+
+    /// Create child entry result (includes parent conversion info).
+    CreateChildResult(CreateChildResult),
 
     /// Binary data response (for CRDT state vectors, updates).
     #[cfg(feature = "crdt")]

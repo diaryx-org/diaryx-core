@@ -23,6 +23,7 @@ import type {
   CreateEntryOptions,
   SearchOptions,
   AncestorAttachmentsResult,
+  CreateChildResult,
 } from './generated';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 
@@ -111,13 +112,20 @@ export function createApi(backend: Backend) {
       return expectResponse(response, 'String').data;
     },
 
-    /** Create a new child entry under a parent. Returns the path to the created entry. */
-    async createChildEntry(parentPath: string): Promise<string> {
+    /**
+     * Create a new child entry under a parent.
+     * Returns detailed result including the new child path and (possibly new) parent path.
+     *
+     * When the parent is a leaf file, it gets converted to an index first,
+     * which changes its path. The result includes both paths so the frontend
+     * can correctly update the tree and navigation.
+     */
+    async createChildEntry(parentPath: string): Promise<CreateChildResult> {
       const response = await backend.execute({
         type: 'CreateChildEntry',
         params: { parent_path: parentPath },
       });
-      return expectResponse(response, 'String').data;
+      return expectResponse(response, 'CreateChildResult').data;
     },
 
     /** Attach an existing entry to a parent index. */

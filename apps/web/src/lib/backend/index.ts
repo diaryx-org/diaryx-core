@@ -30,6 +30,9 @@ export type {
 
 export { BackendError, isTauri, isBrowser } from "./interface";
 
+// Re-export API types from generated
+export type { CreateChildResult } from "./generated";
+
 // Re-export API wrapper
 export { createApi, type Api } from "./api";
 
@@ -149,7 +152,7 @@ let apiInstance: Api | null = null;
 /**
  * Get the typed API wrapper, initializing if necessary.
  * This is the recommended way to interact with the backend.
- * 
+ *
  * Usage:
  * ```ts
  * const api = await getApi();

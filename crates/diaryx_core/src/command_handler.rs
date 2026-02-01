@@ -453,6 +453,11 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
             Command::GetWorkspaceTree { path, depth } => {
                 let root_path = path.unwrap_or_else(|| "workspace/index.md".to_string());
+                log::info!(
+                    "[CommandHandler] GetWorkspaceTree called: path={}, depth={:?}",
+                    root_path,
+                    depth
+                );
                 let tree = self
                     .workspace()
                     .inner()
@@ -462,6 +467,11 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                         &mut std::collections::HashSet::new(),
                     )
                     .await?;
+                log::info!(
+                    "[CommandHandler] GetWorkspaceTree result: name={}, children_count={}",
+                    tree.name,
+                    tree.children.len()
+                );
                 Ok(Response::Tree(tree))
             }
 
@@ -983,19 +993,21 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
 
             Command::CreateChildEntry { parent_path } => {
                 let ws = self.workspace().inner();
-                // workspace.create_child_entry:
+                // workspace.create_child_entry_with_result:
                 // 1. Converts parent to index if needed (moves parent.md to parent/parent.md)
                 // 2. Creates child file with frontmatter (title, part_of)
                 // 3. Updates parent's contents array
+                // 4. Returns detailed result with both child and (possibly new) parent paths
                 // All file writes go through CrdtFs which extracts metadata from frontmatter
-                let new_path = ws.create_child_entry(Path::new(&parent_path), None).await?;
-                let new_path_str = new_path.to_string_lossy().to_string();
+                let result = ws
+                    .create_child_entry_with_result(Path::new(&parent_path), None)
+                    .await?;
 
                 // CrdtFs handles CRDT updates automatically via create_new and write_file hooks.
                 // We only need to track for echo detection and emit sync.
                 #[cfg(feature = "crdt")]
                 {
-                    let canonical_child = self.get_canonical_path(&new_path_str);
+                    let canonical_child = self.get_canonical_path(&result.child_path);
 
                     // Track for echo detection (read metadata that CrdtFs already set)
                     if let Some(crdt_ops) = self.crdt()
@@ -1008,12 +1020,13 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
                     self.emit_workspace_sync("CreateChildEntry");
 
                     log::debug!(
-                        "[CommandHandler] CreateChildEntry: created {} (CrdtFs handled CRDT)",
-                        canonical_child
+                        "[CommandHandler] CreateChildEntry: created {} (parent_converted={}, CrdtFs handled CRDT)",
+                        canonical_child,
+                        result.parent_converted
                     );
                 }
 
-                Ok(Response::String(new_path_str))
+                Ok(Response::CreateChildResult(result))
             }
 
             Command::AttachEntryToParent {
