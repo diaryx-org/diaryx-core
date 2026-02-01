@@ -209,12 +209,6 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
             // doesn't start with '.'), use it as-is to avoid path doubling.
             let canonical = if parsed.path_type == link_parser::PathType::WorkspaceRoot {
                 parsed.path.clone()
-            } else if parsed.path_type == link_parser::PathType::Ambiguous
-                && parsed.path.contains('/')
-                && !parsed.path.starts_with('.')
-            {
-                // Already looks canonical (e.g., "Folder/file.md")
-                parsed.path.clone()
             } else {
                 link_parser::to_canonical(&parsed, path)
             };
@@ -232,12 +226,6 @@ impl<FS: AsyncFileSystem> CrdtFs<FS> {
                         // (WorkspaceRoot) or looks like a canonical path (contains '/' but
                         // doesn't start with '.'), use it as-is to avoid path doubling.
                         if parsed.path_type == link_parser::PathType::WorkspaceRoot {
-                            parsed.path.clone()
-                        } else if parsed.path_type == link_parser::PathType::Ambiguous
-                            && parsed.path.contains('/')
-                            && !parsed.path.starts_with('.')
-                        {
-                            // Already looks canonical (e.g., "Folder/file.md")
                             parsed.path.clone()
                         } else {
                             link_parser::to_canonical(&parsed, path)
