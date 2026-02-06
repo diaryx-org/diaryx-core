@@ -84,6 +84,7 @@ if (!_g.__diaryx_bridge) {
 function registerBridgeOnGlobal(): void {
   _g.__diaryx_bridge.ensureBodySync = _ensureBodySyncImpl;
   _g.__diaryx_bridge.getBodyContentFromCrdt = _getBodyContentFromCrdtImpl;
+  _g.__diaryx_bridge.getFileMetadata = _getFileMetadataImpl;
 }
 
 // State
@@ -310,9 +311,10 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
             markInitialSyncComplete();
 
             // Proactively subscribe body sync for all files
+            let filePaths: string[] = [];
             try {
               const allFiles = await getAllFiles();
-              const filePaths = Array.from(allFiles.keys());
+              filePaths = Array.from(allFiles.keys());
               if (filePaths.length > 0) {
                 console.log(`[UnifiedSync] Subscribing body sync for ${filePaths.length} files`);
                 // Subscribe in batches with concurrency limit
@@ -326,11 +328,36 @@ export async function setWorkspaceServer(url: string | null): Promise<void> {
             } catch (e) {
               console.warn('[UnifiedSync] Failed to start body sync:', e);
             }
-            _freshFromServerLoad = false; // Reset after initial body sync
+
+            // Wait for all body syncs to complete (SyncStep2 responses) before marking synced.
+            // Without this, body CRDTs may not yet have the server's content when we mark "synced",
+            // which can cause edits to overwrite the original content.
+            if (unifiedSyncTransport && filePaths.length > 0) {
+              console.log(`[UnifiedSync] Waiting for ${filePaths.length} body syncs to complete...`);
+              const waitPromises = filePaths.map(fp =>
+                unifiedSyncTransport!.waitForBodySync(fp, 15000).catch(() => false)
+              );
+              await Promise.all(waitPromises);
+              console.log(`[UnifiedSync] All body syncs complete`);
+            }
+
+            _freshFromServerLoad = false; // Reset after body sync is truly complete
             collaborationStore.setBodySyncStatus('synced');
           },
-          onFilesChanged: () => {
+          onSyncComplete: (filesSynced) => {
+            console.log(`[UnifiedSync] Sync complete: ${filesSynced} files synced`);
+            collaborationStore.setBodySyncStatus('synced');
+          },
+          onFilesChanged: async (changedFiles) => {
             notifyFileChange(null, null);
+            // Subscribe body sync for any new/changed files
+            for (const filePath of changedFiles) {
+              try {
+                await getOrCreateBodyBridge(filePath);
+              } catch (err) {
+                console.warn(`[UnifiedSync] Failed to subscribe body for changed file ${filePath}:`, err);
+              }
+            }
           },
           onProgress: (completed, total) => {
             notifySyncProgress(completed, total);
@@ -887,37 +914,82 @@ export async function initWorkspace(options: WorkspaceInitOptions): Promise<void
             _nativeSyncActive = false;
           }
         } else {
-          // Use browser WebSocket (WASM/web)
-          const wsUrl = toWebSocketUrl(serverUrl);
-          console.log('[WorkspaceCrdtBridge] Creating SyncTransport during init:', wsUrl, 'docName:', workspaceDocName);
+          // Use v2 UnifiedSyncTransport (single WebSocket for workspace + body via /sync2)
+          console.log('[WorkspaceCrdtBridge] Using v2 UnifiedSyncTransport during init');
 
-          syncBridge = createWorkspaceSyncTransport({
-            serverUrl: wsUrl,
-            docName: workspaceDocName,
-            workspaceId: _workspaceId ?? undefined,
+          const v2Url = toWebSocketUrlV2(serverUrl);
+
+          unifiedSyncTransport = createUnifiedSyncTransport({
+            serverUrl: v2Url,
+            workspaceId: _workspaceId!,
             backend: _backend,
+            writeToDisk: true,
             authToken: getToken() ?? undefined,
-            writeToDisk: true, // Rust handles disk writes automatically
             onStatusChange: (connected) => {
-              console.log('[WorkspaceCrdtBridge] Connection status:', connected);
+              notifySyncStatus(connected ? 'syncing' : 'idle');
+              if (!connected) {
+                collaborationStore.setBodySyncStatus('idle');
+              }
             },
-            onSynced: async () => {
-              console.log('[WorkspaceCrdtBridge] Initial sync complete');
+            onWorkspaceSynced: async () => {
+              notifySyncStatus('synced');
               notifyFileChange(null, null);
               await updateFileIndexFromCrdt();
               markInitialSyncComplete();
 
-              // Auto-sync body content for all files in background
-              await autoSyncBodiesInBackground();
+              // Proactively subscribe body sync for all files
+              let filePaths: string[] = [];
+              try {
+                const allFiles = await getAllFiles();
+                filePaths = Array.from(allFiles.keys());
+                if (filePaths.length > 0) {
+                  console.log(`[UnifiedSync] Subscribing body sync for ${filePaths.length} files (init)`);
+                  const concurrency = 5;
+                  for (let i = 0; i < filePaths.length; i += concurrency) {
+                    const batch = filePaths.slice(i, i + concurrency);
+                    await Promise.all(batch.map(fp => getOrCreateBodyBridge(fp)));
+                  }
+                  console.log(`[UnifiedSync] All body subscriptions complete (init)`);
+                }
+              } catch (e) {
+                console.warn('[UnifiedSync] Failed to start body sync (init):', e);
+              }
+
+              // Wait for all body syncs to complete (SyncStep2 responses) before marking synced.
+              if (unifiedSyncTransport && filePaths.length > 0) {
+                console.log(`[UnifiedSync] Waiting for ${filePaths.length} body syncs to complete (init)...`);
+                const waitPromises = filePaths.map(fp =>
+                  unifiedSyncTransport!.waitForBodySync(fp, 15000).catch(() => false)
+                );
+                await Promise.all(waitPromises);
+                console.log(`[UnifiedSync] All body syncs complete (init)`);
+              }
+
+              _freshFromServerLoad = false;
+              collaborationStore.setBodySyncStatus('synced');
             },
-            onFilesChanged: () => notifyFileChange(null, null),
+            onSyncComplete: (filesSynced) => {
+              console.log(`[UnifiedSync] Sync complete (init): ${filesSynced} files synced`);
+              collaborationStore.setBodySyncStatus('synced');
+            },
+            onFilesChanged: async (changedFiles) => {
+              notifyFileChange(null, null);
+              // Subscribe body sync for any new/changed files
+              for (const filePath of changedFiles) {
+                try {
+                  await getOrCreateBodyBridge(filePath);
+                } catch (err) {
+                  console.warn(`[UnifiedSync] Failed to subscribe body for changed file ${filePath}:`, err);
+                }
+              }
+            },
             onProgress: (completed, total) => {
-              console.log('[WorkspaceCrdtBridge] Sync progress (init):', completed, '/', total);
               notifySyncProgress(completed, total);
             },
           });
 
-          await syncBridge.connect();
+          notifySyncStatus('connecting');
+          await unifiedSyncTransport.connect();
         }
       }
     } else {
@@ -1006,6 +1078,14 @@ export function isWorkspaceConnected(): boolean {
  * Get file metadata from the CRDT.
  */
 export async function getFileMetadata(path: string): Promise<FileMetadata | null> {
+  // Delegate to configured module instance if this one isn't configured
+  if (!rustApi && _g.__diaryx_bridge?.getFileMetadata) {
+    return _g.__diaryx_bridge.getFileMetadata(path);
+  }
+  return _getFileMetadataImpl(path);
+}
+
+async function _getFileMetadataImpl(path: string): Promise<FileMetadata | null> {
   if (!rustApi) return null;
   return rustApi.getFile(path);
 }
@@ -1321,16 +1401,10 @@ async function getOrCreateBodyBridge(filePath: string, sendFocus: boolean = fals
           console.log(`[UnifiedSync] Body CRDT already has ${existingBodyContent.length} chars for ${canonicalPath}`);
         }
       } else if (backendApi && !shareSessionStore.isGuest) {
-        try {
-          const entry = await backendApi.getEntry(canonicalPath);
-          if (entry && entry.content && entry.content.length > 0) {
-            console.log(`[UnifiedSync] Loading ${entry.content.length} chars from disk into CRDT BEFORE sync for ${canonicalPath}`);
-            await syncHelpers.trackContent(_backend!, canonicalPath, entry.content);
-            await rustApi.setBodyContent(canonicalPath, entry.content);
-          }
-        } catch (diskErr) {
-          console.log(`[UnifiedSync] Could not load from disk for ${canonicalPath}:`, diskErr);
-        }
+        // Body CRDT is empty but we're about to sync — let the server deliver content.
+        // Loading from disk here creates NEW operations (fresh actor ID after reload)
+        // which duplicate with the server's original operations.
+        console.log(`[UnifiedSync] Body CRDT empty for ${canonicalPath}, letting sync deliver content`);
       }
     } catch (err) {
       console.warn(`[UnifiedSync] Could not get body content for ${canonicalPath}:`, err);
@@ -1350,8 +1424,27 @@ async function getOrCreateBodyBridge(filePath: string, sendFocus: boolean = fals
           notifyBodyChange(canonicalPath, result.content);
         }
       },
-      () => {
+      async () => {
         console.log(`[WorkspaceCrdtBridge] v2 body synced: ${canonicalPath}`);
+        // If CRDT is still empty after sync, load from disk (offline-created file)
+        if (rustApi && backendApi && !shareSessionStore.isGuest) {
+          try {
+            const contentAfterSync = await rustApi.getBodyContent(canonicalPath);
+            if (!contentAfterSync || contentAfterSync.length === 0) {
+              const entry = await backendApi.getEntry(canonicalPath);
+              if (entry?.content && entry.content.length > 0) {
+                console.log(`[UnifiedSync] Post-sync: loading ${entry.content.length} chars from disk for ${canonicalPath}`);
+                await rustApi.setBodyContent(canonicalPath, entry.content);
+                const update = await syncHelpers.createBodyUpdate(_backend!, canonicalPath, entry.content);
+                if (update && update.length > 0) {
+                  unifiedSyncTransport!.sendBodyMessage(canonicalPath, new Uint8Array(update));
+                }
+              }
+            }
+          } catch (e) {
+            console.warn(`[UnifiedSync] Post-sync disk load failed for ${canonicalPath}:`, e);
+          }
+        }
       }
     );
     return;
@@ -2664,19 +2757,20 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
         (async () => {
           try {
             if (unifiedSyncTransport) {
-              // v2: send directly — Rust already has the CRDT initialized when it fires SendSyncMessage.
-              // Do NOT call getOrCreateBodyBridge here; it would re-subscribe and send SyncStep1, causing a loop.
-              unifiedSyncTransport.sendBodyMessage(doc_name, bytes);
-              console.log('[WorkspaceCrdtBridge] v2 body sync message sent/queued for', doc_name, bytes.length, 'bytes');
-            } else {
-              // v1: ensure subscription exists, then send
-              await getOrCreateBodyBridge(doc_name);
-              if (multiplexedBodySync) {
-                multiplexedBodySync.send(doc_name, bytes);
-                console.log('[WorkspaceCrdtBridge] Body sync message sent/queued for', doc_name, bytes.length, 'bytes, connected:', multiplexedBodySync.isConnected);
+              // Only send if this body file has been subscribed (SyncStep1 sent).
+              // This prevents phantom messages from importFromZip and CRDT clearing
+              // from reaching the server before the Y-sync handshake.
+              if (unifiedSyncTransport.isBodySubscribed(doc_name)) {
+                unifiedSyncTransport.sendBodyMessage(doc_name, bytes);
+                console.log('[WorkspaceCrdtBridge] v2 body sync message sent/queued for', doc_name, bytes.length, 'bytes');
               } else {
-                console.warn('[WorkspaceCrdtBridge] No body sync transport available, message dropped for:', doc_name);
+                console.log('[WorkspaceCrdtBridge] Body sync message dropped (not subscribed):', doc_name);
               }
+            } else if (!_serverUrl) {
+              // No server configured — local-only mode, skip
+            } else {
+              // v2 transport not ready yet (still connecting), drop the message
+              console.warn('[WorkspaceCrdtBridge] Body sync message dropped (no transport ready):', doc_name);
             }
           } catch (err) {
             console.warn('[WorkspaceCrdtBridge] Failed to send body sync for', doc_name, err);

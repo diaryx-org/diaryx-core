@@ -557,6 +557,15 @@ export class UnifiedSyncTransport {
     if (callbacks) {
       callbacks.receivedData = true;
       await callbacks.onMessage(message);
+
+      // Mark synced after first message receipt (SyncStep2 delivers initial content).
+      // Siphonophore doesn't send a `sync_complete` control message, so we rely on
+      // receiving actual data as the signal that the Y-sync handshake is complete.
+      if (!callbacks.synced) {
+        callbacks.synced = true;
+        callbacks.onSynced?.();
+        callbacks.syncedResolver?.();
+      }
     } else {
       console.log(
         `[UnifiedSyncTransport] Dropped message for unsubscribed file: ${filePath}`,

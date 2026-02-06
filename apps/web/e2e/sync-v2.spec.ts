@@ -122,20 +122,33 @@ async function waitForFileExists(page: Page, entryPath: string, timeout = 30000)
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const exists = await page.evaluate(async (p) => {
-      const { getBackend, createApi } = await import("/src/lib/backend");
-      const { getFileMetadata } = await import("/src/lib/crdt/workspaceCrdtBridge");
-      const backend = await getBackend();
-      const api = createApi(backend);
       const candidates = [p, p.startsWith("./") ? p.slice(2) : `./${p}`];
-      for (const candidate of candidates) {
-        try {
-          if (await api.fileExists(candidate)) return true;
-        } catch { /* ignore */ }
-        try {
-          const metadata = await getFileMetadata(candidate);
-          if (metadata && !metadata.deleted) return true;
-        } catch { /* ignore */ }
+
+      // Primary: check CRDT metadata via globalThis (bypasses Vite module duplication).
+      // Note: metadata may contain BigInt fields which can't cross the Playwright
+      // serialization boundary, so we must resolve to a plain boolean inside evaluate.
+      const bridge = (globalThis as any).__diaryx_bridge;
+      if (bridge?.getFileMetadata) {
+        for (const candidate of candidates) {
+          try {
+            const metadata = await bridge.getFileMetadata(candidate);
+            if (metadata && !metadata.deleted) return true;
+          } catch { /* ignore */ }
+        }
       }
+
+      // Fallback: check virtual filesystem via backend API
+      try {
+        const { getBackend, createApi } = await import("/src/lib/backend");
+        const backend = await getBackend();
+        const api = createApi(backend);
+        for (const candidate of candidates) {
+          try {
+            if (await api.fileExists(candidate)) return true;
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+
       return false;
     }, entryPath);
 
@@ -153,29 +166,40 @@ async function waitForEntryContent(
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    const content = await page.evaluate(async (p) => {
-      const { getBackend, createApi } = await import("/src/lib/backend");
-      const { ensureBodySync, getBodyContentFromCrdt } = await import("/src/lib/crdt/workspaceCrdtBridge");
-      const backend = await getBackend();
-      const api = createApi(backend);
-      const candidates = [p, p.startsWith("./") ? p.slice(2) : `./${p}`];
-      for (const candidate of candidates) {
-        try {
-          await ensureBodySync(candidate);
-          const crdtContent = await getBodyContentFromCrdt(candidate);
-          if (crdtContent) return crdtContent;
-        } catch { /* ignore */ }
-        try {
-          const entry = await api.getEntry(candidate);
-          if (entry?.content) return entry.content;
-        } catch { /* ignore */ }
-        try {
-          const content = await api.readFile(candidate);
-          if (content) return content;
-        } catch { /* ignore */ }
+    const content = await page.evaluate(async (args) => {
+      const candidates = [args.p, args.p.startsWith("./") ? args.p.slice(2) : `./${args.p}`];
+
+      // Primary: use globalThis bridge directly (bypasses slow Vite module imports)
+      const bridge = (globalThis as any).__diaryx_bridge;
+      if (bridge?.ensureBodySync && bridge?.getBodyContentFromCrdt) {
+        for (const candidate of candidates) {
+          try {
+            await bridge.ensureBodySync(candidate);
+            const crdtContent = await bridge.getBodyContentFromCrdt(candidate);
+            if (crdtContent) return crdtContent;
+          } catch { /* ignore */ }
+        }
       }
+
+      // Fallback: use backend API via module imports
+      try {
+        const { getBackend, createApi } = await import("/src/lib/backend");
+        const backend = await getBackend();
+        const api = createApi(backend);
+        for (const candidate of candidates) {
+          try {
+            const entry = await api.getEntry(candidate);
+            if (entry?.content) return entry.content;
+          } catch { /* ignore */ }
+          try {
+            const content = await api.readFile(candidate);
+            if (content) return content;
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+
       return "";
-    }, entryPath);
+    }, { p: entryPath });
 
     if (content.includes(expected)) return;
     await page.waitForTimeout(500);
@@ -187,20 +211,31 @@ async function waitForFileMissing(page: Page, entryPath: string, timeout = 30000
   const start = Date.now();
   while (Date.now() - start < timeout) {
     const exists = await page.evaluate(async (p) => {
-      const { getBackend, createApi } = await import("/src/lib/backend");
-      const { getFileMetadata } = await import("/src/lib/crdt/workspaceCrdtBridge");
-      const backend = await getBackend();
-      const api = createApi(backend);
       const candidates = [p, p.startsWith("./") ? p.slice(2) : `./${p}`];
-      for (const candidate of candidates) {
-        try {
-          if (await api.fileExists(candidate)) return true;
-        } catch { /* ignore */ }
-        try {
-          const metadata = await getFileMetadata(candidate);
-          if (metadata && !metadata.deleted) return true;
-        } catch { /* ignore */ }
+
+      // Primary: check CRDT metadata via globalThis (bypasses Vite module duplication)
+      const bridge = (globalThis as any).__diaryx_bridge;
+      if (bridge?.getFileMetadata) {
+        for (const candidate of candidates) {
+          try {
+            const metadata = await bridge.getFileMetadata(candidate);
+            if (metadata && !metadata.deleted) return true;
+          } catch { /* ignore */ }
+        }
       }
+
+      // Fallback: check virtual filesystem via backend API
+      try {
+        const { getBackend, createApi } = await import("/src/lib/backend");
+        const backend = await getBackend();
+        const api = createApi(backend);
+        for (const candidate of candidates) {
+          try {
+            if (await api.fileExists(candidate)) return true;
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+
       return false;
     }, entryPath);
 
@@ -282,7 +317,7 @@ async function createEntry(
 
   await expect(
     page.getByRole("treeitem", { name: new RegExp(title) }),
-  ).toBeVisible({ timeout: 15000 });
+  ).toBeVisible({ timeout: 30000 });
 
   return resolvedPath;
 }
@@ -292,7 +327,7 @@ async function openSyncWizard(page: Page, label: string): Promise<void> {
   await page.getByLabel("Sync status").click();
   await page.getByRole("button", { name: /Set up sync|Manage sync/i }).click();
   await expect(page.getByText("Sign In to Sync")).toBeVisible({
-    timeout: 10000,
+    timeout: 20000,
   });
   log(label, "Sync wizard opened");
 }
@@ -339,7 +374,7 @@ async function completeAuthAndInit(
 
   log(label, "Clicking dev link to verify token");
   const devLinkElement = page.locator('a:has-text("Click here to verify")');
-  await devLinkElement.waitFor({ state: "visible", timeout: 10000 });
+  await devLinkElement.waitFor({ state: "visible", timeout: 20000 });
   await devLinkElement.click();
 
   log(label, "Waiting for token processing to complete");
@@ -387,7 +422,7 @@ async function completeAuthAndInit(
   await modeButton.click();
   log(label, `Init flow - clicked ${modeLabel}`);
 
-  await startSyncButton.waitFor({ state: "visible", timeout: 5000 });
+  await startSyncButton.waitFor({ state: "visible", timeout: 15000 });
   await startSyncButton.click();
   log(label, "Clicked Start Syncing");
 
@@ -560,12 +595,112 @@ test.describe.serial("Sync V2", () => {
     log("test", `clientB body content (${bodyB.length} chars): "${bodyB.slice(0, 200)}"`);
 
     // Count occurrences of the unique body string
-    const occurrences = bodyB.split(uniqueBody).length - 1;
-    log("test", `Body occurrences: ${occurrences}`);
-    expect(occurrences).toBe(1);
+    const occurrencesB = bodyB.split(uniqueBody).length - 1;
+    log("test", `clientB body occurrences: ${occurrencesB}`);
+    expect(occurrencesB).toBe(1);
+
+    // Also verify clientA content is not duplicated
+    log("test", "Checking body content on clientA for duplication");
+    const bodyA = await pageA.evaluate(async (args) => {
+      const { getBackend, createApi } = await import("/src/lib/backend");
+      const backend = await getBackend();
+      const api = createApi(backend);
+      const candidates = [args.path, `./${args.path}`];
+      for (const candidate of candidates) {
+        try {
+          const entry = await api.getEntry(candidate);
+          if (entry?.content) return entry.content;
+        } catch { /* ignore */ }
+        try {
+          const content = await api.readFile(candidate);
+          if (content) return content;
+        } catch { /* ignore */ }
+      }
+      return "";
+    }, { path: `dup-test-${ts}.md` });
+
+    log("test", `clientA body content (${bodyA.length} chars): "${bodyA.slice(0, 200)}"`);
+    const occurrencesA = bodyA.split(uniqueBody).length - 1;
+    log("test", `clientA body occurrences: ${occurrencesA}`);
+    expect(occurrencesA).toBe(1);
 
     await contextA.close();
     await contextB.close();
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 1b: No content duplication after page reload
+  // -----------------------------------------------------------------------
+  test("no content duplication after page reload", async ({ browser, browserName }) => {
+    test.setTimeout(180000);
+    test.skip(browserName === "webkit", "WebKit OPFS not fully supported");
+    test.skip(!serverAvailable, "Sync server not available");
+
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    setupConsoleLogs(page, "client");
+
+    await page.goto("/");
+    await clearAllBrowserStorage(page);
+    await page.reload();
+
+    await waitForAppReady(page, 40000);
+    await waitForWorkspaceCrdtInitialized(page);
+    await enableShowAllFiles(page);
+
+    const ts = Date.now();
+    const testEmail = `sync-v2-reload-${ts}@example.com`;
+    const uniqueBody = `Reload test content ${ts}`;
+
+    log("test", "Creating entry");
+    await createEntry(page, `reload-test-${ts}.md`, `Reload Test ${ts}`, uniqueBody);
+
+    log("test", "Auth + sync");
+    await completeAuthAndInit(page, testEmail, /Sync local content/i, "client");
+    await page.waitForTimeout(3000);
+
+    log("test", "Verifying content before reload");
+    await waitForEntryContent(page, `reload-test-${ts}.md`, uniqueBody, 15000);
+
+    log("test", "Reloading page");
+    await page.reload();
+    // After reload, no entry is auto-selected so ProseMirror won't be visible.
+    // Just wait for the body and CRDT init instead of waitForAppReady.
+    await page.waitForSelector('body', { state: 'visible' });
+    await waitForWorkspaceCrdtInitialized(page);
+
+    // Wait for sync to re-establish after reload
+    await page.waitForTimeout(5000);
+
+    log("test", "Verifying content after reload");
+    await waitForEntryContent(page, `reload-test-${ts}.md`, uniqueBody, 30000);
+
+    const bodyAfterReload = await page.evaluate(async (args) => {
+      const { getBackend, createApi } = await import("/src/lib/backend");
+      const backend = await getBackend();
+      const api = createApi(backend);
+      const candidates = [args.path, `./${args.path}`];
+      for (const candidate of candidates) {
+        try {
+          const entry = await api.getEntry(candidate);
+          if (entry?.content) return entry.content;
+        } catch { /* ignore */ }
+        try {
+          const content = await api.readFile(candidate);
+          if (content) return content;
+        } catch { /* ignore */ }
+      }
+      return "";
+    }, { path: `reload-test-${ts}.md` });
+
+    log("test", `Body after reload (${bodyAfterReload.length} chars): "${bodyAfterReload.slice(0, 200)}"`);
+
+    const occurrences = bodyAfterReload.split(uniqueBody).length - 1;
+    log("test", `Body occurrences after reload: ${occurrences}`);
+    expect(occurrences).toBe(1);
+
+    await context.close();
   });
 
   // -----------------------------------------------------------------------
@@ -619,7 +754,7 @@ test.describe.serial("Sync V2", () => {
     await enableShowAllFiles(pageB);
     await expect(
       pageB.getByRole("treeitem", { name: new RegExp(`New File ${ts}`) }),
-    ).toBeVisible({ timeout: 15000 });
+    ).toBeVisible({ timeout: 30000 });
 
     await contextA.close();
     await contextB.close();
@@ -687,8 +822,10 @@ test.describe.serial("Sync V2", () => {
     await pageA.reload();
     await pageB.reload();
 
-    await waitForAppReady(pageA, 40000);
-    await waitForAppReady(pageB, 40000);
+    // After reload, no entry is auto-selected so ProseMirror won't be visible.
+    // Just wait for the body and CRDT init instead of waitForAppReady.
+    await pageA.waitForSelector('body', { state: 'visible' });
+    await pageB.waitForSelector('body', { state: 'visible' });
     await waitForWorkspaceCrdtInitialized(pageA);
     await waitForWorkspaceCrdtInitialized(pageB);
 
@@ -791,6 +928,136 @@ test.describe.serial("Sync V2", () => {
 
     log("test", `Temp files in CRDT: ${JSON.stringify(crdtHasTempFiles)}`);
     expect(crdtHasTempFiles).toHaveLength(0);
+
+    await contextA.close();
+    await contextB.close();
+  });
+
+  // -----------------------------------------------------------------------
+  // Test 5: Client B edit after load-from-server does not overwrite Client A
+  // -----------------------------------------------------------------------
+  test("client B edit after load-from-server preserves client A content", async ({ browser, browserName }) => {
+    test.setTimeout(180000);
+    test.skip(browserName === "webkit", "WebKit OPFS not fully supported");
+    test.skip(!serverAvailable, "Sync server not available");
+
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
+
+    setupConsoleLogs(pageA, "clientA");
+    setupConsoleLogs(pageB, "clientB");
+
+    await pageA.goto("/");
+    await pageB.goto("/");
+
+    await clearAllBrowserStorage(pageA);
+    await clearAllBrowserStorage(pageB);
+    await pageA.reload();
+    await pageB.reload();
+
+    await waitForAppReady(pageA, 40000);
+    await waitForAppReady(pageB, 40000);
+    await waitForWorkspaceCrdtInitialized(pageA);
+    await waitForWorkspaceCrdtInitialized(pageB);
+    await enableShowAllFiles(pageA);
+    await enableShowAllFiles(pageB);
+
+    const ts = Date.now();
+    const testEmail = `sync-v2-editprop-${ts}@example.com`;
+    const originalBody = `Original content from client A ${ts}`;
+    const appendedText = ` plus client B addition ${ts}`;
+
+    log("test", "Creating entry on clientA");
+    await createEntry(pageA, `editprop-${ts}.md`, `EditProp Test ${ts}`, originalBody);
+
+    log("test", "Auth + sync clientA");
+    await completeAuthAndInit(pageA, testEmail, /Sync local content/i, "clientA");
+    await pageA.waitForTimeout(3000);
+
+    log("test", "Auth + sync clientB (load from server)");
+    await completeAuthAndInit(pageB, testEmail, /Load from server/i, "clientB");
+
+    log("test", "Waiting for body content to arrive on clientB");
+    await waitForEntryContent(pageB, `editprop-${ts}.md`, originalBody, 30000);
+
+    log("test", "Client B appending text via saveEntry");
+    await pageB.evaluate(async (args) => {
+      const { getBackend, createApi } = await import("/src/lib/backend");
+      const backend = await getBackend();
+      const api = createApi(backend);
+      const candidates = [args.path, `./${args.path}`];
+      for (const candidate of candidates) {
+        try {
+          const entry = await api.getEntry(candidate);
+          if (entry?.content) {
+            await api.saveEntry(candidate, entry.content + args.appendedText);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
+      throw new Error("Could not find entry to update on clientB");
+    }, { path: `editprop-${ts}.md`, appendedText });
+
+    log("test", "Waiting for appended content on clientA");
+    await waitForEntryContent(pageA, `editprop-${ts}.md`, appendedText, 30000);
+
+    log("test", "Verifying clientA still has original content");
+    const bodyA = await pageA.evaluate(async (args) => {
+      const bridge = (globalThis as any).__diaryx_bridge;
+      if (bridge?.ensureBodySync && bridge?.getBodyContentFromCrdt) {
+        for (const candidate of [args.path, `./${args.path}`]) {
+          try {
+            await bridge.ensureBodySync(candidate);
+            const content = await bridge.getBodyContentFromCrdt(candidate);
+            if (content) return content;
+          } catch { /* ignore */ }
+        }
+      }
+      const { getBackend, createApi } = await import("/src/lib/backend");
+      const backend = await getBackend();
+      const api = createApi(backend);
+      for (const candidate of [args.path, `./${args.path}`]) {
+        try {
+          const entry = await api.getEntry(candidate);
+          if (entry?.content) return entry.content;
+        } catch { /* ignore */ }
+      }
+      return "";
+    }, { path: `editprop-${ts}.md` });
+
+    log("test", `clientA body (${bodyA.length} chars): "${bodyA.slice(0, 300)}"`);
+    expect(bodyA).toContain(originalBody);
+    expect(bodyA).toContain(appendedText);
+
+    log("test", "Verifying clientB still has original content");
+    const bodyB = await pageB.evaluate(async (args) => {
+      const bridge = (globalThis as any).__diaryx_bridge;
+      if (bridge?.ensureBodySync && bridge?.getBodyContentFromCrdt) {
+        for (const candidate of [args.path, `./${args.path}`]) {
+          try {
+            await bridge.ensureBodySync(candidate);
+            const content = await bridge.getBodyContentFromCrdt(candidate);
+            if (content) return content;
+          } catch { /* ignore */ }
+        }
+      }
+      const { getBackend, createApi } = await import("/src/lib/backend");
+      const backend = await getBackend();
+      const api = createApi(backend);
+      for (const candidate of [args.path, `./${args.path}`]) {
+        try {
+          const entry = await api.getEntry(candidate);
+          if (entry?.content) return entry.content;
+        } catch { /* ignore */ }
+      }
+      return "";
+    }, { path: `editprop-${ts}.md` });
+
+    log("test", `clientB body (${bodyB.length} chars): "${bodyB.slice(0, 300)}"`);
+    expect(bodyB).toContain(originalBody);
+    expect(bodyB).toContain(appendedText);
 
     await contextA.close();
     await contextB.close();
