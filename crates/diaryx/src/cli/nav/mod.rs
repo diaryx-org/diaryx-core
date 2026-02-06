@@ -4,6 +4,7 @@
 //! `contents`/`part_of` hierarchy.
 
 mod app;
+mod commands;
 mod keys;
 mod state;
 mod tree;
@@ -55,7 +56,7 @@ pub fn handle_nav(
     };
 
     // Create application state
-    let mut state = NavState::new(tree.clone(), workspace_root);
+    let mut state = NavState::new(tree.clone(), workspace_root, root_path, depth_limit);
 
     // Get config for editor
     let cfg = config.clone().unwrap_or_default();
@@ -64,7 +65,7 @@ pub fn handle_nav(
     let mut terminal = ratatui::init();
 
     // Run TUI (editor is launched inside the loop, TUI resumes after)
-    let result = app::run(&mut terminal, &mut state, &tree, &cfg);
+    let result = app::run(&mut terminal, &mut state, &cfg, ws);
 
     // Restore terminal (always, even on error)
     ratatui::restore();

@@ -11,21 +11,24 @@ use super::keys::handle_key;
 use super::state::NavState;
 use super::ui::render;
 use diaryx_core::config::Config;
-use diaryx_core::workspace::TreeNode;
 
+use crate::cli::CliWorkspace;
 use crate::editor::launch_editor;
 
 /// Run the navigation TUI event loop
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut NavState,
-    tree: &TreeNode,
     config: &Config,
+    ws: &CliWorkspace,
 ) -> io::Result<()> {
     // Initial preview load
     state.update_preview();
 
     loop {
+        // Clear expired status messages
+        state.clear_expired_status();
+
         // Draw UI
         terminal.draw(|frame| render(frame, state))?;
 
@@ -37,15 +40,15 @@ pub fn run(
         // Check for pending editor action
         if let Some(path) = state.pending_edit.take() {
             open_in_editor(terminal, &path, config)?;
-            // After editor closes, refresh preview in case file was modified
-            state.update_preview();
+            // After editor closes, refresh preview and rebuild tree in case file was modified
+            state.rebuild_tree(ws);
             continue;
         }
 
         // Handle events (with timeout for responsiveness)
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                handle_key(state, key, tree);
+                handle_key(state, key, ws);
             }
         }
     }

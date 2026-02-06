@@ -9,7 +9,7 @@ use ratatui::{
 };
 use tui_tree_widget::Tree;
 
-use super::state::NavState;
+use super::state::{InputMode, NavState};
 use super::tree::tree_node_to_item;
 
 /// Render the full UI
@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, state: &mut NavState) {
 
     render_tree(frame, state, content_chunks[0]);
     render_preview(frame, state, content_chunks[1]);
-    render_help_bar(frame, main_chunks[1]);
+    render_help_bar(frame, state, main_chunks[1]);
 }
 
 /// Render the tree widget
@@ -117,23 +117,111 @@ fn render_preview_content(frame: &mut Frame, state: &NavState, area: Rect) {
     frame.render_widget(content, area);
 }
 
-/// Render the help bar at the bottom
-fn render_help_bar(frame: &mut Frame, area: Rect) {
-    let help_text = vec![
+/// Render the help bar at the bottom, adapting to current input mode
+fn render_help_bar(frame: &mut Frame, state: &NavState, area: Rect) {
+    let line = match &state.mode {
+        InputMode::Normal => render_normal_help(state),
+        InputMode::TextInput {
+            prompt,
+            buffer,
+            cursor,
+            ..
+        } => render_text_input_help(prompt, buffer, *cursor),
+        InputMode::Confirm { message, .. } => render_confirm_help(message),
+        InputMode::NodePick { prompt, .. } => render_node_pick_help(prompt),
+    };
+
+    let help_bar = Paragraph::new(line).style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(help_bar, area);
+}
+
+/// Normal mode help bar — shows status message if active, otherwise key hints
+fn render_normal_help(state: &NavState) -> Line<'static> {
+    // Show status message if active
+    if let Some((msg, _, is_error)) = &state.status_message {
+        let color = if *is_error { Color::Red } else { Color::Green };
+        return Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(msg.clone(), Style::default().fg(color).bold()),
+        ]);
+    }
+
+    Line::from(vec![
         Span::styled(" j/k", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(": navigate  "),
+        Span::raw(": nav  "),
         Span::styled("h/l", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(": collapse/expand  "),
+        Span::raw(": tree  "),
         Span::styled("Enter", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(": open  "),
-        Span::styled("J/K", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(": scroll preview  "),
+        Span::raw(": edit  "),
+        Span::styled("a", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": add  "),
+        Span::styled("x", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": del  "),
+        Span::styled("r", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": rename  "),
+        Span::styled("p", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": dup  "),
+        Span::styled("m", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": move  "),
+        Span::styled("M", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": merge  "),
         Span::styled("q", Style::default().fg(Color::Cyan).bold()),
         Span::raw(": quit"),
-    ];
+    ])
+}
 
-    let help_bar =
-        Paragraph::new(Line::from(help_text)).style(Style::default().bg(Color::DarkGray));
+/// Text input help bar — shows prompt and editable text buffer
+fn render_text_input_help(prompt: &str, buffer: &str, cursor: usize) -> Line<'static> {
+    let before = &buffer[..cursor];
+    let cursor_char = buffer.get(cursor..cursor + 1).unwrap_or(" ");
+    let after = if cursor < buffer.len() {
+        &buffer[cursor + 1..]
+    } else {
+        ""
+    };
 
-    frame.render_widget(help_bar, area);
+    Line::from(vec![
+        Span::styled(
+            format!(" {}: ", prompt),
+            Style::default().fg(Color::Yellow).bold(),
+        ),
+        Span::raw(before.to_string()),
+        Span::styled(
+            cursor_char.to_string(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(after.to_string()),
+        Span::styled("  Esc", Style::default().fg(Color::DarkGray)),
+        Span::styled(": cancel", Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// Confirmation help bar — shows yes/no prompt
+fn render_confirm_help(message: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!(" {} ", message),
+            Style::default().fg(Color::Yellow).bold(),
+        ),
+        Span::styled("y", Style::default().fg(Color::Green).bold()),
+        Span::raw("/"),
+        Span::styled("n", Style::default().fg(Color::Red).bold()),
+    ])
+}
+
+/// Node-pick help bar — shows instructions for picking a target
+fn render_node_pick_help(prompt: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!(" {} ", prompt),
+            Style::default().fg(Color::Yellow).bold(),
+        ),
+        Span::styled("Enter", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(": confirm  "),
+        Span::styled("Esc", Style::default().fg(Color::DarkGray)),
+        Span::raw(": cancel"),
+    ])
 }
