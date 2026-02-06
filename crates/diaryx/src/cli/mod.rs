@@ -145,6 +145,7 @@ pub fn run_cli() {
         Commands::Export {
             audience,
             destination,
+            format,
             force,
             keep_audience,
             verbose,
@@ -161,6 +162,7 @@ pub fn run_cli() {
                 workspace_root,
                 &audience,
                 &destination,
+                &format,
                 force,
                 keep_audience,
                 verbose,
@@ -201,6 +203,7 @@ pub fn run_cli() {
         Commands::Publish {
             destination,
             audience,
+            format,
             single_file,
             title,
             force,
@@ -210,6 +213,7 @@ pub fn run_cli() {
                 destination,
                 cli.workspace,
                 audience,
+                &format,
                 single_file,
                 title,
                 force,

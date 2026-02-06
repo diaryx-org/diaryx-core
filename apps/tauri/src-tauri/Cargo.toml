@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-diaryx_core = { workspace = true, features = ["markdown", "live-sync", "crdt", "crdt-sqlite", "native-sync"] }
+diaryx_core = { workspace = true, features = ["markdown", "live-sync", "crdt", "crdt-sqlite", "native-sync", "native-pandoc"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"

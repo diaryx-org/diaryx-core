@@ -162,6 +162,11 @@ pub enum Commands {
         /// Destination directory for the export
         destination: PathBuf,
 
+        /// Output format (markdown, html, docx, epub, pdf, latex, odt, rst).
+        /// Formats other than markdown and html require pandoc to be installed.
+        #[arg(short = 'F', long, default_value = "markdown")]
+        format: String,
+
         /// Overwrite existing destination
         #[arg(short, long)]
         force: bool,
@@ -233,6 +238,11 @@ pub enum Commands {
         /// Target audience to publish for (filters files by audience property)
         #[arg(short, long)]
         audience: Option<String>,
+
+        /// Output format (html, docx, epub, pdf, latex, odt, rst).
+        /// Non-HTML formats require pandoc to be installed.
+        #[arg(short = 'F', long, default_value = "html")]
+        format: String,
 
         /// Output as a single HTML file instead of multiple files
         #[arg(long)]

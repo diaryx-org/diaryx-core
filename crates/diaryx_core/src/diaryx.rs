@@ -929,6 +929,17 @@ impl<'a, FS: AsyncFileSystem> CrdtOps<'a, FS> {
         doc.set_body(content)
     }
 
+    /// Reset a body document to a fresh empty Y.Doc.
+    ///
+    /// Unlike `set_body_content("", ...)` which creates DELETE operations,
+    /// this replaces the cached doc with a brand new one that has no operations
+    /// at all. This is critical for the "load from server" flow where we need
+    /// an empty doc so Y-sync only receives the server's content without
+    /// phantom deletes propagating to other clients.
+    pub fn reset_body_doc(&self, doc_name: &str) {
+        self.body_docs.create(doc_name);
+    }
+
     /// Get body document state vector for sync.
     pub fn get_body_sync_state(&self, doc_name: &str) -> Option<Vec<u8>> {
         self.body_docs.get_sync_state(doc_name)

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use diaryx_core::export::{ExportOptions, ExportPlan, Exporter};
 use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use diaryx_core::pandoc;
 use diaryx_core::workspace::Workspace;
 use std::path::Path;
 
@@ -17,11 +18,28 @@ pub fn handle_export(
     workspace_root: PathBuf,
     audience: &str,
     destination: &Path,
+    format: &str,
     force: bool,
     keep_audience: bool,
     verbose: bool,
     dry_run: bool,
 ) {
+    // Validate format
+    if !pandoc::is_supported_format(format) {
+        eprintln!(
+            "✗ Unsupported format: '{}'. Supported: {}",
+            format,
+            pandoc::SUPPORTED_FORMATS.join(", ")
+        );
+        return;
+    }
+
+    // Check pandoc availability for formats that need it
+    if pandoc::requires_pandoc(format) && !pandoc::is_pandoc_available() {
+        pandoc::print_install_instructions();
+        return;
+    }
+
     let fs = SyncToAsyncFs::new(RealFileSystem);
     let exporter = Exporter::new(fs);
 
@@ -38,6 +56,9 @@ pub fn handle_export(
     println!("Export Plan");
     println!("===========");
     println!("Audience: {}", plan.audience);
+    if format != "markdown" {
+        println!("Format: {}", format);
+    }
     println!("Source: {}", plan.source_root.display());
     println!("Destination: {}", destination.display());
     println!();
@@ -70,7 +91,7 @@ pub fn handle_export(
         return;
     }
 
-    // Execute the export
+    // Execute the export (writes markdown files to destination)
     let options = ExportOptions {
         force,
         keep_audience,
@@ -79,15 +100,52 @@ pub fn handle_export(
     match block_on(exporter.execute_export(&plan, &options)) {
         Ok(stats) => {
             println!("✓ {}", stats);
-            println!("  Exported to: {}", destination.display());
         }
         Err(e) => {
             eprintln!("✗ Export failed: {}", e);
             if !force && destination.exists() {
                 eprintln!("  (use --force to overwrite existing destination)");
             }
+            return;
         }
     }
+
+    // Post-process with pandoc if a non-markdown format was requested
+    if pandoc::requires_pandoc(format) || format == "html" {
+        println!("Converting to {}...", format);
+        let ext = pandoc::format_extension(format);
+        let mut converted = 0;
+        let mut failed = 0;
+
+        // Walk destination and convert each .md file
+        for entry in walkdir(destination) {
+            let md_path = entry;
+            let out_path = md_path.with_extension(ext);
+
+            match pandoc::convert_file(&md_path, &out_path, "markdown", format, true) {
+                Ok(()) => {
+                    // Remove the original .md file
+                    let _ = std::fs::remove_file(&md_path);
+                    if verbose {
+                        println!("  Converted: {}", out_path.display());
+                    }
+                    converted += 1;
+                }
+                Err(e) => {
+                    eprintln!("  ✗ Failed to convert {}: {}", md_path.display(), e);
+                    failed += 1;
+                }
+            }
+        }
+
+        if failed == 0 {
+            println!("✓ Converted {} files to {}", converted, format);
+        } else {
+            eprintln!("⚠ Converted {} files, {} failed", converted, failed);
+        }
+    }
+
+    println!("  Exported to: {}", destination.display());
 }
 
 /// Print detailed information about the export plan
@@ -111,6 +169,27 @@ fn print_verbose_plan(plan: &ExportPlan) {
         }
         println!();
     }
+}
+
+/// Collect all `.md` files under a directory recursively.
+fn walkdir(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    fn visit(dir: &Path, results: &mut Vec<PathBuf>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, results);
+            } else if path.extension().map_or(false, |ext| ext == "md") {
+                results.push(path);
+            }
+        }
+    }
+    visit(dir, &mut results);
+    results
 }
 
 /// Resolve the workspace root for export

@@ -84,6 +84,7 @@ pub fn run() {
             commands::resolve_sync_conflict,
             // Export
             commands::export_to_zip,
+            commands::export_to_format,
             // Import (file picker dialogs)
             commands::import_from_zip,
             commands::pick_and_import_zip,

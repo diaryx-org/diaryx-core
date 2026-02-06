@@ -74,6 +74,9 @@ live-sync = []
 # Not available on WASM - use CallbackTransport instead.
 native-sync = ["crdt", "dep:tokio", "dep:tokio-tungstenite", "dep:url", "dep:futures-util"]
 
+# Enable native pandoc binary invocation for multi-format export (CLI/Tauri only)
+native-pandoc = []
+
 # Default features for the library
 default = []
 

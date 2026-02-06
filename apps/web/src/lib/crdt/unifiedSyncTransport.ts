@@ -61,6 +61,8 @@ interface BodySubscription {
   receivedData: boolean;
   /** Whether this file has been marked synced. */
   synced: boolean;
+  /** Number of messages received for this file. */
+  messageCount: number;
 }
 
 /**
@@ -235,6 +237,7 @@ export class UnifiedSyncTransport {
       syncedResolver: syncedResolver!,
       receivedData: false,
       synced: false,
+      messageCount: 0,
     });
 
     if (this.isConnected) {
@@ -556,12 +559,16 @@ export class UnifiedSyncTransport {
     const callbacks = this.bodyCallbacks.get(filePath);
     if (callbacks) {
       callbacks.receivedData = true;
+      callbacks.messageCount++;
       await callbacks.onMessage(message);
 
-      // Mark synced after first message receipt (SyncStep2 delivers initial content).
-      // Siphonophore doesn't send a `sync_complete` control message, so we rely on
-      // receiving actual data as the signal that the Y-sync handshake is complete.
-      if (!callbacks.synced) {
+      // Mark synced after first message receipt. Siphonophore doesn't send a
+      // `sync_complete` control message, so we rely on receiving data.
+      // NOTE: Server sends SyncStep1 first (state vector), then SyncStep2 (content).
+      // Ideally we'd wait for the 2nd message, but some server configurations
+      // may only send SyncStep2 (if the doc is new). Use messageCount >= 1 for
+      // robustness, with the ResetBodyDoc fix ensuring no phantom deletes.
+      if (!callbacks.synced && callbacks.messageCount >= 1) {
         callbacks.synced = true;
         callbacks.onSynced?.();
         callbacks.syncedResolver?.();

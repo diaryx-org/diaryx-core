@@ -1,8 +1,9 @@
 //! CLI handler for publish command
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use diaryx_core::fs::{RealFileSystem, SyncToAsyncFs};
+use diaryx_core::pandoc;
 use diaryx_core::publish::{PublishOptions, Publisher};
 use diaryx_core::workspace::Workspace;
 
@@ -16,11 +17,28 @@ pub fn handle_publish(
     destination: PathBuf,
     workspace_override: Option<PathBuf>,
     audience: Option<String>,
+    format: &str,
     single_file: bool,
     title: Option<String>,
     force: bool,
     dry_run: bool,
 ) {
+    // Validate format (publish doesn't support "markdown" — it always starts from HTML)
+    let valid_publish_formats = ["html", "docx", "epub", "pdf", "latex", "odt", "rst"];
+    if !valid_publish_formats.contains(&format) {
+        eprintln!(
+            "✗ Unsupported publish format: '{}'. Supported: {}",
+            format,
+            valid_publish_formats.join(", ")
+        );
+        return;
+    }
+
+    // Check pandoc availability for non-HTML formats
+    if pandoc::requires_pandoc(format) && !pandoc::is_pandoc_available() {
+        pandoc::print_install_instructions();
+        return;
+    }
     // Resolve workspace root
     let workspace_root = match resolve_workspace_for_publish(workspace_override) {
         Ok(root) => root,
@@ -62,12 +80,15 @@ pub fn handle_publish(
     if let Some(ref aud) = audience {
         println!("Audience: {}", aud);
     }
+    if format != "html" {
+        println!("Format: {} (via pandoc)", format);
+    }
     println!(
         "Output mode: {}",
         if single_file {
-            "single HTML file"
+            "single file"
         } else {
-            "multiple HTML files"
+            "multiple files"
         }
     );
     println!();
@@ -98,7 +119,39 @@ pub fn handle_publish(
                 destination.display()
             );
 
-            if single_file {
+            // Post-process with pandoc if a non-HTML format was requested
+            if pandoc::requires_pandoc(format) {
+                println!("Converting to {}...", format);
+                let ext = pandoc::format_extension(format);
+                let mut converted = 0;
+                let mut failed = 0;
+
+                let html_files = if single_file {
+                    vec![destination.clone()]
+                } else {
+                    walkdir_html(&destination)
+                };
+
+                for html_path in &html_files {
+                    let out_path = html_path.with_extension(ext);
+                    match pandoc::convert_file(html_path, &out_path, "html", format, true) {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(html_path);
+                            converted += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("  ✗ Failed to convert {}: {}", html_path.display(), e);
+                            failed += 1;
+                        }
+                    }
+                }
+
+                if failed == 0 {
+                    println!("✓ Converted {} files to {}", converted, format);
+                } else {
+                    eprintln!("⚠ Converted {} files, {} failed", converted, failed);
+                }
+            } else if single_file {
                 println!("  Open {} in a browser to view", destination.display());
             } else {
                 let index_path = destination.join("index.html");
@@ -109,6 +162,27 @@ pub fn handle_publish(
             eprintln!("✗ Publish failed: {}", e);
         }
     }
+}
+
+/// Collect all `.html` files under a directory recursively.
+fn walkdir_html(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    fn visit(dir: &Path, results: &mut Vec<PathBuf>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, results);
+            } else if path.extension().map_or(false, |ext| ext == "html") {
+                results.push(path);
+            }
+        }
+    }
+    visit(dir, &mut results);
+    results
 }
 
 /// Resolve the workspace root for publishing

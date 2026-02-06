@@ -2063,6 +2063,221 @@ pub async fn export_to_zip<R: Runtime>(
     })
 }
 
+/// Export workspace to a specific format (DOCX, EPUB, PDF, etc.) using pandoc
+///
+/// For markdown and HTML, uses the built-in pipeline. For other formats,
+/// shells out to the native `pandoc` binary.
+#[tauri::command]
+pub async fn export_to_format<R: Runtime>(
+    app: AppHandle<R>,
+    workspace_path: Option<String>,
+    format: String,
+    audience: Option<String>,
+) -> Result<ExportResult, SerializableError> {
+    use diaryx_core::export::Exporter;
+    use diaryx_core::pandoc;
+    use std::io::Write;
+    use tauri_plugin_dialog::DialogExt;
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    // Validate format
+    if !pandoc::is_supported_format(&format) {
+        return Err(SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!(
+                "Unsupported format: '{}'. Supported: {}",
+                format,
+                pandoc::SUPPORTED_FORMATS.join(", ")
+            ),
+            path: None,
+        });
+    }
+
+    // Check pandoc availability for formats that need it
+    if pandoc::requires_pandoc(&format) && !pandoc::is_pandoc_available() {
+        return Err(SerializableError {
+            kind: "PandocNotFound".to_string(),
+            message: "pandoc is not installed. Install from https://pandoc.org/installing.html"
+                .to_string(),
+            path: None,
+        });
+    }
+
+    let paths = get_platform_paths(&app)?;
+    let workspace = workspace_path
+        .map(PathBuf::from)
+        .unwrap_or(paths.default_workspace);
+
+    // Get workspace name for default filename
+    let workspace_name = workspace
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
+    let ext = pandoc::format_extension(&format);
+    let default_filename = format!("{}-export.zip", workspace_name);
+
+    // Show native save dialog
+    let save_path = app
+        .dialog()
+        .file()
+        .add_filter("Zip Archive", &["zip"])
+        .set_file_name(&default_filename)
+        .set_title(&format!("Export as {} (ZIP)", ext.to_uppercase()))
+        .blocking_save_file();
+
+    let output_path = match save_path {
+        Some(path) => path.into_path().map_err(|e| SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!("Failed to get save path: {:?}", e),
+            path: None,
+        })?,
+        None => {
+            return Ok(ExportResult {
+                success: false,
+                files_exported: 0,
+                output_path: None,
+                error: None,
+                cancelled: true,
+            });
+        }
+    };
+
+    // Find workspace root index
+    let async_fs = SyncToAsyncFs::new(RealFileSystem);
+    let ws = Workspace::new(async_fs.clone());
+    let root_index = ws
+        .find_root_index_in_dir(&workspace)
+        .await
+        .map_err(|e| SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!("Failed to find workspace root: {}", e),
+            path: None,
+        })?
+        .ok_or_else(|| SerializableError {
+            kind: "ExportError".to_string(),
+            message: "No workspace found".to_string(),
+            path: None,
+        })?;
+
+    // Plan the export
+    let exporter = Exporter::new(async_fs);
+    let aud = audience.as_deref().unwrap_or("*");
+    let tmp_dest = std::env::temp_dir().join(format!("diaryx-export-{}", uuid::Uuid::new_v4()));
+    let plan = exporter
+        .plan_export(&root_index, aud, &tmp_dest)
+        .await
+        .map_err(|e| SerializableError {
+            kind: "ExportError".to_string(),
+            message: format!("Failed to plan export: {}", e),
+            path: None,
+        })?;
+
+    if plan.included.is_empty() {
+        return Ok(ExportResult {
+            success: true,
+            files_exported: 0,
+            output_path: Some(output_path.to_string_lossy().to_string()),
+            error: Some("No files matched the audience filter".to_string()),
+            cancelled: false,
+        });
+    }
+
+    // Create zip with converted files
+    let file = std::fs::File::create(&output_path).map_err(|e| SerializableError {
+        kind: "ExportError".to_string(),
+        message: format!("Failed to create zip file: {}", e),
+        path: Some(output_path.clone()),
+    })?;
+
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(6));
+
+    let fs = RealFileSystem;
+    let mut files_exported = 0;
+
+    for included in &plan.included {
+        let content = match fs.read_to_string(&included.source_path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!(
+                    "[ExportFormat] Failed to read {:?}: {}",
+                    included.source_path,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let relative_str = included.relative_path.to_string_lossy().to_string();
+
+        if format == "markdown" {
+            // Write markdown as-is
+            if let Err(e) = zip.start_file(&relative_str, options) {
+                log::warn!("[ExportFormat] zip start_file failed: {}", e);
+                continue;
+            }
+            if let Err(e) = zip.write_all(content.as_bytes()) {
+                log::warn!("[ExportFormat] zip write failed: {}", e);
+                continue;
+            }
+        } else {
+            // Convert via pandoc (or comrak for html in future)
+            let new_path = relative_str.replace(".md", &format!(".{}", ext));
+            let converted = if pandoc::requires_pandoc(&format) || format == "html" {
+                pandoc::convert_content(&content, &format, true)
+            } else {
+                Ok(content.into_bytes())
+            };
+
+            match converted {
+                Ok(data) => {
+                    if let Err(e) = zip.start_file(&new_path, options) {
+                        log::warn!("[ExportFormat] zip start_file failed: {}", e);
+                        continue;
+                    }
+                    if let Err(e) = zip.write_all(&data) {
+                        log::warn!("[ExportFormat] zip write failed: {}", e);
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[ExportFormat] pandoc conversion failed for {}: {}",
+                        relative_str,
+                        e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        files_exported += 1;
+    }
+
+    zip.finish().map_err(|e| SerializableError {
+        kind: "ExportError".to_string(),
+        message: format!("Failed to finalize zip: {}", e),
+        path: Some(output_path.clone()),
+    })?;
+
+    log::info!(
+        "[ExportFormat] Complete: {} files exported as {}",
+        files_exported,
+        format
+    );
+
+    Ok(ExportResult {
+        success: true,
+        files_exported,
+        output_path: Some(output_path.to_string_lossy().to_string()),
+        error: None,
+        cancelled: false,
+    })
+}
+
 // ============================================================================
 // Cloud Sync Commands
 // ============================================================================

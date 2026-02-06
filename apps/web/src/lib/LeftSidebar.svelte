@@ -185,7 +185,7 @@
   // =========================================================================
 
   // Orphan warning types that should inherit to parent indexes
-  const ORPHAN_WARNING_TYPES = ['OrphanFile', 'OrphanBinaryFile', 'MissingPartOf', 'UnlinkedEntry', 'UnlistedFile'];
+  const ORPHAN_WARNING_TYPES = ['OrphanFile', 'OrphanBinaryFile', 'MissingPartOf', 'UnlinkedEntry'];
 
   // Build a map of directory path -> index file path from the tree
   // Only includes actual index files (nodes with children), not leaf files
@@ -240,8 +240,6 @@
         return warning.file ?? null;
       case 'UnlinkedEntry':
         return warning.path ?? null;
-      case 'UnlistedFile':
-        return warning.file ?? null;
       case 'CircularReference': {
         // Return the first file in the cycle for viewing
         const files = (warning as { files?: string[] }).files;
@@ -583,11 +581,6 @@
           if (w.suggested_index) {
             result = await api.fixMissingPartOf(w.file, w.suggested_index);
           }
-          break;
-        }
-        case 'UnlistedFile': {
-          const w = warning as { index: string; file: string };
-          result = await api.fixUnlistedFile(w.index, w.file);
           break;
         }
         case 'NonPortablePath': {

@@ -52,7 +52,8 @@ export default defineConfig({
   },
   optimizeDeps: {
     // Exclude Tauri API from optimization since it's optional
-    exclude: ["@tauri-apps/api"],
+    // Exclude wasm-pandoc so Vite doesn't try to pre-bundle the 56MB WASM
+    exclude: ["@tauri-apps/api", "wasm-pandoc"],
   },
   // Env variables starting with the item of `envPrefix` will be exposed in tauri's source code through `import.meta.env`.
   envPrefix: ["VITE_", "TAURI_ENV_*"],

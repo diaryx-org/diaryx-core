@@ -60,6 +60,10 @@ pub mod workspace;
 #[cfg(feature = "crdt")]
 pub mod crdt;
 
+/// Native pandoc binary integration for multi-format export (requires `native-pandoc` feature)
+#[cfg(feature = "native-pandoc")]
+pub mod pandoc;
+
 /// Cloud storage module for bidirectional file synchronization
 pub mod cloud;
 

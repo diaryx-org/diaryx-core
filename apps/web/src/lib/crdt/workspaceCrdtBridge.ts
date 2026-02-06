@@ -137,6 +137,10 @@ export function setFreshFromServerLoad(value: boolean): void {
   _freshFromServerLoad = value;
 }
 
+export function isFreshFromServerLoad(): boolean {
+  return _freshFromServerLoad;
+}
+
 // Per-file mutex to prevent race conditions on concurrent updates
 // Map of path -> Promise that resolves when the lock is released
 const fileLocks = new Map<string, Promise<void>>();
@@ -1389,13 +1393,17 @@ async function getOrCreateBodyBridge(filePath: string, sendFocus: boolean = fals
       const existingBodyContent = await rustApi.getBodyContent(canonicalPath);
       if (existingBodyContent && existingBodyContent.length > 0) {
         if (_freshFromServerLoad) {
-          // Clear local body doc to prevent duplication with server content.
+          // Reset the body doc to a fresh empty Y.Doc to prevent duplication with server content.
           // importFromZip writes files to disk which populates body CRDTs (local actor).
           // When the server sends its Y-CRDT state (original actor), Y-CRDT merges
           // both independent inserts → text appears twice.
-          // Clearing first ensures only the server's content survives.
-          console.log(`[UnifiedSync] Clearing local body CRDT for ${canonicalPath} (freshFromServerLoad)`);
-          await rustApi.setBodyContent(canonicalPath, '');
+          //
+          // CRITICAL: We use resetBodyDoc() instead of setBodyContent('', ...) because
+          // setBodyContent creates Y-CRDT DELETE operations. These DELETEs would be sent
+          // to the server during the Y-sync handshake response, propagating to other clients
+          // and emptying their editors. resetBodyDoc() creates a fresh Y.Doc with NO operations.
+          console.log(`[UnifiedSync] Resetting body doc for ${canonicalPath} (freshFromServerLoad)`);
+          await rustApi.resetBodyDoc(canonicalPath);
         } else {
           await syncHelpers.trackContent(_backend!, canonicalPath, existingBodyContent);
           console.log(`[UnifiedSync] Body CRDT already has ${existingBodyContent.length} chars for ${canonicalPath}`);
@@ -1419,10 +1427,10 @@ async function getOrCreateBodyBridge(filePath: string, sendFocus: boolean = fals
         if (result.response && result.response.length > 0) {
           unifiedSyncTransport!.sendBodyMessage(canonicalPath, new Uint8Array(result.response));
         }
-        // Notify body change if not an echo
-        if (result.content && !result.isEcho) {
-          notifyBodyChange(canonicalPath, result.content);
-        }
+        // Note: we do NOT call notifyBodyChange here — the Rust side emits a
+        // ContentsChanged event (handled in the event dispatcher) for the same
+        // update. Relying on that single path avoids double-notification which
+        // can cause editor rendering glitches.
       },
       async () => {
         console.log(`[WorkspaceCrdtBridge] v2 body synced: ${canonicalPath}`);

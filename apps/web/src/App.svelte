@@ -19,6 +19,7 @@
     initEventSubscription,
     waitForInitialSync,
     getCanonicalPath,
+    isFreshFromServerLoad,
   } from "./lib/crdt/workspaceCrdtBridge";
   // Note: YDoc and HocuspocusProvider types are now handled by collaborationStore
   import LeftSidebar from "./lib/LeftSidebar.svelte";
@@ -657,6 +658,15 @@
     autoSaveTimer = setTimeout(() => {
       autoSaveTimer = null;
       if (isDirty) {
+        // Skip auto-save while body sync is still in progress after load-from-server.
+        // The body CRDT was cleared before sync; saving stale editor content to the
+        // empty CRDT creates items at position 0, causing dual-root conflicts when
+        // the server's content arrives via SyncStep2.
+        if (isFreshFromServerLoad()) {
+          // Re-schedule so we save once body sync completes
+          scheduleAutoSave();
+          return;
+        }
         save();
       }
     }, AUTO_SAVE_DELAY_MS);
@@ -672,7 +682,7 @@
   // Handle editor blur - save immediately if dirty
   function handleEditorBlur() {
     cancelAutoSave();
-    if (isDirty) {
+    if (isDirty && !isFreshFromServerLoad()) {
       save();
     }
   }

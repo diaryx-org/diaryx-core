@@ -3,97 +3,89 @@
 /**
  * A validation warning indicating a potential issue.
  */
-export type ValidationWarning = { "type": "OrphanFile", 
+export type ValidationWarning = { "type": "OrphanFile",
 /**
  * The orphan file path
  */
-file: string, 
+file: string,
 /**
  * Suggested index to add this to (nearest parent index in hierarchy)
  */
-suggested_index: string | null, } | { "type": "UnlinkedEntry", 
+suggested_index: string | null, } | { "type": "UnlinkedEntry",
 /**
  * The entry path
  */
-path: string, 
+path: string,
 /**
  * Whether this is a directory
  */
-is_dir: boolean, 
+is_dir: boolean,
 /**
  * Suggested index to add this to (nearest parent index in hierarchy)
  * For directories, this points to the index file inside the directory if one exists
  */
-suggested_index: string | null, 
+suggested_index: string | null,
 /**
  * For directories with an index file, this is the path to that index file
  * (which should be added to contents instead of the directory path)
  */
-index_file: string | null, } | { "type": "UnlistedFile", 
-/**
- * The index file that should contain this file
- */
-index: string, 
-/**
- * The unlisted file path
- */
-file: string, } | { "type": "CircularReference", 
+index_file: string | null, } | { "type": "CircularReference",
 /**
  * The files involved in the cycle
  */
-files: Array<string>, 
+files: Array<string>,
 /**
  * Suggested file to edit to break the cycle (the one that would break it most cleanly)
  */
-suggested_file: string | null, 
+suggested_file: string | null,
 /**
  * The part_of value to remove from the suggested file
  */
-suggested_remove_part_of: string | null, } | { "type": "NonPortablePath", 
+suggested_remove_part_of: string | null, } | { "type": "NonPortablePath",
 /**
  * The file containing the non-portable path
  */
-file: string, 
+file: string,
 /**
  * The property containing the path ("part_of" or "contents")
  */
-property: string, 
+property: string,
 /**
  * The problematic path value
  */
-value: string, 
+value: string,
 /**
  * The suggested normalized path
  */
-suggested: string, } | { "type": "MultipleIndexes", 
+suggested: string, } | { "type": "MultipleIndexes",
 /**
  * The directory containing multiple indexes
  */
-directory: string, 
+directory: string,
 /**
  * The index files found
  */
-indexes: Array<string>, } | { "type": "OrphanBinaryFile", 
+indexes: Array<string>, } | { "type": "OrphanBinaryFile",
 /**
  * The orphan binary file path
  */
-file: string, 
+file: string,
 /**
  * Suggested index to add this to (if exactly one index in same directory)
  */
-suggested_index: string | null, } | { "type": "MissingPartOf", 
+suggested_index: string | null, } | { "type": "MissingPartOf",
 /**
  * The file missing the part_of property
  */
-file: string, 
+file: string,
 /**
  * Suggested index to connect to (if exactly one index in same directory)
  */
-suggested_index: string | null, } | { "type": "InvalidContentsRef", 
+suggested_index: string | null, } | { "type": "InvalidContentsRef",
 /**
  * The index file containing the invalid reference
  */
-index: string, 
+index: string,
 /**
  * The non-markdown file that was referenced
  */

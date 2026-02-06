@@ -91,4 +91,16 @@ completed: number,
 /**
  * Total number of files to sync.
  */
-total: number, };
+total: number, } | { "type": "SendSyncMessage",
+/**
+ * Document name ("workspace" for workspace, file path for body)
+ */
+doc_name: string,
+/**
+ * Encoded sync message bytes to send (serialized as array of numbers)
+ */
+message: Array<number>,
+/**
+ * Whether this is a body doc (true) or workspace (false)
+ */
+is_body: boolean, };

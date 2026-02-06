@@ -395,6 +395,19 @@ export class RustCrdtApi {
   }
 
   /**
+   * Reset a body document to a fresh empty Y.Doc.
+   *
+   * Unlike setBodyContent('', ...) which creates DELETE operations,
+   * this replaces the doc with a brand new one that has no operations at all.
+   */
+  async resetBodyDoc(docName: string): Promise<void> {
+    await executeCrdt(this.backend, {
+      type: 'ResetBodyDoc',
+      params: { doc_name: docName },
+    });
+  }
+
+  /**
    * Get sync state (state vector) for a body document.
    */
   async getBodySyncState(docName: string): Promise<Uint8Array> {

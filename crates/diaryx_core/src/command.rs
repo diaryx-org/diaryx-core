@@ -643,6 +643,19 @@ pub enum Command {
         content: String,
     },
 
+    /// Reset a body document CRDT to a fresh empty state.
+    ///
+    /// This replaces the cached body doc with a brand new empty Y.Doc,
+    /// discarding all local operations (inserts AND deletes). Unlike
+    /// `SetBodyContent { content: "" }` which creates DELETE operations,
+    /// this produces a doc with no operations at all — ensuring that
+    /// Y-sync will only receive the server's content without phantom deletes.
+    #[cfg(feature = "crdt")]
+    ResetBodyDoc {
+        /// Document name (file path).
+        doc_name: String,
+    },
+
     /// Get sync state (state vector) for a body document.
     #[cfg(feature = "crdt")]
     GetBodySyncState {

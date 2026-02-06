@@ -2684,6 +2684,17 @@ impl<FS: AsyncFileSystem + Clone> Diaryx<FS> {
             }
 
             #[cfg(feature = "crdt")]
+            Command::ResetBodyDoc { doc_name } => {
+                let crdt = self.crdt().ok_or_else(|| {
+                    DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())
+                })?;
+                // Replace the cached body doc with a fresh empty Y.Doc.
+                // This discards all local operations without creating DELETE ops.
+                crdt.reset_body_doc(&doc_name);
+                Ok(Response::Ok)
+            }
+
+            #[cfg(feature = "crdt")]
             Command::GetBodySyncState { doc_name } => {
                 let crdt = self.crdt().ok_or_else(|| {
                     DiaryxError::Unsupported("CRDT not enabled for this instance".to_string())

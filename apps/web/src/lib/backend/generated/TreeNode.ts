@@ -3,20 +3,24 @@
 /**
  * Node in the workspace tree (for display purposes)
  */
-export type TreeNode = { 
+export type TreeNode = {
 /**
  * Title of index/root file (or filename if no title)
  */
-name: string, 
+name: string,
 /**
  * Description attribute (if given)
  */
-description: string | null, 
+description: string | null,
 /**
  * Path to index/root file
  */
-path: string, 
+path: string,
 /**
  * `contents` property list
  */
-children: Array<TreeNode>, };
+children: Array<TreeNode>,
+/**
+ * Additional frontmatter properties for display (populated by --properties flag)
+ */
+properties: { [key in string]?: string }, };
