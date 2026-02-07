@@ -6673,6 +6673,7 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 [[package]]
 name = "siphonophore"
 version = "0.1.0"
+source = "git+https://github.com/diaryx-org/siphonophore.git?branch=main#6d864af5d3b4f3fea262f23de7494ae5b9e67d21"
 dependencies = [
  "async-trait",
  "axum",
