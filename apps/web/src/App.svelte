@@ -181,6 +181,13 @@
   // Event subscription cleanup (for filesystem events from Rust backend)
   let cleanupEventSubscription: (() => void) | null = null;
 
+  // CRDT bridge callback cleanup functions
+  let cleanupSessionSync: (() => void) | null = null;
+  let cleanupBodyChange: (() => void) | null = null;
+  let cleanupFileChange: (() => void) | null = null;
+  let cleanupSyncProgress: (() => void) | null = null;
+  let cleanupSyncStatus: (() => void) | null = null;
+
   // Set VITE_DISABLE_WORKSPACE_CRDT=true to disable workspace CRDT for debugging
   // This keeps per-file collaboration working but disables the workspace-level sync
   const workspaceCrdtDisabled: boolean =
@@ -316,7 +323,7 @@
       // single WebSocket connection for all body syncs.
 
       // Register callback to refresh tree when session data is received
-      onSessionSync(async () => {
+      cleanupSessionSync = onSessionSync(async () => {
         if (shareSessionStore.isGuest) {
           // Guest mode: build tree from CRDT (guests don't have files on disk)
           console.log('[App] Session sync received (guest mode), building tree from CRDT');
@@ -325,15 +332,17 @@
             console.log('[App] Setting tree from CRDT:', crdtTree);
             workspaceStore.setTree(crdtTree);
 
-            // Only open root entry on the first sync, not on every update
+            // Only open root entry on the first sync, not on every update.
+            // Set the flag synchronously BEFORE awaiting to prevent concurrent
+            // callback invocations from also entering this branch.
             if (!guestInitialSyncDone) {
+              guestInitialSyncDone = true;
               console.log('[App] Guest session - initial sync, opening root entry:', crdtTree.path);
               workspaceStore.expandNode(crdtTree.path);
 
               // With multiplexed body sync, the root entry's body will be
               // synced on-demand when opened via ensureBodySync
               await openEntry(crdtTree.path);
-              guestInitialSyncDone = true;
             } else {
               console.log('[App] Guest session - incremental sync, tree updated');
             }
@@ -356,7 +365,7 @@
       });
 
       // Register callback to reload editor when remote body changes arrive
-      onBodyChange(async (path, body) => {
+      cleanupBodyChange = onBodyChange(async (path, body) => {
         // path is canonical (e.g., "file.md"), but currentEntry.path may be storage path
         // (e.g., "guest/abc123/file.md" for guests). Normalize for comparison.
         const currentCanonical = currentEntry ? getCanonicalPath(currentEntry.path) : null;
@@ -372,7 +381,7 @@
 
       // Register callback to reload entry when remote metadata changes arrive
       // This ensures the RightSidebar shows updated properties from sync
-      onFileChange(async (path, metadata) => {
+      cleanupFileChange = onFileChange(async (path, metadata) => {
         // path is canonical, but currentEntry.path may be storage path. Normalize for comparison.
         const currentCanonical = currentEntry ? getCanonicalPath(currentEntry.path) : null;
         // Only update if this is the currently open file and we have valid metadata
@@ -400,12 +409,12 @@
       });
 
       // Register sync progress callback to update collaborationStore
-      onSyncProgress((completed, total) => {
+      cleanupSyncProgress = onSyncProgress((completed, total) => {
         collaborationStore.setSyncProgress({ completed, total });
       });
 
       // Register sync status callback to update collaborationStore
-      onSyncStatus((status, error) => {
+      cleanupSyncStatus = onSyncStatus((status, error) => {
         if (error) {
           collaborationStore.setSyncError(error);
         } else {
@@ -482,6 +491,12 @@
     revokeBlobUrls();
     // Cleanup filesystem event subscription
     cleanupEventSubscription?.();
+    // Cleanup CRDT bridge callbacks (prevents accumulation on HMR)
+    cleanupSessionSync?.();
+    cleanupBodyChange?.();
+    cleanupFileChange?.();
+    cleanupSyncProgress?.();
+    cleanupSyncStatus?.();
     // Disconnect workspace CRDT (keeps local state for quick reconnect)
     disconnectWorkspace();
   });

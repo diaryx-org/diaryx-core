@@ -824,6 +824,14 @@ export async function stopSessionSync(): Promise<void> {
 
   _sessionCode = null;
 
+  // Cancel any pending debounced session sync notification
+  if (_sessionSyncTimer !== null) {
+    clearTimeout(_sessionSyncTimer);
+    _sessionSyncTimer = null;
+  }
+  _sessionSyncRunning = false;
+  _sessionSyncPending = false;
+
   // Restore original server URL if it was overridden for the session
   if (_originalServerUrl !== null) {
     _serverUrl = _originalServerUrl;
@@ -2268,16 +2276,52 @@ function notifySyncProgress(completed: number, total: number): void {
 }
 
 /**
- * Notify all session sync callbacks.
+ * Notify all session sync callbacks (debounced & re-entrancy guarded).
+ *
+ * Uses a trailing-edge debounce: multiple calls within DEBOUNCE_MS are
+ * coalesced into one notification fired DEBOUNCE_MS after the last call.
+ * While callbacks are executing, new calls are queued and a single
+ * follow-up notification fires after the current batch completes.
  */
+let _sessionSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let _sessionSyncRunning = false;
+let _sessionSyncPending = false;
+const SESSION_SYNC_DEBOUNCE_MS = 200;
+
 function notifySessionSync(): void {
+  if (_sessionSyncRunning) {
+    // A callback is already executing — schedule one follow-up after it finishes
+    _sessionSyncPending = true;
+    return;
+  }
+  // Reset and (re)start the debounce timer
+  if (_sessionSyncTimer !== null) clearTimeout(_sessionSyncTimer);
+  _sessionSyncTimer = setTimeout(() => {
+    _sessionSyncTimer = null;
+    _fireSessionSyncCallbacks();
+  }, SESSION_SYNC_DEBOUNCE_MS);
+}
+
+async function _fireSessionSyncCallbacks(): Promise<void> {
+  _sessionSyncRunning = true;
+  _sessionSyncPending = false;
   console.log('[WorkspaceCrdtBridge] Notifying session sync callbacks, count:', sessionSyncCallbacks.size);
   for (const callback of sessionSyncCallbacks) {
     try {
-      callback();
+      await callback();
     } catch (error) {
       console.error('[WorkspaceCrdtBridge] Session sync callback error:', error);
     }
+  }
+  _sessionSyncRunning = false;
+  // If new calls arrived while we were running, fire one more time (debounced)
+  if (_sessionSyncPending) {
+    _sessionSyncPending = false;
+    if (_sessionSyncTimer !== null) clearTimeout(_sessionSyncTimer);
+    _sessionSyncTimer = setTimeout(() => {
+      _sessionSyncTimer = null;
+      _fireSessionSyncCallbacks();
+    }, SESSION_SYNC_DEBOUNCE_MS);
   }
 }
 
@@ -2401,11 +2445,9 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
       if (isTempFile(event.path)) return;
       // New file created - notify UI
       notifyFileChange(event.path, event.frontmatter ? (event.frontmatter as FileMetadata) : null);
-      // Trigger tree refresh for all users (guests via session sync, hosts via file change with null path)
-      if (shareSessionStore.isGuest) {
-        notifySessionSync();
-      } else {
-        // For hosts: trigger tree refresh by calling with null path
+      // Trigger tree refresh (guests get tree rebuilds from sync transport
+      // callbacks onWorkspaceSynced/onFilesChanged, not from filesystem events)
+      if (!shareSessionStore.isGuest) {
         notifyFileChange(null, null);
       }
       break;
@@ -2415,10 +2457,7 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
       closeBodySync(event.path);
       // File deleted - notify UI with null metadata
       notifyFileChange(event.path, null);
-      // Trigger tree refresh for all users
-      if (shareSessionStore.isGuest) {
-        notifySessionSync();
-      } else {
+      if (!shareSessionStore.isGuest) {
         notifyFileChange(null, null);
       }
       break;
@@ -2429,10 +2468,7 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
       // File renamed - notify both old and new paths
       notifyFileChange(event.old_path, null);
       notifyFileChange(event.new_path, null);
-      // Trigger tree refresh for all users
-      if (shareSessionStore.isGuest) {
-        notifySessionSync();
-      } else {
+      if (!shareSessionStore.isGuest) {
         notifyFileChange(null, null);
       }
       break;
@@ -2447,10 +2483,7 @@ function handleFileSystemEvent(event: FileSystemEvent): void {
       }
       // File moved - notify the new path
       notifyFileChange(event.path, null);
-      // Trigger tree refresh for all users
-      if (shareSessionStore.isGuest) {
-        notifySessionSync();
-      } else {
+      if (!shareSessionStore.isGuest) {
         notifyFileChange(null, null);
       }
       break;

@@ -231,6 +231,22 @@ export async function createShareSession(workspaceId: string, readOnly: boolean 
 // ============================================================================
 
 /**
+ * Restore state after a failed join attempt.
+ * Undoes the backend swap and tree state changes made during joinShareSession.
+ */
+function restoreAfterFailedJoin(): void {
+  if (!isTauri() && originalBackend) {
+    workspaceStore.setBackend(originalBackend);
+    setBackendApi(createApi(originalBackend));
+    setBackend(originalBackend);
+    guestBackend = null;
+    guestApi = null;
+    originalBackend = null;
+  }
+  workspaceStore.restoreTreeState();
+}
+
+/**
  * Join an existing share session using a join code.
  * Returns the workspace ID of the session.
  *
@@ -316,6 +332,7 @@ export async function joinShareSession(joinCode: string): Promise<string> {
     console.log('[ShareService] Session lookup:', sessionInfo);
   } catch (e) {
     shareSessionStore.setError('Session not found or expired');
+    restoreAfterFailedJoin();
     throw e;
   }
 
@@ -351,6 +368,7 @@ export async function joinShareSession(joinCode: string): Promise<string> {
   } catch (err) {
     console.error('[ShareService] Session sync failed:', err);
     shareSessionStore.setError('Failed to connect to session');
+    restoreAfterFailedJoin();
     throw err;
   }
 
