@@ -70,6 +70,7 @@ function registerBridgeOnGlobal(): void {
 // State
 let rustApi: RustCrdtApi | null = null;
 let _originalRustApi: RustCrdtApi | null = null; // Saved before guest override, restored on session end
+let _originalServerUrl: string | null = null; // Saved before session override, restored on session end
 let backendApi: Api | null = null;
 let _backend: Backend | null = null;
 
@@ -664,16 +665,20 @@ export async function startSessionSync(
   _sessionCode = sessionCode;
 
   // Set module-level server URL and workspace ID for body sync bridges.
-  // For guests, workspaceId must be the real workspace ID (looked up via REST before connecting).
-  // V2 constructs doc IDs like "workspace:<id>" and the server validates workspace ownership.
+  // Both host and guest need these so getOrCreateBodyBridge() can subscribe
+  // body docs through the session transport. Without this, the guard at
+  // `if (!_serverUrl || !_workspaceId) return` silently skips body subscriptions.
+  _originalServerUrl = _serverUrl;
+  _serverUrl = toWebSocketUrl(sessionServerUrl);
   if (!isHost) {
-    _serverUrl = toWebSocketUrl(sessionServerUrl);
+    // For guests, workspaceId must be the real workspace ID (looked up via REST before connecting).
     _workspaceId = workspaceId!;
-    console.log('[WorkspaceCrdtBridge] Guest: set _serverUrl and _workspaceId for body sync:', {
-      _serverUrl,
-      _workspaceId,
-    });
   }
+  console.log('[WorkspaceCrdtBridge] Session: set _serverUrl and _workspaceId for body sync:', {
+    _serverUrl,
+    _workspaceId,
+    isHost,
+  });
 
   // Disconnect existing transport
   if (unifiedSyncTransport) {
@@ -818,6 +823,13 @@ export async function stopSessionSync(): Promise<void> {
   console.log('[WorkspaceCrdtBridge] Stopping session sync');
 
   _sessionCode = null;
+
+  // Restore original server URL if it was overridden for the session
+  if (_originalServerUrl !== null) {
+    _serverUrl = _originalServerUrl;
+    _originalServerUrl = null;
+    console.log('[WorkspaceCrdtBridge] Restored original _serverUrl after session');
+  }
 
   // Restore original rustApi if it was overridden for a guest session
   if (_originalRustApi) {

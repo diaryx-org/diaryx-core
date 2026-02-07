@@ -283,15 +283,13 @@ impl Hook for DiaryxHook {
         let storage_key = doc_type.storage_key();
         match storage.load_doc(&storage_key) {
             Ok(state) => {
-                if state.is_some() {
-                    debug!(
-                        "Loaded document {} ({} bytes)",
-                        doc_id,
-                        state.as_ref().map(|s| s.len()).unwrap_or(0)
-                    );
-                } else {
-                    debug!("No persisted state for document {}", doc_id);
-                }
+                debug!(
+                    "[on_load_document] doc={}, storage_key={}, has_state={}, state_len={}",
+                    doc_id,
+                    storage_key,
+                    state.is_some(),
+                    state.as_ref().map(|s| s.len()).unwrap_or(0)
+                );
                 Ok(state)
             }
             Err(e) => {
@@ -305,6 +303,13 @@ impl Hook for DiaryxHook {
     async fn on_change(&self, payload: OnChangePayload<'_>) -> HookResult {
         let doc_id = payload.doc_id;
         let update = payload.update;
+
+        debug!(
+            "[on_change] doc={}, update_len={}, client={:?}",
+            doc_id,
+            update.len(),
+            payload.client_id
+        );
 
         // Parse document type
         let doc_type = match DocType::parse(doc_id) {
