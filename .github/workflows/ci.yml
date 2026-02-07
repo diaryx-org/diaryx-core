@@ -5,12 +5,10 @@ on:
     branches: [main, master]
     paths-ignore:
       - '**.md'
-      - '**.yml'
   pull_request:
     branches: [main, master]
     paths-ignore:
       - '**.md'
-      - '**.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -152,13 +150,12 @@ jobs:
           name: web-coverage
           path: apps/web/coverage/
 
-  # Web app E2E tests with Playwright
-  # Only runs on PRs (not direct pushes to master) when web-related files change
+  # Web app E2E tests with Playwright (local-only tests, no sync server)
   test-web-e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
     needs: [web, changes]
-    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,7 +179,8 @@ jobs:
       - name: Run E2E tests
         run: |
           cd apps/web
-          nix develop --command bun run test:e2e -- --project=chromium
+          nix develop --command bunx playwright test --project=chromium \
+            e2e/editor.spec.ts e2e/workspace.spec.ts e2e/attachments.spec.ts e2e/share.spec.ts
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
@@ -216,16 +214,13 @@ jobs:
               - 'crates/diaryx_core/**'
               - 'crates/diaryx_wasm/**'
 
-  # Tauri app build check (not full release, just verify it builds)
-  # Optimizations:
-  #   - Only runs on PRs (not direct pushes to master)
-  #   - Only runs when tauri/web/crates files change
-  #   - Single platform (Linux) - release workflow tests all platforms
+  # Tauri compilation check (cargo check, not full build)
+  # Full builds are done in tauri-release.yml on tags
   tauri-check:
     name: Check Tauri Build
     runs-on: ubuntu-latest
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.tauri == 'true'
+    if: needs.changes.outputs.tauri == 'true'
 
     steps:
       - name: Checkout
@@ -233,8 +228,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -246,27 +239,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: |
-          cd apps/web
-          bun install
-
-      - name: Create WASM stub for Tauri build
-        run: |
-          mkdir -p apps/web/src/lib/wasm
-          cp apps/web/src/lib/wasm-stub.js apps/web/src/lib/wasm/diaryx_wasm.js
-
-      - name: Build Tauri app (debug)
-        run: |
-          cd apps/tauri
-          ../web/node_modules/.bin/tauri build --debug --target x86_64-unknown-linux-gnu
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+      - name: Check Tauri compiles
+        run: cargo check -p diaryx_tauri
 
   # Minimum Supported Rust Version
   msrv:
